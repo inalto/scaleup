@@ -80,8 +80,12 @@ def export(entry: dict, out_dir: Path) -> dict:
         opset_version=17,
         dynamo=False,
     )
-    onnx.checker.check_model(onnx.load(str(path)))
-    diff = max_diff(model, path, scale)
+    try:
+        onnx.checker.check_model(onnx.load(str(path)))
+        diff = max_diff(model, path, scale)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
 
     try:
         import onnxsim

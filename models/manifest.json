@@ -8,11 +8,15 @@
       "scale": 4,
       "license": "BSD-3-Clause",
       "commercial": true,
-      "size_bytes": 0,
-      "url": "",
-      "sha256": "",
-      "tags": ["photo", "fast", "default"],
-      "notes": "xinntao/Real-ESRGAN"
+      "size_bytes": 4871515,
+      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/realesr-general-x4v3.onnx",
+      "sha256": "80f93c6395f49263c4f0af64e9c3ca3d4856609d743840ea50c9c3726c4d92e2",
+      "tags": [
+        "photo",
+        "fast",
+        "default"
+      ],
+      "notes": "xinntao/Real-ESRGAN; non-wdn weights only (no denoise-strength companion)"
     },
     {
       "id": "realesrgan-x4plus",
@@ -21,10 +25,12 @@
       "scale": 4,
       "license": "BSD-3-Clause",
       "commercial": true,
-      "size_bytes": 0,
-      "url": "",
-      "sha256": "",
-      "tags": ["photo"],
+      "size_bytes": 67217709,
+      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/realesrgan-x4plus.onnx",
+      "sha256": "be8bf6ba9b15295286c77ac5dc4564899cdf6651c03dfe5ef41095da7ff2a512",
+      "tags": [
+        "photo"
+      ],
       "notes": "xinntao/Real-ESRGAN"
     },
     {
@@ -34,10 +40,12 @@
       "scale": 4,
       "license": "BSD-3-Clause",
       "commercial": true,
-      "size_bytes": 0,
-      "url": "",
-      "sha256": "",
-      "tags": ["anime"],
+      "size_bytes": 17987288,
+      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/realesrgan-x4plus-anime.onnx",
+      "sha256": "2468974c8affbf766b2ce06c3649a7f35a70f85d9c0dceba41340b86ec535419",
+      "tags": [
+        "anime"
+      ],
       "notes": "xinntao/Real-ESRGAN"
     },
     {
@@ -47,10 +55,12 @@
       "scale": 2,
       "license": "BSD-3-Clause",
       "commercial": true,
-      "size_bytes": 0,
-      "url": "",
-      "sha256": "",
-      "tags": ["photo"],
+      "size_bytes": 67239192,
+      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/realesrgan-x2plus.onnx",
+      "sha256": "1d09ed5f28772717ab8b9fa56615802e9b59468de69700967e90c31e13b6fc03",
+      "tags": [
+        "photo"
+      ],
       "notes": "xinntao/Real-ESRGAN"
     },
     {
@@ -60,10 +70,13 @@
       "scale": 4,
       "license": "BSD-3-Clause",
       "commercial": true,
-      "size_bytes": 0,
-      "url": "",
-      "sha256": "",
-      "tags": ["anime", "fast"],
+      "size_bytes": 2495931,
+      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/realesr-animevideov3.onnx",
+      "sha256": "6266bfaabb4a38763bcd11d7f3164648f3076f7089ab9c3b35054d8d6d0d29f0",
+      "tags": [
+        "anime",
+        "fast"
+      ],
       "notes": "xinntao/Real-ESRGAN"
     },
     {
@@ -73,24 +86,46 @@
       "scale": 4,
       "license": "CC-BY-4.0",
       "commercial": true,
-      "size_bytes": 0,
-      "url": "",
-      "sha256": "",
-      "tags": ["photo", "fast"],
-      "notes": "by Phips (Philip Hofmann)"
+      "size_bytes": 1724866,
+      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/4xNomosUni_span_multijpg.onnx",
+      "sha256": "584f5cbd54645655993f0665ecb2b6e88c4eb83120a86d70f2d1e1eae22205cc",
+      "tags": [
+        "photo",
+        "fast"
+      ],
+      "notes": "by Phips (Philip Hofmann), CC-BY-4.0"
     },
     {
-      "id": "4xRealWebPhoto_v4_dat2",
-      "name": "RealWebPhoto v4 DAT-2 (high quality, slow)",
-      "arch": "DAT",
+      "id": "4x-UltraSharp",
+      "name": "4x UltraSharp",
+      "arch": "RRDBNet",
       "scale": 4,
-      "license": "CC-BY-4.0",
-      "commercial": true,
-      "size_bytes": 0,
-      "url": "",
-      "sha256": "",
-      "tags": ["photo", "quality", "slow"],
-      "notes": "by Phips (Philip Hofmann); input is padded to a multiple of 16"
+      "license": "CC-BY-NC-SA-4.0",
+      "commercial": false,
+      "size_bytes": 67217709,
+      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/4x-UltraSharp.onnx",
+      "sha256": "e5b67389d97e3cc6dfe4252b4ba471c09352f658227e5f283e0847335d533a3c",
+      "tags": [
+        "photo",
+        "noncommercial"
+      ],
+      "notes": "by Kim2091; non-commercial use only"
+    },
+    {
+      "id": "4x_foolhardy_Remacri",
+      "name": "4x Remacri",
+      "arch": "RRDBNet",
+      "scale": 4,
+      "license": "CC-BY-NC-SA-4.0",
+      "commercial": false,
+      "size_bytes": 67217709,
+      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/4x_foolhardy_Remacri.onnx",
+      "sha256": "b0bd4ead481c67927e89457e951020d36d766ddbe7070ded8dc8d15cfce245f1",
+      "tags": [
+        "photo",
+        "noncommercial"
+      ],
+      "notes": "by Foolhardy; non-commercial use only"
     }
   ]
 }
