@@ -8,6 +8,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::pipeline::CancelToken;
 use crate::{Result, ScaleUpError};
 
 const BUILTIN_MANIFEST: &str = include_str!("../../../models/manifest.json");
@@ -133,6 +134,17 @@ impl Registry {
     /// `progress(done, total)` reports bytes; `total` is 0 when unknown. A failed or corrupt
     /// download leaves no file behind.
     pub fn ensure(&self, id: &str, progress: &mut dyn FnMut(u64, u64)) -> Result<PathBuf> {
+        self.ensure_cancellable(id, progress, &CancelToken::new())
+    }
+
+    /// Like [`Registry::ensure`], but a cancelled `cancel` aborts the download with
+    /// [`ScaleUpError::Cancelled`] and removes the partial file.
+    pub fn ensure_cancellable(
+        &self,
+        id: &str,
+        progress: &mut dyn FnMut(u64, u64),
+        cancel: &CancelToken,
+    ) -> Result<PathBuf> {
         let entry = self
             .get(id)
             .ok_or_else(|| ScaleUpError::Model(format!("unknown model '{id}'")))?;
@@ -154,6 +166,7 @@ impl Registry {
             self.timeout,
             &part,
             progress,
+            cancel,
         )
         .and_then(|()| fs::rename(&part, &path).map_err(ScaleUpError::from));
         if result.is_err() {
@@ -193,6 +206,7 @@ fn download_verified(
     timeout: Duration,
     dest: &Path,
     progress: &mut dyn FnMut(u64, u64),
+    cancel: &CancelToken,
 ) -> Result<()> {
     let dl = |e: &dyn std::fmt::Display| ScaleUpError::Download(format!("{url}: {e}"));
     // No total body timeout: large models on slow links legitimately take minutes.
@@ -209,7 +223,14 @@ fn download_verified(
     let mut buf = vec![0u8; 64 * 1024];
     let mut done = 0u64;
     loop {
-        let n = reader.read(&mut buf).map_err(|e| dl(&e))?;
+        if cancel.is_cancelled() {
+            return Err(ScaleUpError::Cancelled);
+        }
+        let n = match reader.read(&mut buf) {
+            Ok(n) => n,
+            Err(_) if cancel.is_cancelled() => return Err(ScaleUpError::Cancelled),
+            Err(e) => return Err(dl(&e)),
+        };
         if n == 0 {
             break;
         }
@@ -296,7 +317,7 @@ mod tests {
     #[test]
     fn manifest_parses_and_has_default_tag() {
         let reg = Registry::builtin();
-        assert_eq!(reg.entries().len(), 7);
+        assert_eq!(reg.entries().len(), 8);
         let defaults: Vec<_> = reg
             .entries()
             .iter()
@@ -307,7 +328,8 @@ mod tests {
         assert!(
             reg.entries()
                 .iter()
-                .all(|e| e.format == "onnx" && e.commercial)
+                .all(|e| e.format == "onnx"
+                    && e.commercial != e.tags.iter().any(|t| t == "noncommercial"))
         );
         assert_eq!(reg.get("realesrgan-x2plus").unwrap().scale, 2);
         assert!(reg.get("nope").is_none());
@@ -374,6 +396,24 @@ mod tests {
         assert!(matches!(err, Err(ScaleUpError::Download(_))), "{err:?}");
         assert!(!reg.local_path("bad").exists());
         assert!(!dir.path().join("models").join("bad.onnx.part").exists());
+    }
+
+    #[test]
+    fn cancelled_download_is_removed() {
+        const BODY: &[u8] = b"pretend this is an onnx model";
+        let base = serve(BODY, 1);
+        let dir = tempfile::tempdir().unwrap();
+        let sha = format!("{:x}", Sha256::digest(BODY));
+        let reg = Registry::from_entries(
+            vec![entry("c", format!("{base}/c.onnx"), sha)],
+            dir.path().to_path_buf(),
+        );
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let err = reg.ensure_cancellable("c", &mut |_, _| {}, &cancel);
+        assert!(matches!(err, Err(ScaleUpError::Cancelled)), "{err:?}");
+        assert!(!reg.local_path("c").exists());
+        assert!(!dir.path().join("c.onnx.part").exists());
     }
 
     #[test]
