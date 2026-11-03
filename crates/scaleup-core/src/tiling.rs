@@ -142,7 +142,8 @@ pub fn reflect_pad(img: &Image32, left: u32, top: u32, right: u32, bottom: u32) 
 ///
 /// Every tile is fed as its keep rect plus `overlap` on each side, reflect-padded where it crosses the
 /// image border, so the model always sees full context. An image that fits in one tile is processed
-/// whole, reflect-padded on the right/bottom to a multiple of 4. `on_tile(done, total)` is called
+/// whole. Every model input is then reflect-padded on the right/bottom to a multiple of
+/// [`Model::input_multiple`] (4 by default). `on_tile(done, total)` is called
 /// after each tile; returning `false` aborts with [`ScaleUpError::Cancelled`].
 pub fn run_tiled(
     model: &dyn Model,
@@ -154,21 +155,17 @@ pub fn run_tiled(
     let jobs = tile_grid(img.width, img.height, tile, overlap)?;
     let overlap = effective_overlap(tile, overlap);
     let s = model.scale();
+    let multiple = model.input_multiple().max(1);
     let total = jobs.len() as u32;
     let mut out = Image32::new(img.width * s, img.height * s);
     let single = total == 1;
     for (n, job) in jobs.iter().enumerate() {
         let kx = job.input.x + job.keep.x;
         let ky = job.input.y + job.keep.y;
-        let (pad, w, h) = if single {
-            (
-                0,
-                img.width.next_multiple_of(4),
-                img.height.next_multiple_of(4),
-            )
-        } else {
-            (overlap, job.keep.w + 2 * overlap, job.keep.h + 2 * overlap)
-        };
+        let pad = if single { 0 } else { overlap };
+        // Extra pixels needed to reach the model's multiple go on the right/bottom (reflected).
+        let w = (job.keep.w + 2 * pad).next_multiple_of(multiple);
+        let h = (job.keep.h + 2 * pad).next_multiple_of(multiple);
         let input = window_reflect(img, kx as i64 - pad as i64, ky as i64 - pad as i64, w, h);
         let result = model.run(&input)?;
         if result.width != w * s || result.height != h * s {
@@ -292,6 +289,50 @@ mod run_tests {
     use crate::backend::Model;
     use crate::backend::fake::NearestModel;
     use crate::image32::Image32;
+
+    /// Nearest 2× that, like pixel-unshuffle / window-attention nets, rejects inputs whose sides are
+    /// not a multiple of 16.
+    struct StrictModel;
+
+    impl Model for StrictModel {
+        fn scale(&self) -> u32 {
+            2
+        }
+
+        fn input_multiple(&self) -> u32 {
+            16
+        }
+
+        fn run(&self, tile: &Image32) -> Result<Image32> {
+            if !tile.width.is_multiple_of(16) || !tile.height.is_multiple_of(16) {
+                return Err(ScaleUpError::Model(format!(
+                    "{}x{} not a multiple of 16",
+                    tile.width, tile.height
+                )));
+            }
+            NearestModel { scale: 2 }.run(tile)
+        }
+    }
+
+    #[test]
+    fn windows_padded_to_model_multiple() {
+        for &(w, h, tile, overlap) in &[
+            (5, 3, 64, 8),
+            (1000, 733, 256, 16),
+            (1, 1000, 32, 16),
+            (1001, 1001, 256, 16),
+            (37, 300, 100, 10),
+        ] {
+            let img = ramp(w, h);
+            let tiled = run_tiled(&StrictModel, &img, tile, overlap, &mut |_, _| true)
+                .unwrap_or_else(|e| panic!("{w}x{h} tile {tile}: {e}"));
+            assert_eq!(
+                tiled,
+                NearestModel { scale: 2 }.run(&img).unwrap(),
+                "{w}x{h} tile {tile}"
+            );
+        }
+    }
 
     fn ramp(w: u32, h: u32) -> Image32 {
         let mut img = Image32::new(w, h);

@@ -50,6 +50,10 @@ pub trait Backend: Send + Sync {
 
 pub trait Model: Send + Sync {
     fn scale(&self) -> u32;
+    /// Input sides must be a multiple of this; tiles are reflect-padded up to it. Default 4.
+    fn input_multiple(&self) -> u32 {
+        4
+    }
     /// Output dimensions are input dimensions × [`Model::scale`].
     fn run(&self, tile: &Image32) -> Result<Image32>;
 }

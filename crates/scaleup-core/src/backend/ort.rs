@@ -244,6 +244,12 @@ impl Model for OrtModel {
         self.scale
     }
 
+    /// 16 satisfies every catalogue architecture (pixel-unshuffle RRDBNet needs 2 or 4, DAT needs
+    /// 16) at the cost of at most 15 extra pixels per tile side.
+    fn input_multiple(&self) -> u32 {
+        16
+    }
+
     fn run(&self, tile: &Image32) -> Result<Image32> {
         let (w, h, data) = self.infer(tile)?;
         if (w, h) != (tile.width * self.scale, tile.height * self.scale) {
