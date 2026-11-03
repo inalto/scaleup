@@ -117,7 +117,7 @@ pub fn upscale(
     let total = per_pass * if has_alpha { 2 } else { 1 };
 
     progress(Progress::Phase(Phase::Upscaling));
-    let mut pass = |img: &Image32, offset: u32, progress: &mut dyn FnMut(Progress)| {
+    let pass = |img: &Image32, offset: u32, progress: &mut dyn FnMut(Progress)| {
         run_tiled(model, img, tile, opts.tile_overlap, &mut |done, _| {
             progress(Progress::Tiles {
                 done: offset + done,
