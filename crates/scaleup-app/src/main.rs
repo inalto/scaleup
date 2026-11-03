@@ -3,6 +3,7 @@
 
 mod app;
 mod state;
+mod ui;
 mod worker;
 
 use eframe::egui;
@@ -20,6 +21,8 @@ fn icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result {
+    // An image or folder on the command line is selected at startup (file associations, scripts).
+    let initial = std::env::args_os().nth(1).map(std::path::PathBuf::from);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
@@ -30,6 +33,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "ScaleUP",
         options,
-        Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, initial)))),
     )
 }

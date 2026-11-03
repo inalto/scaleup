@@ -7,8 +7,10 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 
+use eframe::egui;
 use scaleup_core::io::is_supported_input;
 use scaleup_core::{
     CancelToken, DeviceInfo, DevicePreference, FileJob, Model, OutputFormat, Phase, Progress,
@@ -61,6 +63,29 @@ pub struct WorkerHandle {
     pub tx: Sender<UiMsg>,
     pub rx: Receiver<WorkerEvent>,
     join: Option<JoinHandle<()>>,
+    wake: Arc<OnceLock<egui::Context>>,
+}
+
+impl WorkerHandle {
+    /// From now on every event repaints `ctx`, so idle windows notice results without polling.
+    pub fn wake_on_events(&self, ctx: egui::Context) {
+        let _ = self.wake.set(ctx);
+    }
+}
+
+/// The sending half of the event channel.
+struct Events {
+    tx: Sender<WorkerEvent>,
+    wake: Arc<OnceLock<egui::Context>>,
+}
+
+impl Events {
+    fn send(&self, ev: WorkerEvent) {
+        let _ = self.tx.send(ev);
+        if let Some(ctx) = self.wake.get() {
+            ctx.request_repaint();
+        }
+    }
 }
 
 impl Drop for WorkerHandle {
@@ -75,12 +100,17 @@ pub fn spawn(registry: Registry, initial_gpu: &str) -> WorkerHandle {
     let (ui_tx, ui_rx) = channel();
     let (ev_tx, ev_rx) = channel();
     let gpu = initial_gpu.to_string();
+    let wake = Arc::new(OnceLock::new());
+    let events = Events {
+        tx: ev_tx,
+        wake: wake.clone(),
+    };
     let join = std::thread::Builder::new()
         .name("scaleup-worker".into())
         .spawn(move || {
             let mut worker = Worker {
                 registry,
-                events: ev_tx,
+                events,
                 inbox: Inbox {
                     rx: ui_rx,
                     deferred: VecDeque::new(),
@@ -97,6 +127,7 @@ pub fn spawn(registry: Registry, initial_gpu: &str) -> WorkerHandle {
         tx: ui_tx,
         rx: ev_rx,
         join: Some(join),
+        wake,
     }
 }
 
@@ -191,7 +222,7 @@ impl Inbox {
 
 struct Worker {
     registry: Registry,
-    events: Sender<WorkerEvent>,
+    events: Events,
     inbox: Inbox,
     gpu: String,
     upscaler: Option<Upscaler>,
@@ -201,7 +232,7 @@ struct Worker {
 
 impl Worker {
     fn emit(&self, ev: WorkerEvent) {
-        let _ = self.events.send(ev);
+        self.events.send(ev);
     }
 
     fn run(&mut self) {
@@ -254,7 +285,7 @@ impl Worker {
             upscaler.registry().ensure_cancellable(
                 model_id,
                 &mut |done, total| {
-                    let _ = events.send(WorkerEvent::Download { done, total });
+                    events.send(WorkerEvent::Download { done, total });
                     inbox.poll(cancel);
                 },
                 cancel,
@@ -367,7 +398,7 @@ impl Worker {
                         percent = done as f32 * 100.0 / total.max(1) as f32;
                     }
                 }
-                let _ = events.send(WorkerEvent::Progress {
+                events.send(WorkerEvent::Progress {
                     file,
                     files,
                     percent,
