@@ -1,7 +1,7 @@
 //! Output size rules and the final Lanczos3 resize.
 
-use image::RgbaImage;
 use image::imageops::{self, FilterType};
+use image::{Rgba, Rgba32FImage, RgbaImage};
 
 use crate::{Result, ScaleUpError};
 
@@ -34,12 +34,35 @@ pub fn target_size(
     Ok((in_w * s, in_h * s))
 }
 
-/// Lanczos3 resize; returns a copy when the size already matches.
+/// Lanczos3 resize in premultiplied-alpha space (so transparent pixels do not bleed dark fringes into
+/// visible edges); returns a copy when the size already matches.
 pub fn resize_rgba(img: &RgbaImage, w: u32, h: u32) -> RgbaImage {
     if img.dimensions() == (w, h) {
         return img.clone();
     }
-    imageops::resize(img, w, h, FilterType::Lanczos3)
+    if img.pixels().all(|p| p[3] == 255) {
+        return imageops::resize(img, w, h, FilterType::Lanczos3);
+    }
+    let premultiplied = Rgba32FImage::from_fn(img.width(), img.height(), |x, y| {
+        let p = img.get_pixel(x, y);
+        let a = p[3] as f32 / 255.0;
+        Rgba([
+            p[0] as f32 / 255.0 * a,
+            p[1] as f32 / 255.0 * a,
+            p[2] as f32 / 255.0 * a,
+            a,
+        ])
+    });
+    let resized = imageops::resize(&premultiplied, w, h, FilterType::Lanczos3);
+    let to_u8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    RgbaImage::from_fn(w, h, |x, y| {
+        let p = resized.get_pixel(x, y);
+        let a = p[3].clamp(0.0, 1.0);
+        if a <= 0.0 {
+            return Rgba([0, 0, 0, 0]);
+        }
+        Rgba([to_u8(p[0] / a), to_u8(p[1] / a), to_u8(p[2] / a), to_u8(a)])
+    })
 }
 
 #[cfg(test)]
@@ -71,6 +94,27 @@ mod tests {
             target_size(100, 50, 4, None, Some(0)),
             Err(ScaleUpError::InvalidOption(_))
         ));
+    }
+
+    #[test]
+    fn resize_does_not_darken_transparent_edges() {
+        // Opaque red on the left, fully transparent black on the right.
+        let img = image::RgbaImage::from_fn(16, 4, |x, _| {
+            if x < 8 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 0, 0, 0])
+            }
+        });
+        for (w, h) in [(40, 10), (12, 3)] {
+            let out = resize_rgba(&img, w, h);
+            for p in out.pixels().filter(|p| p[3] >= 8) {
+                assert!(
+                    p[0] >= 250 && p[1] <= 5 && p[2] <= 5,
+                    "{w}x{h}: dark fringe pixel {p:?}"
+                );
+            }
+        }
     }
 
     #[test]
