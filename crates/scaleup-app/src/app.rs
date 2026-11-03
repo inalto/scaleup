@@ -226,6 +226,9 @@ impl eframe::App for App {
                         Some(Mode::Batch(p)) => {
                             ui.weak(format!("Folder selected: {}", p.display()))
                         }
+                        Some(Mode::Single(_)) if matches!(self.state.status, Status::Error(_)) => {
+                            ui.weak("This image could not be opened")
+                        }
                         Some(Mode::Single(_)) => ui.weak("Loading preview…"),
                         None => ui.weak("Drop an image or a folder here"),
                     };

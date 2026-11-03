@@ -26,7 +26,8 @@ pub fn show(ui: &mut egui::Ui, st: &AppState, log_open: &mut bool) -> bool {
         ui.separator();
         match &st.status {
             Status::Error(_) => {
-                ui.colored_label(ui.visuals().error_fg_color, st.status_line());
+                let text = egui::RichText::new(st.status_line()).color(ui.visuals().error_fg_color);
+                ui.add(egui::Label::new(text).truncate());
             }
             Status::Done(path) => {
                 ui.label(st.status_line())

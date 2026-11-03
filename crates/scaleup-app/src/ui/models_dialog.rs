@@ -94,7 +94,7 @@ impl ModelsDialog {
         ui.label(size_label(e.size_bytes));
         if registry.is_downloaded(&e.id) {
             ui.horizontal(|ui| {
-                ui.label("Downloaded ✓");
+                ui.label("Downloaded");
                 if ui.add_enabled(!busy, egui::Button::new("Delete")).clicked() {
                     *action = Some(DialogAction::Delete(e.id.clone()));
                 }
