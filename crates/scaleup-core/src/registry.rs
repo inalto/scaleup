@@ -3,6 +3,7 @@
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -64,7 +65,11 @@ pub struct ResolvedModel {
 pub struct Registry {
     entries: Vec<ModelEntry>,
     models_dir: PathBuf,
+    timeout: Duration,
 }
+
+/// Connect and first-response timeout for downloads.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// `SCALEUP_MODELS_DIR`, else `<data_dir>/scaleup/models`, else `./models`.
 fn default_models_dir() -> PathBuf {
@@ -93,7 +98,14 @@ impl Registry {
         Self {
             entries,
             models_dir,
+            timeout: DEFAULT_TIMEOUT,
         }
+    }
+
+    /// Download connect / response timeout (default 30 s).
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     pub fn entries(&self) -> &[ModelEntry] {
@@ -135,9 +147,15 @@ impl Registry {
         }
         fs::create_dir_all(&self.models_dir)?;
         let part = self.models_dir.join(format!("{id}.onnx.part"));
-        let result =
-            download_verified(&entry.url, &entry.sha256, entry.size_bytes, &part, progress)
-                .and_then(|()| fs::rename(&part, &path).map_err(ScaleUpError::from));
+        let result = download_verified(
+            &entry.url,
+            &entry.sha256,
+            entry.size_bytes,
+            self.timeout,
+            &part,
+            progress,
+        )
+        .and_then(|()| fs::rename(&part, &path).map_err(ScaleUpError::from));
         if result.is_err() {
             let _ = fs::remove_file(&part);
         }
@@ -172,11 +190,18 @@ fn download_verified(
     url: &str,
     expected_sha: &str,
     size_hint: u64,
+    timeout: Duration,
     dest: &Path,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<()> {
     let dl = |e: &dyn std::fmt::Display| ScaleUpError::Download(format!("{url}: {e}"));
-    let mut response = ureq::get(url).call().map_err(|e| dl(&e))?;
+    // No total body timeout: large models on slow links legitimately take minutes.
+    let agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(timeout))
+        .timeout_recv_response(Some(timeout))
+        .build()
+        .new_agent();
+    let mut response = agent.get(url).call().map_err(|e| dl(&e))?;
     let total = response.body().content_length().unwrap_or(size_hint);
     let mut reader = response.body_mut().as_reader();
     let mut out = BufWriter::new(File::create(dest)?);
@@ -365,6 +390,36 @@ mod tests {
         assert!(matches!(err, Err(ScaleUpError::Download(_))), "{err:?}");
         assert!(!reg.local_path("t").exists());
         assert!(!dir.path().join("t.onnx.part").exists());
+    }
+
+    #[test]
+    fn unresponsive_server_times_out() {
+        // Accepts the connection, then never answers.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let held: Vec<_> = listener.incoming().take(1).collect();
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            drop(held);
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let models_dir = dir.path().to_path_buf();
+        let reg = Registry::from_entries(
+            vec![entry(
+                "slow",
+                format!("http://{addr}/slow.onnx"),
+                "00".into(),
+            )],
+            models_dir.clone(),
+        )
+        .with_timeout(std::time::Duration::from_millis(300));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(reg.ensure("slow", &mut |_, _| {})).unwrap());
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("download hung instead of timing out");
+        assert!(matches!(res, Err(ScaleUpError::Download(_))), "{res:?}");
+        assert!(!models_dir.join("slow.onnx.part").exists());
     }
 
     #[test]
