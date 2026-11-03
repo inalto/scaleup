@@ -19,16 +19,35 @@ fn backend_err(e: impl std::fmt::Display) -> ScaleUpError {
     ScaleUpError::Backend(e.to_string())
 }
 
+/// The process-wide ONNX Runtime environment. ORT allows only one per process, so concurrent first
+/// callers block on a single initialisation (and share its error, if any).
 fn environment() -> Result<&'static Environment> {
-    static ENV: OnceLock<Environment> = OnceLock::new();
-    if let Some(env) = ENV.get() {
-        return Ok(env);
-    }
-    let env = ::ort::init()
-        .with_name("scaleup")
-        .build()
+    static ENV: OnceLock<std::result::Result<Environment, String>> = OnceLock::new();
+    ENV.get_or_init(|| {
+        ::ort::init()
+            .with_name("scaleup")
+            .build()
+            .map_err(|e| e.to_string())
+    })
+    .as_ref()
+    .map_err(|e| ScaleUpError::Backend(e.clone()))
+}
+
+/// Tiny 2× model used to prove a device can actually create and run a session.
+const PROBE_MODEL: &[u8] = include_bytes!("../../../../tests/fixtures/nearest2x.onnx");
+
+/// Creates a session on `device` and runs one 16×16 inference. Registering an execution provider
+/// alone is not enough: some (CUDA) only initialise the device when the session is committed.
+fn verify_device(device: &DeviceInfo) -> Result<()> {
+    let session = builder_for(device)?
+        .commit_from_memory(PROBE_MODEL)
         .map_err(backend_err)?;
-    Ok(ENV.get_or_init(|| env))
+    let model = OrtModel {
+        session: Mutex::new(session),
+        input_name: "input".into(),
+        scale: 2,
+    };
+    model.run(&Image32::new(16, 16)).map(|_| ())
 }
 
 /// GPU execution providers compiled in for this target, in registration order.
@@ -112,8 +131,8 @@ fn probe_gpu(index: u32) -> Option<DeviceInfo> {
             index,
             name: device_name(kind, index),
         };
-        match builder_for(&device) {
-            Ok(_) => Some(device),
+        match verify_device(&device) {
+            Ok(()) => Some(device),
             Err(e) => {
                 tracing::debug!("{kind:?} execution provider unavailable: {e}");
                 None
@@ -321,6 +340,23 @@ mod tests {
                 .load_model(std::path::Path::new("nope.onnx"), Some(2))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn verify_device_runs_probe_session_on_cpu() {
+        verify_device(&cpu_device()).unwrap();
+    }
+
+    #[test]
+    fn environment_init_is_shared_across_threads() {
+        let handles: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(|| environment().map(|e| e as *const _ as usize)))
+            .collect();
+        let ptrs: Vec<usize> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap().unwrap())
+            .collect();
+        assert!(ptrs.windows(2).all(|w| w[0] == w[1]));
     }
 
     #[test]
