@@ -53,3 +53,18 @@ pub trait Model: Send + Sync {
     /// Output dimensions are input dimensions × [`Model::scale`].
     fn run(&self, tile: &Image32) -> Result<Image32>;
 }
+
+pub mod ort;
+
+pub use self::ort::OrtBackend;
+
+/// Devices usable on this machine: the GPU the ORT backend would pick (if any), then the CPU.
+pub fn list_devices() -> Vec<DeviceInfo> {
+    self::ort::available_devices()
+}
+
+/// The default backend (ONNX Runtime) for `pref`. A GPU that fails to initialise falls back to the
+/// CPU with a warning rather than an error.
+pub fn create_backend(pref: DevicePreference) -> Result<Box<dyn Backend>> {
+    Ok(Box::new(OrtBackend::new(pref)?))
+}
