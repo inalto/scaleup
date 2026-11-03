@@ -226,7 +226,14 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) -> Sid
             ui.add_space(8.0);
             let size = egui::vec2(ui.available_width(), 40.0);
             if running {
-                if ui.add_sized(size, egui::Button::new("Stop")).clicked() {
+                let text = if st.stopping { "Stopping…" } else { "Stop" };
+                let enabled = !st.stopping;
+                if ui
+                    .add_enabled(enabled, |ui: &mut egui::Ui| {
+                        ui.add_sized(size, egui::Button::new(text))
+                    })
+                    .clicked()
+                {
                     out.stop = true;
                 }
             } else {

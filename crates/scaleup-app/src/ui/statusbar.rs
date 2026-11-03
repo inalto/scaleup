@@ -26,10 +26,14 @@ pub fn show(ui: &mut egui::Ui, st: &AppState, log_open: &mut bool) -> bool {
         ui.separator();
         match &st.status {
             Status::Error(_) => {
-                ui.colored_label(ui.visuals().error_fg_color, st.status.label());
+                ui.colored_label(ui.visuals().error_fg_color, st.status_line());
             }
-            status => {
-                ui.label(status.label());
+            Status::Done(path) => {
+                ui.label(st.status_line())
+                    .on_hover_text(path.display().to_string());
+            }
+            _ => {
+                ui.label(st.status_line());
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

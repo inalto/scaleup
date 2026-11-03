@@ -112,6 +112,8 @@ pub struct AppState {
     pub devices: Vec<scaleup_core::DeviceInfo>,
     /// Message of the most recent failed file, for the end-of-run status.
     pub last_file_error: Option<String>,
+    /// Stop was pressed and the worker has not confirmed yet.
+    pub stopping: bool,
 }
 
 /// What a selected or dropped path means: a folder is a batch, a supported image a single run.
@@ -152,6 +154,7 @@ pub fn apply_event(state: &mut AppState, ev: WorkerEvent) -> Option<Toast> {
             return Some(Toast::error(text));
         }
         WorkerEvent::AllDone { done, failed } => {
+            state.stopping = false;
             let error = state.last_file_error.take();
             match (&state.last_result, done, error) {
                 (Some(path), 1.., _) => state.status = Status::Done(path.clone()),
@@ -168,18 +171,43 @@ pub fn apply_event(state: &mut AppState, ev: WorkerEvent) -> Option<Toast> {
             });
         }
         WorkerEvent::Stopped { done, total } => {
+            state.stopping = false;
             state.last_file_error = None;
             state.status = Status::Stopped { done, total };
         }
         WorkerEvent::Error(message) => {
+            state.stopping = false;
             state.last_file_error = None;
             state.log.push(message.clone());
             state.status = Status::Error(message.clone());
             return Some(Toast::error(message));
         }
         WorkerEvent::Log(line) => state.log.push(line),
+        WorkerEvent::ModelDownloaded(id) => {
+            state.status = Status::Idle;
+            state.log.push(format!("downloaded {id}"));
+            return Some(Toast::success(format!("Downloaded {id}")));
+        }
+        // Pixels belong to the view, not the state.
+        WorkerEvent::Preview { .. } => {}
     }
     None
+}
+
+impl AppState {
+    /// Records that Stop was pressed; the run ends when the worker says so.
+    pub fn request_stop(&mut self) {
+        self.stopping = self.status.is_running();
+    }
+
+    /// The status bar text.
+    pub fn status_line(&self) -> String {
+        if self.stopping {
+            "Stopping…".into()
+        } else {
+            self.status.label()
+        }
+    }
 }
 
 impl Status {
@@ -206,7 +234,12 @@ impl Status {
             Status::Running {
                 file, files, phase, ..
             } => format!("{phase} (file {} of {files})", file + 1),
-            Status::Done(path) => format!("Saved {}", path.display()),
+            Status::Done(path) => format!(
+                "Saved {}",
+                path.file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+            ),
             Status::Error(message) => message.clone(),
             Status::Stopped { done, total } => format!("Stopped after {done} of {total}"),
         }
@@ -270,6 +303,50 @@ mod tests {
         assert!(!st.status.is_running());
         assert_eq!(st.last_result, Some(PathBuf::from("old.png")));
         assert_eq!(toast.kind, ToastKind::Error);
+    }
+
+    #[test]
+    fn stop_request_shows_until_the_worker_confirms() {
+        let mut st = AppState {
+            status: Status::Running {
+                file: 0,
+                files: 3,
+                percent: 10.0,
+                phase: "Saving".into(),
+            },
+            ..AppState::default()
+        };
+        st.request_stop();
+        assert_eq!(st.status_line(), "Stopping…");
+        apply_event(
+            &mut st,
+            WorkerEvent::Progress {
+                file: 0,
+                files: 3,
+                percent: 10.0,
+                phase: "Saving".into(),
+            },
+        );
+        assert_eq!(st.status_line(), "Stopping…");
+        apply_event(&mut st, WorkerEvent::Stopped { done: 0, total: 3 });
+        assert_eq!(st.status_line(), "Stopped after 0 of 3");
+    }
+
+    #[test]
+    fn done_label_names_only_the_file() {
+        let st = Status::Done(PathBuf::from("a/b/c.png"));
+        assert_eq!(st.label(), "Saved c.png");
+    }
+
+    #[test]
+    fn model_downloaded_returns_to_idle_with_a_toast() {
+        let mut st = AppState {
+            status: Status::Downloading { done: 1, total: 2 },
+            ..AppState::default()
+        };
+        let toast = apply_event(&mut st, WorkerEvent::ModelDownloaded("m".into())).unwrap();
+        assert_eq!(st.status, Status::Idle);
+        assert_eq!(toast.kind, ToastKind::Success);
     }
 
     #[test]

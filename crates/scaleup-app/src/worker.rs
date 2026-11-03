@@ -14,16 +14,30 @@ use eframe::egui;
 use scaleup_core::io::is_supported_input;
 use scaleup_core::{
     CancelToken, DeviceInfo, DevicePreference, FileJob, Model, OutputFormat, Phase, Progress,
-    Registry, Result, ScaleUpError, Upscaler, list_devices,
+    Registry, Result, ScaleUpError, Upscaler, list_devices, load_image,
 };
 
 use crate::state::{Mode, Settings};
 
 pub enum UiMsg {
-    Start { mode: Mode, settings: Settings },
+    Start {
+        mode: Mode,
+        settings: Settings,
+    },
     Stop,
     ChangeDevice(String),
+    /// Fetch a catalogue model without running anything.
+    Download(String),
+    /// Decode this file as the new "before" image.
+    Preview(PathBuf),
     Quit,
+}
+
+/// Which side of the comparison a preview belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Which {
+    Before,
+    After,
 }
 
 #[derive(Debug, PartialEq)]
@@ -57,6 +71,13 @@ pub enum WorkerEvent {
     /// The run ended or could not start, or an idle-time request failed. Nothing is running now.
     Error(String),
     Log(String),
+    ModelDownloaded(String),
+    Preview {
+        which: Which,
+        image: egui::ColorImage,
+        /// Size of the file, which `image` may be a downscaled copy of.
+        size: [u32; 2],
+    },
 }
 
 pub struct WorkerHandle {
@@ -89,10 +110,16 @@ impl Events {
 }
 
 impl Drop for WorkerHandle {
-    /// Asks the worker to quit without waiting: a tile in flight must not hold up closing the window.
+    /// Asks the worker to quit and gives it a moment, so a file being saved is finished rather than
+    /// left behind as a temporary file; a slow tile must not hold up closing the window for long.
     fn drop(&mut self) {
         let _ = self.tx.send(UiMsg::Quit);
-        drop(self.join.take());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        if let Some(join) = self.join.take() {
+            while !join.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
     }
 }
 
@@ -179,6 +206,39 @@ pub(crate) fn plan_jobs(mode: &Mode, s: &Settings) -> Vec<FileJob> {
         .collect()
 }
 
+/// Long side limit of preview textures.
+const MAX_PREVIEW_SIDE: u32 = 4096;
+
+/// `img`, downscaled if needed so its long side is at most `max`: GPUs refuse larger textures.
+pub(crate) fn cap_long_side(img: image::RgbaImage, max: u32) -> image::RgbaImage {
+    let (w, h) = img.dimensions();
+    let long = w.max(h);
+    if long <= max {
+        return img;
+    }
+    let scaled =
+        |side: u32| ((side as u64 * max as u64 + long as u64 / 2) / long as u64).max(1) as u32;
+    image::imageops::resize(
+        &img,
+        scaled(w),
+        scaled(h),
+        image::imageops::FilterType::Triangle,
+    )
+}
+
+/// Decodes `path` into a preview event.
+fn preview_event(path: &Path, which: Which) -> Result<WorkerEvent> {
+    let img = load_image(path)?;
+    let size = [img.width(), img.height()];
+    let img = cap_long_side(img, MAX_PREVIEW_SIDE);
+    let dims = [img.width() as usize, img.height() as usize];
+    Ok(WorkerEvent::Preview {
+        which,
+        image: egui::ColorImage::from_rgba_unmultiplied(dims, img.as_raw()),
+        size,
+    })
+}
+
 fn phase_name(phase: Phase) -> &'static str {
     match phase {
         Phase::Loading => "Loading image",
@@ -246,8 +306,44 @@ impl Worker {
                 // Nothing is running, so there is nothing to stop.
                 UiMsg::Stop => {}
                 UiMsg::ChangeDevice(gpu) => self.change_device(gpu),
+                UiMsg::Preview(path) => match preview_event(&path, Which::Before) {
+                    Ok(ev) => self.emit(ev),
+                    Err(e) => self.emit(WorkerEvent::Error(format!("{}: {e}", path.display()))),
+                },
+                UiMsg::Download(id) => self.download(&id),
                 UiMsg::Quit => return,
             }
+        }
+    }
+
+    fn download(&mut self, id: &str) {
+        let cancel = CancelToken::new();
+        let (events, inbox) = (&self.events, &mut self.inbox);
+        let result = self.registry.ensure_cancellable(
+            id,
+            &mut |done, total| {
+                events.send(WorkerEvent::Download { done, total });
+                inbox.poll(&cancel);
+            },
+            &cancel,
+        );
+        match result {
+            Ok(_) => self.emit(WorkerEvent::ModelDownloaded(id.to_string())),
+            Err(ScaleUpError::Cancelled) => {
+                self.emit(WorkerEvent::Stopped { done: 0, total: 1 });
+            }
+            Err(e) => self.emit(WorkerEvent::Error(e.to_string())),
+        }
+    }
+
+    /// A preview that cannot be decoded must not disturb the run: it only reaches the log.
+    fn emit_preview(&self, path: &Path, which: Which) {
+        match preview_event(path, which) {
+            Ok(ev) => self.emit(ev),
+            Err(e) => self.emit(WorkerEvent::Log(format!(
+                "no preview for {}: {e}",
+                path.display()
+            ))),
         }
     }
 
@@ -326,6 +422,7 @@ impl Worker {
                     job.output.display()
                 )));
                 self.emit(WorkerEvent::FileDone(job.output.clone()));
+                self.emit_preview(&job.output, Which::After);
                 done += 1;
                 continue;
             }
@@ -347,6 +444,9 @@ impl Worker {
                     return;
                 }
             }
+            if matches!(mode, Mode::Batch(_)) {
+                self.emit_preview(&job.input, Which::Before);
+            }
             let started = std::time::Instant::now();
             match self.run_job(index, files, job, &opts, &cancel) {
                 Ok(path) => {
@@ -355,7 +455,8 @@ impl Worker {
                         path.display(),
                         started.elapsed().as_secs_f32()
                     )));
-                    self.emit(WorkerEvent::FileDone(path));
+                    self.emit(WorkerEvent::FileDone(path.clone()));
+                    self.emit_preview(&path, Which::After);
                     done += 1;
                 }
                 Err(ScaleUpError::Cancelled) => {
@@ -464,6 +565,91 @@ mod tests {
                 return out;
             }
         }
+    }
+
+    #[test]
+    fn download_failure_from_dialog_reports_error() {
+        let d = tempfile::tempdir().unwrap();
+        let mut entry = scaleup_core::registry::parse_manifest(
+            r#"{"models":[{"id":"remote","name":"R","arch":"x","scale":2,"license":"MIT",
+                "commercial":true,"size_bytes":1,"url":"","sha256":"00"}]}"#,
+        )
+        .unwrap();
+        entry[0].url = failing_server();
+        let h = spawn(
+            Registry::from_entries(entry, d.path().join("models")),
+            "cpu",
+        );
+        h.tx.send(UiMsg::Download("remote".into())).unwrap();
+        let evs = until_end(&h);
+        assert!(matches!(evs.last(), Some(WorkerEvent::Error(_))), "{evs:?}");
+    }
+
+    #[test]
+    fn preview_downscale_caps_4096() {
+        let out = cap_long_side(image::RgbaImage::new(8000, 6000), 4096);
+        assert_eq!(out.dimensions(), (4096, 3072));
+        let out = cap_long_side(image::RgbaImage::new(100, 5000), 4096);
+        assert_eq!(out.dimensions(), (82, 4096));
+        let out = cap_long_side(image::RgbaImage::new(20, 20), 4096);
+        assert_eq!(out.dimensions(), (20, 20));
+    }
+
+    #[test]
+    fn preview_msg_emits_before_image_with_file_size() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 9);
+        let h = cpu_worker(d.path());
+        h.tx.send(UiMsg::Preview(input)).unwrap();
+        loop {
+            match h.rx.recv_timeout(Duration::from_secs(120)).unwrap() {
+                WorkerEvent::Preview { which, image, size } => {
+                    assert_eq!(which, Which::Before);
+                    assert_eq!(size, [9, 9]);
+                    assert_eq!(image.size, [9, 9]);
+                    return;
+                }
+                WorkerEvent::Error(e) => panic!("{e}"),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn preview_of_undecodable_file_is_an_error() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        std::fs::write(&input, b"nope").unwrap();
+        let h = cpu_worker(d.path());
+        h.tx.send(UiMsg::Preview(input)).unwrap();
+        let evs = until_end(&h);
+        assert!(matches!(evs.last(), Some(WorkerEvent::Error(_))));
+    }
+
+    #[test]
+    fn finished_file_sends_after_preview_before_alldone() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 10);
+        let h = cpu_worker(d.path());
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input),
+            settings: settings(d.path()),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        let has_after = evs.iter().any(|e| {
+            matches!(
+                e,
+                WorkerEvent::Preview {
+                    which: Which::After,
+                    size: [20, 20],
+                    ..
+                }
+            )
+        });
+        assert!(has_after, "no after preview");
     }
 
     #[test]

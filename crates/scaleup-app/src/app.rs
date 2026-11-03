@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use scaleup_core::Registry;
 
+use crate::state::Mode;
 use crate::state::{AppState, Settings, Status, apply_event, mode_from_path};
+use crate::ui::compare::CompareView;
+use crate::ui::models_dialog::{DialogAction, ModelsDialog};
 use crate::ui::toast::{Toast, Toasts};
 use crate::ui::{sidebar, statusbar};
 use crate::worker::{self, UiMsg, WorkerEvent, WorkerHandle};
@@ -18,6 +21,8 @@ pub struct App {
     worker: WorkerHandle,
     toasts: Toasts,
     log_open: bool,
+    compare: CompareView,
+    models_dialog: ModelsDialog,
 }
 
 impl App {
@@ -39,6 +44,8 @@ impl App {
             worker,
             toasts: Toasts::default(),
             log_open: false,
+            compare: CompareView::default(),
+            models_dialog: ModelsDialog::default(),
         };
         if let Some(path) = initial {
             app.select(&path);
@@ -57,6 +64,10 @@ impl App {
         }
         match mode_from_path(path) {
             Some(mode) => {
+                self.compare.clear();
+                if let Mode::Single(p) = &mode {
+                    self.send(UiMsg::Preview(p.clone()));
+                }
                 self.state.mode = Some(mode);
                 self.state.status = Status::Idle;
             }
@@ -86,13 +97,17 @@ impl App {
         });
     }
 
-    fn drain_events(&mut self) {
+    fn drain_events(&mut self, ctx: &egui::Context) {
         while let Ok(ev) = self.worker.rx.try_recv() {
-            self.handle_event(ev);
+            self.handle_event(ctx, ev);
         }
     }
 
-    fn handle_event(&mut self, ev: WorkerEvent) {
+    fn handle_event(&mut self, ctx: &egui::Context, ev: WorkerEvent) {
+        if let WorkerEvent::Preview { which, image, size } = ev {
+            self.compare.set(ctx, which, image, size);
+            return;
+        }
         if let Some(toast) = apply_event(&mut self.state, ev) {
             self.toasts.push(toast);
         }
@@ -113,7 +128,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.drain_events();
+        self.drain_events(&ctx);
 
         let dropped = ctx.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.clone()));
         if let Some(path) = dropped {
@@ -145,18 +160,47 @@ impl eframe::App for App {
         if side.device_changed {
             self.send(UiMsg::ChangeDevice(self.state.settings.gpu.clone()));
         }
+        if side.open_models {
+            self.models_dialog.open = true;
+        }
         if side.start {
             self.start();
         }
         if side.stop {
+            self.state.request_stop();
             self.send(UiMsg::Stop);
         }
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            ui.centered_and_justified(|ui| {
-                ui.weak("Drop an image or a folder here");
-            });
+            if self.compare.is_empty() {
+                ui.centered_and_justified(|ui| {
+                    match &self.state.mode {
+                        Some(Mode::Batch(p)) => {
+                            ui.weak(format!("Folder selected: {}", p.display()))
+                        }
+                        Some(Mode::Single(_)) => ui.weak("Loading preview…"),
+                        None => ui.weak("Drop an image or a folder here"),
+                    };
+                });
+            } else {
+                self.compare.show(ui);
+            }
         });
+
+        let busy = self.state.status.is_running();
+        match self.models_dialog.show(&ctx, &self.registry, busy) {
+            Some(DialogAction::Download(id)) => {
+                self.state.status = Status::Downloading { done: 0, total: 0 };
+                self.send(UiMsg::Download(id));
+            }
+            Some(DialogAction::Delete(id)) => {
+                if let Err(e) = std::fs::remove_file(self.registry.local_path(&id)) {
+                    self.toasts
+                        .push(Toast::error(format!("Cannot delete {id}: {e}")));
+                }
+            }
+            None => {}
+        }
 
         self.toasts.show(&ctx);
     }
