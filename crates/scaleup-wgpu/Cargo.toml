@@ -1,0 +1,20 @@
+[package]
+name = "scaleup-wgpu"
+description = "Pure-Rust GPU backend for ScaleUP: runs ncnn models on Vulkan, Metal and DX12 through wgpu compute shaders"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "scaleup_wgpu"
+
+[dependencies]
+scaleup-core = { path = "../scaleup-core" }
+wgpu = "29"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+half = "2"
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
