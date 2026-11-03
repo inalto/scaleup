@@ -23,7 +23,7 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
     /// Upscale an image or a folder of images
-    Upscale(UpscaleArgs),
+    Upscale(Box<UpscaleArgs>),
     /// List, inspect and download models
     Models {
         #[command(subcommand)]

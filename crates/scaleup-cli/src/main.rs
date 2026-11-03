@@ -27,7 +27,7 @@ fn main() {
     // Bare `scaleup -i .. -o ..` is `scaleup upscale ..`; no subcommand and no flags is a usage error.
     if cli.cmd.is_none() {
         match cli.upscale.take() {
-            Some(a) => cli.cmd = Some(Cmd::Upscale(a)),
+            Some(a) => cli.cmd = Some(Cmd::Upscale(Box::new(a))),
             None => {
                 let _ = Cli::command().print_help();
                 exit(EXIT_USAGE);

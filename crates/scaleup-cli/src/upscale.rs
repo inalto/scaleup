@@ -121,13 +121,15 @@ pub fn run_upscale(
     let out_is_dir = batch || args.output.is_dir() || has_trailing_separator(&args.output);
     if out_is_dir {
         std::fs::create_dir_all(&args.output)?;
-    } else if let Some(parent) = args.output.parent().filter(|p| !p.as_os_str().is_empty()) {
-        if !parent.is_dir() {
-            return Err(ScaleUpError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("output directory '{}' does not exist", parent.display()),
-            )));
-        }
+    } else if let Some(parent) = args
+        .output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty() && !p.is_dir())
+    {
+        return Err(ScaleUpError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("output directory '{}' does not exist", parent.display()),
+        )));
     }
 
     let registry = registry_for(args.models_dir.as_deref());
