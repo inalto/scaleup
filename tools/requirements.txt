@@ -1,0 +1,8 @@
+torch
+spandrel>=0.4
+onnx>=1.16
+onnxruntime>=1.18
+onnxsim
+huggingface_hub
+numpy
+Pillow

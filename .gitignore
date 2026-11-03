@@ -3,3 +3,4 @@ target/
 !tests/fixtures/*.onnx
 models/cache/
 .superpowers/
+tools/.venv/

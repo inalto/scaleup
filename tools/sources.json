@@ -1,0 +1,104 @@
+[
+  {
+    "id": "realesr-general-x4v3",
+    "file": "realesr-general-x4v3.pth",
+    "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth",
+    "license": "BSD-3-Clause",
+    "license_url": "https://raw.githubusercontent.com/xinntao/Real-ESRGAN/master/LICENSE",
+    "commercial": true,
+    "author": "Xintao Wang et al.",
+    "arch": "SRVGGNetCompact",
+    "scale": 4
+  },
+  {
+    "id": "realesrgan-x4plus",
+    "file": "RealESRGAN_x4plus.pth",
+    "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
+    "license": "BSD-3-Clause",
+    "license_url": "https://raw.githubusercontent.com/xinntao/Real-ESRGAN/master/LICENSE",
+    "commercial": true,
+    "author": "Xintao Wang et al.",
+    "arch": "RRDBNet",
+    "scale": 4
+  },
+  {
+    "id": "realesrgan-x4plus-anime",
+    "file": "RealESRGAN_x4plus_anime_6B.pth",
+    "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
+    "license": "BSD-3-Clause",
+    "license_url": "https://raw.githubusercontent.com/xinntao/Real-ESRGAN/master/LICENSE",
+    "commercial": true,
+    "author": "Xintao Wang et al.",
+    "arch": "RRDBNet",
+    "scale": 4
+  },
+  {
+    "id": "realesrgan-x2plus",
+    "file": "RealESRGAN_x2plus.pth",
+    "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth",
+    "license": "BSD-3-Clause",
+    "license_url": "https://raw.githubusercontent.com/xinntao/Real-ESRGAN/master/LICENSE",
+    "commercial": true,
+    "author": "Xintao Wang et al.",
+    "arch": "RRDBNet",
+    "scale": 2
+  },
+  {
+    "id": "realesr-animevideov3",
+    "file": "realesr-animevideov3.pth",
+    "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth",
+    "license": "BSD-3-Clause",
+    "license_url": "https://raw.githubusercontent.com/xinntao/Real-ESRGAN/master/LICENSE",
+    "commercial": true,
+    "author": "Xintao Wang et al.",
+    "arch": "SRVGGNetCompact",
+    "scale": 4
+  },
+  {
+    "id": "4xNomosUni_span_multijpg",
+    "file": "4xNomosUni_span_multijpg.safetensors",
+    "hf_repo": "Phips/4xNomosUni_span_multijpg",
+    "hf_file": "4xNomosUni_span_multijpg.safetensors",
+    "license": "CC-BY-4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/legalcode.txt",
+    "commercial": true,
+    "author": "Philip Hofmann",
+    "arch": "SPAN",
+    "scale": 4
+  },
+  {
+    "id": "4xRealWebPhoto_v4_dat2",
+    "file": "4xRealWebPhoto_v4_dat2.safetensors",
+    "hf_repo": "Phips/4xRealWebPhoto_v4_dat2",
+    "hf_file": "4xRealWebPhoto_v4_dat2.safetensors",
+    "license": "CC-BY-4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/legalcode.txt",
+    "commercial": true,
+    "author": "Philip Hofmann",
+    "arch": "DAT",
+    "scale": 4
+  },
+  {
+    "id": "4x-UltraSharp",
+    "file": "4x-UltraSharp.pth",
+    "hf_repo": "Kim2091/UltraSharp",
+    "hf_file": "4x-UltraSharp.pth",
+    "license": "CC-BY-NC-SA-4.0",
+    "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.txt",
+    "commercial": false,
+    "author": "Kim2091",
+    "arch": "RRDBNet",
+    "scale": 4
+  },
+  {
+    "id": "4x_foolhardy_Remacri",
+    "file": "4x_foolhardy_Remacri.pth",
+    "url": "https://huggingface.co/FacehugmanIII/4x_foolhardy_Remacri/resolve/main/4x_foolhardy_Remacri.pth",
+    "license": "CC-BY-NC-SA-4.0",
+    "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.txt",
+    "commercial": false,
+    "author": "Foolhardy",
+    "arch": "RRDBNet",
+    "scale": 4
+  }
+]
