@@ -77,7 +77,8 @@ impl CancelToken {
 
 /// Upscales `input` with `model`.
 ///
-/// The alpha channel is upscaled by a second model pass only when some pixel is not fully opaque.
+/// The alpha channel is upscaled by a second model pass only when it is not uniform; a constant alpha
+/// (e.g. fully opaque or fully transparent) is copied exactly.
 /// `tile_size == 0` uses the CPU default here; device-aware defaults are applied by
 /// [`crate::facade::Upscaler::effective_tile`]. Cancellation is checked after every tile.
 pub fn upscale(
@@ -113,7 +114,10 @@ pub fn upscale(
     };
 
     let (rgb, alpha) = Image32::from_rgba(input);
-    let has_alpha = alpha.iter().any(|&a| a != 255);
+    // A uniform alpha plane (fully opaque, fully transparent, or any constant) is copied rather than
+    // inferred: exact, and half the work.
+    let uniform_alpha = alpha.iter().all(|&a| a == alpha[0]).then_some(alpha[0]);
+    let has_alpha = uniform_alpha.is_none();
     let total = per_pass * if has_alpha { 2 } else { 1 };
 
     progress(Progress::Phase(Phase::Upscaling));
@@ -127,11 +131,13 @@ pub fn upscale(
         })
     };
     let rgb_up = pass(&rgb, 0, progress)?;
-    let alpha_up = if has_alpha {
-        let gray = Image32::from_gray_replicated(&alpha, w, h);
-        Some(pass(&gray, per_pass, progress)?.channel0_to_u8())
-    } else {
-        None
+    let alpha_up = match uniform_alpha {
+        Some(255) => None,
+        Some(a) => Some(vec![a; (rgb_up.width * rgb_up.height) as usize]),
+        None => {
+            let gray = Image32::from_gray_replicated(&alpha, w, h);
+            Some(pass(&gray, per_pass, progress)?.channel0_to_u8())
+        }
     };
     let out = rgb_up.to_rgba(alpha_up.as_deref());
 
@@ -216,6 +222,43 @@ mod tests {
         });
         let per_pass = tile_grid(70, 45, 32, 16).unwrap().len() as u32;
         assert_eq!(last, Some((2 * per_pass, 2 * per_pass)));
+    }
+
+    /// Like a real network: nearest 2× plus a small bias, so values are never reproduced exactly.
+    struct BiasedModel;
+
+    impl Model for BiasedModel {
+        fn scale(&self) -> u32 {
+            2
+        }
+
+        fn run(&self, tile: &Image32) -> Result<Image32> {
+            let mut out = NearestModel { scale: 2 }.run(tile)?;
+            out.data.iter_mut().for_each(|v| *v += 3.0 / 255.0);
+            Ok(out)
+        }
+    }
+
+    #[test]
+    fn uniform_alpha_is_copied_not_inferred() {
+        for a in [0u8, 128, 255] {
+            let img = RgbaImage::from_pixel(9, 7, Rgba([1, 2, 3, a]));
+            let mut tiles = 0;
+            let out = upscale(
+                &BiasedModel,
+                &img,
+                &UpscaleOptions::default(),
+                &mut |p| {
+                    if let Progress::Tiles { total, .. } = p {
+                        tiles = total
+                    }
+                },
+                &CancelToken::new(),
+            )
+            .unwrap();
+            assert!(out.pixels().all(|p| p[3] == a), "alpha {a}");
+            assert_eq!(tiles, 1, "alpha {a}: only the RGB pass runs");
+        }
     }
 
     #[test]
