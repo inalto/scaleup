@@ -9,7 +9,7 @@
       "license": "BSD-3-Clause",
       "commercial": true,
       "size_bytes": 4871515,
-      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/realesr-general-x4v3.onnx",
+      "url": "https://github.com/inalto/scaleup/releases/download/models-v1/realesr-general-x4v3.onnx",
       "sha256": "80f93c6395f49263c4f0af64e9c3ca3d4856609d743840ea50c9c3726c4d92e2",
       "tags": [
         "photo",
@@ -26,7 +26,7 @@
       "license": "BSD-3-Clause",
       "commercial": true,
       "size_bytes": 67217709,
-      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/realesrgan-x4plus.onnx",
+      "url": "https://github.com/inalto/scaleup/releases/download/models-v1/realesrgan-x4plus.onnx",
       "sha256": "be8bf6ba9b15295286c77ac5dc4564899cdf6651c03dfe5ef41095da7ff2a512",
       "tags": [
         "photo"
@@ -41,7 +41,7 @@
       "license": "BSD-3-Clause",
       "commercial": true,
       "size_bytes": 17987288,
-      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/realesrgan-x4plus-anime.onnx",
+      "url": "https://github.com/inalto/scaleup/releases/download/models-v1/realesrgan-x4plus-anime.onnx",
       "sha256": "2468974c8affbf766b2ce06c3649a7f35a70f85d9c0dceba41340b86ec535419",
       "tags": [
         "anime"
@@ -56,7 +56,7 @@
       "license": "BSD-3-Clause",
       "commercial": true,
       "size_bytes": 67239192,
-      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/realesrgan-x2plus.onnx",
+      "url": "https://github.com/inalto/scaleup/releases/download/models-v1/realesrgan-x2plus.onnx",
       "sha256": "1d09ed5f28772717ab8b9fa56615802e9b59468de69700967e90c31e13b6fc03",
       "tags": [
         "photo"
@@ -71,7 +71,7 @@
       "license": "BSD-3-Clause",
       "commercial": true,
       "size_bytes": 2495931,
-      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/realesr-animevideov3.onnx",
+      "url": "https://github.com/inalto/scaleup/releases/download/models-v1/realesr-animevideov3.onnx",
       "sha256": "6266bfaabb4a38763bcd11d7f3164648f3076f7089ab9c3b35054d8d6d0d29f0",
       "tags": [
         "anime",
@@ -87,7 +87,7 @@
       "license": "CC-BY-4.0",
       "commercial": true,
       "size_bytes": 1724866,
-      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/4xNomosUni_span_multijpg.onnx",
+      "url": "https://github.com/inalto/scaleup/releases/download/models-v1/4xNomosUni_span_multijpg.onnx",
       "sha256": "584f5cbd54645655993f0665ecb2b6e88c4eb83120a86d70f2d1e1eae22205cc",
       "tags": [
         "photo",
@@ -103,7 +103,7 @@
       "license": "CC-BY-NC-SA-4.0",
       "commercial": false,
       "size_bytes": 67217709,
-      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/4x-UltraSharp.onnx",
+      "url": "https://github.com/inalto/scaleup/releases/download/models-v1/4x-UltraSharp.onnx",
       "sha256": "e5b67389d97e3cc6dfe4252b4ba471c09352f658227e5f283e0847335d533a3c",
       "tags": [
         "photo",
@@ -119,7 +119,7 @@
       "license": "CC-BY-NC-SA-4.0",
       "commercial": false,
       "size_bytes": 67217709,
-      "url": "https://github.com/<OWNER>/scaleup/releases/download/models-v1/4x_foolhardy_Remacri.onnx",
+      "url": "https://github.com/inalto/scaleup/releases/download/models-v1/4x_foolhardy_Remacri.onnx",
       "sha256": "b0bd4ead481c67927e89457e951020d36d766ddbe7070ded8dc8d15cfce245f1",
       "tags": [
         "photo",

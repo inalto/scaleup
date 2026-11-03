@@ -19,7 +19,7 @@ from spandrel import ModelLoader
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = ROOT / "models" / "cache" / "src"
-RELEASE_URL = "https://github.com/<OWNER>/scaleup/releases/download/models-v1/{id}.onnx"
+RELEASE_URL = "https://github.com/inalto/scaleup/releases/download/models-v1/{id}.onnx"
 TOL = 1e-3
 SIZES = [(64, 64), (96, 80)]  # (H, W)
 
