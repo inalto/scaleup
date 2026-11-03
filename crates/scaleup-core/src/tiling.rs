@@ -1,6 +1,7 @@
 //! Tile grid geometry and tiled model execution.
 
-use crate::backend::DeviceKind;
+use crate::backend::{DeviceKind, Model};
+use crate::image32::Image32;
 use crate::{Result, ScaleUpError};
 
 /// Pixel rectangle.
@@ -96,6 +97,93 @@ pub fn auto_tile_size(kind: DeviceKind, free_vram_bytes: Option<u64>) -> u32 {
     } else {
         256
     }
+}
+
+/// Mirror index `i` into `0..n` without repeating the edge pixel (`-1 → 1`, `n → n-2`).
+fn reflect_index(i: i64, n: u32) -> u32 {
+    if n == 1 {
+        return 0;
+    }
+    let period = 2 * (n as i64 - 1);
+    let m = i.rem_euclid(period);
+    (if m < n as i64 { m } else { period - m }) as u32
+}
+
+/// Extracts the `w`×`h` window whose top-left is (`x0`, `y0`) in image coordinates; samples outside
+/// the image are reflected back in.
+fn window_reflect(img: &Image32, x0: i64, y0: i64, w: u32, h: u32) -> Image32 {
+    let mut out = Image32::new(w, h);
+    let xs: Vec<u32> = (0..w)
+        .map(|x| reflect_index(x0 + x as i64, img.width))
+        .collect();
+    for c in 0..3 {
+        for y in 0..h {
+            let sy = reflect_index(y0 + y as i64, img.height);
+            for (x, &sx) in xs.iter().enumerate() {
+                out.set(c, x as u32, y, img.get(c, sx, sy));
+            }
+        }
+    }
+    out
+}
+
+/// Pads `img` by reflection (edge pixel not repeated). Pads larger than the image fold back and forth.
+pub fn reflect_pad(img: &Image32, left: u32, top: u32, right: u32, bottom: u32) -> Image32 {
+    window_reflect(
+        img,
+        -(left as i64),
+        -(top as i64),
+        img.width + left + right,
+        img.height + top + bottom,
+    )
+}
+
+/// Runs `model` over `img` tile by tile and stitches the result.
+///
+/// Every tile is fed as its keep rect plus `overlap` on each side, reflect-padded where it crosses the
+/// image border, so the model always sees full context. An image that fits in one tile is processed
+/// whole, reflect-padded on the right/bottom to a multiple of 4. `on_tile(done, total)` is called
+/// after each tile; returning `false` aborts with [`ScaleUpError::Cancelled`].
+pub fn run_tiled(
+    model: &dyn Model,
+    img: &Image32,
+    tile: u32,
+    overlap: u32,
+    on_tile: &mut dyn FnMut(u32, u32) -> bool,
+) -> Result<Image32> {
+    let jobs = tile_grid(img.width, img.height, tile, overlap)?;
+    let overlap = effective_overlap(tile, overlap);
+    let s = model.scale();
+    let total = jobs.len() as u32;
+    let mut out = Image32::new(img.width * s, img.height * s);
+    let single = total == 1;
+    for (n, job) in jobs.iter().enumerate() {
+        let kx = job.input.x + job.keep.x;
+        let ky = job.input.y + job.keep.y;
+        let (pad, w, h) = if single {
+            (
+                0,
+                img.width.next_multiple_of(4),
+                img.height.next_multiple_of(4),
+            )
+        } else {
+            (overlap, job.keep.w + 2 * overlap, job.keep.h + 2 * overlap)
+        };
+        let input = window_reflect(img, kx as i64 - pad as i64, ky as i64 - pad as i64, w, h);
+        let result = model.run(&input)?;
+        if result.width != w * s || result.height != h * s {
+            return Err(ScaleUpError::Model(format!(
+                "model returned {}x{} for a {w}x{h} tile at scale {s}",
+                result.width, result.height
+            )));
+        }
+        let kept = result.crop(pad * s, pad * s, job.keep.w * s, job.keep.h * s);
+        out.paste(&kept, kx * s, ky * s);
+        if !on_tile(n as u32 + 1, total) {
+            return Err(ScaleUpError::Cancelled);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -195,5 +283,87 @@ mod tests {
         assert_eq!(auto_tile_size(DeviceKind::DirectMl, Some(6 * GIB)), 512);
         assert_eq!(auto_tile_size(DeviceKind::Cpu, Some(64 * GIB)), 128);
         assert_eq!(auto_tile_size(DeviceKind::Cpu, None), 128);
+    }
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+    use crate::backend::Model;
+    use crate::backend::fake::NearestModel;
+    use crate::image32::Image32;
+
+    fn ramp(w: u32, h: u32) -> Image32 {
+        let mut img = Image32::new(w, h);
+        for c in 0..3 {
+            for y in 0..h {
+                for x in 0..w {
+                    let v = ((x * 7 + y * 13 + c as u32 * 31) % 256) as f32 / 255.0;
+                    img.set(c, x, y, v);
+                }
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn tiled_equals_untiled_nearest() {
+        let model = NearestModel { scale: 2 };
+        for &(w, h, tile, overlap) in &[
+            (5, 3, 64, 8),
+            (33, 31, 64, 8),
+            (300, 217, 64, 8),
+            (1000, 733, 256, 16),
+        ] {
+            let img = ramp(w, h);
+            let tiled = run_tiled(&model, &img, tile, overlap, &mut |_, _| true).unwrap();
+            assert_eq!(tiled, model.run(&img).unwrap(), "{w}x{h} tile {tile}");
+        }
+    }
+
+    #[test]
+    fn reflect_pad_values() {
+        let mut row = Image32::new(3, 1);
+        for (x, v) in [0.1f32, 0.2, 0.3].into_iter().enumerate() {
+            row.set(0, x as u32, 0, v);
+        }
+        let padded = reflect_pad(&row, 2, 0, 0, 0);
+        let got: Vec<f32> = (0..5).map(|x| padded.get(0, x, 0)).collect();
+        assert_eq!(got, vec![0.3, 0.2, 0.1, 0.2, 0.3]);
+        let both = reflect_pad(&row, 1, 1, 2, 0);
+        assert_eq!((both.width, both.height), (6, 2));
+        assert_eq!(both.get(0, 5, 1), 0.1);
+        // A 1-pixel-wide image reflects onto itself.
+        let one = reflect_pad(&Image32::new(1, 1), 3, 3, 3, 3);
+        assert_eq!((one.width, one.height), (7, 7));
+    }
+
+    #[test]
+    fn cancel_stops_early() {
+        let model = NearestModel { scale: 2 };
+        let img = ramp(300, 217);
+        let mut calls = 0;
+        let res = run_tiled(&model, &img, 64, 8, &mut |done, total| {
+            calls += 1;
+            assert!(done < total);
+            false
+        });
+        assert!(matches!(res, Err(ScaleUpError::Cancelled)));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn progress_counts_every_tile() {
+        let model = NearestModel { scale: 2 };
+        let img = ramp(300, 217);
+        let total_jobs = tile_grid(300, 217, 64, 8).unwrap().len() as u32;
+        let mut seen = Vec::new();
+        run_tiled(&model, &img, 64, 8, &mut |d, t| {
+            seen.push((d, t));
+            true
+        })
+        .unwrap();
+        assert_eq!(seen.len() as u32, total_jobs);
+        assert_eq!(*seen.last().unwrap(), (total_jobs, total_jobs));
     }
 }
