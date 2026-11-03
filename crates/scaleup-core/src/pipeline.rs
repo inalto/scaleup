@@ -3,12 +3,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use image::RgbaImage;
+use image::{Rgba, RgbaImage};
 
 use crate::backend::{DeviceKind, Model};
 use crate::image32::Image32;
 use crate::resize::{resize_rgba, target_size};
-use crate::tiling::{auto_tile_size, run_tiled, tile_grid};
+use crate::tiling::{auto_tile_size, run_tiled_into, tile_grid};
 use crate::tta::TtaModel;
 use crate::{Result, ScaleUpError};
 
@@ -75,6 +75,10 @@ impl CancelToken {
     }
 }
 
+fn to_u8(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 /// Upscales `input` with `model`.
 ///
 /// The alpha channel is upscaled by a second model pass only when it is not uniform; a constant alpha
@@ -121,25 +125,40 @@ pub fn upscale(
     let total = per_pass * if has_alpha { 2 } else { 1 };
 
     progress(Progress::Phase(Phase::Upscaling));
-    let pass = |img: &Image32, offset: u32, progress: &mut dyn FnMut(Progress)| {
-        run_tiled(model, img, tile, opts.tile_overlap, &mut |done, _| {
+    // Tiles are written straight into the 8-bit output, so peak memory is the output plus one tile.
+    let s = model.scale();
+    let mut out =
+        RgbaImage::from_pixel(w * s, h * s, Rgba([0, 0, 0, uniform_alpha.unwrap_or(255)]));
+    let mut pass = |img: &Image32,
+                    offset: u32,
+                    channels: std::ops::Range<usize>,
+                    progress: &mut dyn FnMut(Progress)| {
+        let mut on_tile = |done, _| {
             progress(Progress::Tiles {
                 done: offset + done,
                 total,
             });
             !cancel.is_cancelled()
-        })
+        };
+        // Output channel `c` comes from tile channel `c` (RGB) or from channel 0 (alpha → byte 3).
+        let mut sink = |t: &Image32, x0: u32, y0: u32| {
+            for y in 0..t.height {
+                for x in 0..t.width {
+                    let px = out.get_pixel_mut(x0 + x, y0 + y);
+                    for c in channels.clone() {
+                        let src = if c == 3 { 0 } else { c };
+                        px[c] = to_u8(t.get(src, x, y));
+                    }
+                }
+            }
+        };
+        run_tiled_into(model, img, tile, opts.tile_overlap, &mut on_tile, &mut sink)
     };
-    let rgb_up = pass(&rgb, 0, progress)?;
-    let alpha_up = match uniform_alpha {
-        Some(255) => None,
-        Some(a) => Some(vec![a; (rgb_up.width * rgb_up.height) as usize]),
-        None => {
-            let gray = Image32::from_gray_replicated(&alpha, w, h);
-            Some(pass(&gray, per_pass, progress)?.channel0_to_u8())
-        }
-    };
-    let out = rgb_up.to_rgba(alpha_up.as_deref());
+    pass(&rgb, 0, 0..3, progress)?;
+    if has_alpha {
+        let gray = Image32::from_gray_replicated(&alpha, w, h);
+        pass(&gray, per_pass, 3..4, progress)?;
+    }
 
     if out.dimensions() == target {
         return Ok(out);

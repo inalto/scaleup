@@ -152,12 +152,29 @@ pub fn run_tiled(
     overlap: u32,
     on_tile: &mut dyn FnMut(u32, u32) -> bool,
 ) -> Result<Image32> {
+    let s = model.scale();
+    let mut out = Image32::new(img.width * s, img.height * s);
+    run_tiled_into(model, img, tile, overlap, on_tile, &mut |kept, x, y| {
+        out.paste(kept, x, y)
+    })?;
+    Ok(out)
+}
+
+/// Like [`run_tiled`] but hands each finished output tile to `sink(tile, x, y)` (output coordinates)
+/// instead of stitching a full-size float image, so callers can write straight into their own buffer.
+pub fn run_tiled_into(
+    model: &dyn Model,
+    img: &Image32,
+    tile: u32,
+    overlap: u32,
+    on_tile: &mut dyn FnMut(u32, u32) -> bool,
+    sink: &mut dyn FnMut(&Image32, u32, u32),
+) -> Result<()> {
     let jobs = tile_grid(img.width, img.height, tile, overlap)?;
     let overlap = effective_overlap(tile, overlap);
     let s = model.scale();
     let multiple = model.input_multiple().max(1);
     let total = jobs.len() as u32;
-    let mut out = Image32::new(img.width * s, img.height * s);
     let single = total == 1;
     for (n, job) in jobs.iter().enumerate() {
         let kx = job.input.x + job.keep.x;
@@ -175,12 +192,12 @@ pub fn run_tiled(
             )));
         }
         let kept = result.crop(pad * s, pad * s, job.keep.w * s, job.keep.h * s);
-        out.paste(&kept, kx * s, ky * s);
+        sink(&kept, kx * s, ky * s);
         if !on_tile(n as u32 + 1, total) {
             return Err(ScaleUpError::Cancelled);
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]
