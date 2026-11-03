@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use scaleup_core::Registry;
 
+use crate::paste;
 use crate::state::Mode;
 use crate::state::{AppState, Settings, Status, apply_event, mode_from_path};
 use crate::ui::compare::CompareView;
@@ -113,6 +114,36 @@ impl App {
         }
     }
 
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
+        let (open, start, stop, paste) = ctx.input_mut(|i| {
+            (
+                i.consume_key(Modifiers::COMMAND, Key::O),
+                i.consume_key(Modifiers::COMMAND, Key::Enter),
+                i.consume_key(Modifiers::NONE, Key::Escape),
+                i.events.iter().any(paste::is_paste_key_release),
+            )
+        });
+        if open && let Some(p) = sidebar::pick_image() {
+            self.select(&p);
+        }
+        if start {
+            self.start();
+        }
+        if stop && self.state.status.is_running() {
+            self.state.request_stop();
+            self.send(UiMsg::Stop);
+        }
+        if paste && !self.state.status.is_running() {
+            match paste::paste_from_clipboard() {
+                Some(Ok(path)) => self.select(&path),
+                Some(Err(e)) => self.toasts.push(Toast::error(e)),
+                // Text or nothing on the clipboard: an ordinary paste, not for us.
+                None => {}
+            }
+        }
+    }
+
     fn open_output_folder(&mut self) {
         let Status::Done(path) = &self.state.status else {
             return;
@@ -129,6 +160,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.drain_events(&ctx);
+        self.handle_shortcuts(&ctx);
 
         let dropped = ctx.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.clone()));
         if let Some(path) = dropped {
@@ -146,6 +178,22 @@ impl eframe::App for App {
         });
         if open_folder {
             self.open_output_folder();
+        }
+
+        if self.log_open {
+            egui::Panel::bottom("log")
+                .resizable(true)
+                .default_size(140.0)
+                .show_inside(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .stick_to_bottom(true)
+                        .auto_shrink(false)
+                        .show(ui, |ui| {
+                            for line in &self.state.log {
+                                ui.monospace(line);
+                            }
+                        });
+                });
         }
 
         let entries = self.registry.entries().to_vec();

@@ -32,6 +32,16 @@ pub fn elide_middle(s: &str, max: usize) -> String {
         .collect()
 }
 
+/// The native "open image" dialog.
+pub fn pick_image() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .add_filter(
+            "Images",
+            &["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"],
+        )
+        .pick_file()
+}
+
 fn nc_badge(ui: &mut egui::Ui) {
     ui.label(
         egui::RichText::new(" NC ")
@@ -256,12 +266,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) -> Sid
             ui.add_enabled_ui(!running, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("Select Image").clicked()
-                        && let Some(p) = rfd::FileDialog::new()
-                            .add_filter(
-                                "Images",
-                                &["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"],
-                            )
-                            .pick_file()
+                        && let Some(p) = pick_image()
                     {
                         out.picked = Some(p);
                     }

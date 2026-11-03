@@ -3811,6 +3811,7 @@ dependencies = [
 name = "scaleup-app"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "eframe",
  "image",
  "open",

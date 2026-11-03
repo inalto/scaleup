@@ -127,8 +127,19 @@ pub fn mode_from_path(p: &Path) -> Option<Mode> {
     }
 }
 
+/// Lines kept in the log panel.
+const MAX_LOG_LINES: usize = 1000;
+
 /// Folds one worker event into the state; the returned toast, if any, is for the user to see.
 pub fn apply_event(state: &mut AppState, ev: WorkerEvent) -> Option<Toast> {
+    let toast = reduce(state, ev);
+    if state.log.len() > MAX_LOG_LINES {
+        state.log.drain(..state.log.len() - MAX_LOG_LINES);
+    }
+    toast
+}
+
+fn reduce(state: &mut AppState, ev: WorkerEvent) -> Option<Toast> {
     match ev {
         WorkerEvent::Device(name) => state.device_name = name,
         WorkerEvent::Devices(devices) => state.devices = devices,
@@ -347,6 +358,16 @@ mod tests {
         let toast = apply_event(&mut st, WorkerEvent::ModelDownloaded("m".into())).unwrap();
         assert_eq!(st.status, Status::Idle);
         assert_eq!(toast.kind, ToastKind::Success);
+    }
+
+    #[test]
+    fn log_is_capped() {
+        let mut st = AppState::default();
+        for i in 0..MAX_LOG_LINES + 5 {
+            apply_event(&mut st, WorkerEvent::Log(i.to_string()));
+        }
+        assert_eq!(st.log.len(), MAX_LOG_LINES);
+        assert_eq!(st.log[0], "5");
     }
 
     #[test]

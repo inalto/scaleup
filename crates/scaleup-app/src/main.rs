@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod app;
+mod paste;
 mod state;
 mod ui;
 mod worker;
