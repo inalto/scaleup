@@ -85,6 +85,16 @@ pub(crate) struct Opened {
 
 /// Opens the adapter for `pref` with the largest buffers it allows.
 pub(crate) fn open(pref: DevicePreference) -> Result<Opened> {
+    open_impl(pref, None)
+}
+
+/// Opens the adapter for `pref` restricted to `limits`.
+#[cfg(test)]
+pub(crate) fn open_with_limits(pref: DevicePreference, limits: wgpu::Limits) -> Result<Opened> {
+    open_impl(pref, Some(limits))
+}
+
+fn open_impl(pref: DevicePreference, limits: Option<wgpu::Limits>) -> Result<Opened> {
     let adapters = usable_adapters();
     let hardware = |a: &&wgpu::Adapter| !is_software(&a.get_info());
     let chosen = match pref {
@@ -104,7 +114,7 @@ pub(crate) fn open(pref: DevicePreference) -> Result<Opened> {
         .position(|a| std::ptr::eq(a, adapter))
         .expect("chosen from this list") as u32;
     let info = device_info(index, &adapter.get_info());
-    let limits = adapter.limits();
+    let limits = limits.unwrap_or_else(|| adapter.limits());
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("scaleup"),
         required_limits: limits.clone(),

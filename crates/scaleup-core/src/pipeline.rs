@@ -12,6 +12,18 @@ use crate::tiling::{auto_tile_size, run_tiled_into, tile_grid};
 use crate::tta::TtaModel;
 use crate::{Result, ScaleUpError};
 
+/// `tile`, shrunk so that a tile with its overlap, padded to the input multiple, fits the model.
+/// Overlap is capped at a quarter tile, so two thirds of the limit always fits.
+fn fit_tile(tile: u32, overlap: u32, model: &dyn Model) -> u32 {
+    let Some(max) = model.max_input_side() else {
+        return tile;
+    };
+    let room = max
+        .saturating_sub(model.input_multiple())
+        .saturating_sub(2 * overlap);
+    tile.min(room.max(max * 2 / 3 / model.input_multiple().max(1) * model.input_multiple().max(1)))
+}
+
 /// Knobs for one upscale.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpscaleOptions {
@@ -104,6 +116,7 @@ pub fn upscale(
     } else {
         opts.tile_size
     };
+    let tile = fit_tile(tile, opts.tile_overlap, model);
     let per_pass = tile_grid(w, h, tile, opts.tile_overlap)?.len() as u32;
     if cancel.is_cancelled() {
         return Err(ScaleUpError::Cancelled);
@@ -170,6 +183,51 @@ pub fn upscale(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Refuses inputs above a side limit, as a GPU model with bounded buffers does.
+    struct LimitedModel {
+        max: u32,
+    }
+
+    impl Model for LimitedModel {
+        fn scale(&self) -> u32 {
+            2
+        }
+
+        fn max_input_side(&self) -> Option<u32> {
+            Some(self.max)
+        }
+
+        fn run(&self, tile: &Image32) -> Result<Image32> {
+            assert!(
+                tile.width <= self.max && tile.height <= self.max,
+                "{}x{} exceeds {}",
+                tile.width,
+                tile.height,
+                self.max
+            );
+            crate::backend::fake::NearestModel { scale: 2 }.run(tile)
+        }
+    }
+
+    #[test]
+    fn tile_shrinks_to_fit_the_model_limit() {
+        let img = RgbaImage::from_pixel(300, 200, Rgba([9, 8, 7, 255]));
+        let opts = UpscaleOptions {
+            tile_size: 256,
+            ..UpscaleOptions::default()
+        };
+        let out = upscale(
+            &LimitedModel { max: 64 },
+            &img,
+            &opts,
+            &mut |_| {},
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert_eq!(out.dimensions(), (600, 400));
+        assert_eq!(out.get_pixel(599, 399).0, [9, 8, 7, 255]);
+    }
     use crate::ScaleUpError;
     use crate::backend::fake::NearestModel;
     use crate::tiling::tile_grid;

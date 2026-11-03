@@ -3860,6 +3860,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "half",
+ "image",
  "pollster",
  "scaleup-core",
  "tempfile",

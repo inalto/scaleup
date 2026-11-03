@@ -65,6 +65,10 @@ impl Model for TtaModel<'_> {
         self.inner.input_multiple()
     }
 
+    fn max_input_side(&self) -> Option<u32> {
+        self.inner.max_input_side()
+    }
+
     fn run(&self, tile: &Image32) -> Result<Image32> {
         let mut sum: Option<Image32> = None;
         for k in 0..8 {

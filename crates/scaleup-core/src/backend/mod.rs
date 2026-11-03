@@ -70,6 +70,10 @@ pub trait Model: Send + Sync {
     fn input_multiple(&self) -> u32 {
         4
     }
+    /// The largest input side this model can process, when something limits it. Tiles shrink to fit.
+    fn max_input_side(&self) -> Option<u32> {
+        None
+    }
     /// Output dimensions are input dimensions × [`Model::scale`].
     fn run(&self, tile: &Image32) -> Result<Image32>;
 }
