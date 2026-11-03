@@ -99,13 +99,15 @@ fn open_impl(pref: DevicePreference, limits: Option<wgpu::Limits>) -> Result<Ope
     let hardware = |a: &&wgpu::Adapter| !is_software(&a.get_info());
     let chosen = match pref {
         DevicePreference::Auto => adapters.iter().find(hardware).or(adapters.first()),
-        DevicePreference::Gpu(i) => adapters.get(i as usize),
+        DevicePreference::Gpu(i) | DevicePreference::Vulkan(i) => adapters.get(i as usize),
         DevicePreference::Cpu => adapters.iter().find(|a| is_software(&a.get_info())),
     };
     let Some(adapter) = chosen else {
         return Err(ScaleUpError::Backend(match pref {
             DevicePreference::Cpu => "no software GPU adapter on this machine".into(),
-            DevicePreference::Gpu(i) => format!("no GPU adapter with index {i}"),
+            DevicePreference::Gpu(i) | DevicePreference::Vulkan(i) => {
+                format!("no GPU adapter with index {i}")
+            }
             DevicePreference::Auto => "no GPU adapter on this machine".into(),
         }));
     };

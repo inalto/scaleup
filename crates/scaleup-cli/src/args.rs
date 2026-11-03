@@ -43,6 +43,8 @@ pub enum ModelsCmd {
     Download { id: String },
     /// Print where the model file lives (or would live)
     Path { id: String },
+    /// Copy a folder of ncnn .param/.bin pairs into the models folder and list them
+    Import { dir: PathBuf },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -138,6 +140,7 @@ mod tests {
         assert_eq!(parse_gpu("CPU"), Ok(DevicePreference::Cpu));
         assert_eq!(parse_gpu("0"), Ok(DevicePreference::Gpu(0)));
         assert_eq!(parse_gpu("9"), Ok(DevicePreference::Gpu(9)));
+        assert_eq!(parse_gpu("vk:1"), Ok(DevicePreference::Vulkan(1)));
         assert!(parse_gpu("10").is_err());
         assert!(parse_gpu("bogus").is_err());
         assert!(parse_gpu("").is_err());

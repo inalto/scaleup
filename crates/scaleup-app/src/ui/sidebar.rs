@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
-use scaleup_core::{DeviceInfo, ModelEntry};
+use scaleup_core::{DeviceInfo, DeviceKind, ModelEntry};
 
 use crate::state::{AppState, Mode};
 
@@ -166,7 +166,11 @@ fn gpu_label(gpu: &str, devices: &[DeviceInfo]) -> String {
 
 /// The settings value that selects device `d`.
 fn gpu_value(d: &DeviceInfo) -> String {
-    d.index.to_string()
+    if d.kind == DeviceKind::Vulkan {
+        format!("vk:{}", d.index)
+    } else {
+        d.index.to_string()
+    }
 }
 
 fn advanced(ui: &mut egui::Ui, st: &mut AppState, out: &mut SidebarOutput) {
@@ -307,6 +311,17 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) -> Sid
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_value_uses_the_vk_prefix_for_vulkan_devices() {
+        let d = |kind, index| DeviceInfo {
+            kind,
+            index,
+            name: "x".into(),
+        };
+        assert_eq!(gpu_value(&d(DeviceKind::Vulkan, 1)), "vk:1");
+        assert_eq!(gpu_value(&d(DeviceKind::DirectMl, 0)), "0");
+    }
 
     #[test]
     fn elide_middle_keeps_both_ends() {

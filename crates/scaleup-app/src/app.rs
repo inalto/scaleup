@@ -245,7 +245,7 @@ impl eframe::App for App {
                 self.send(UiMsg::Download(id));
             }
             Some(DialogAction::Delete(id)) => {
-                if let Err(e) = std::fs::remove_file(self.registry.local_path(&id)) {
+                if let Err(e) = self.registry.delete_local(&id) {
                     self.toasts
                         .push(Toast::error(format!("Cannot delete {id}: {e}")));
                 }

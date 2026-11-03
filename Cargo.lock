@@ -3817,6 +3817,7 @@ dependencies = [
  "open",
  "rfd",
  "scaleup-core",
+ "scaleup-wgpu",
  "serde",
  "serde_json",
  "tempfile",
@@ -3833,6 +3834,7 @@ dependencies = [
  "predicates",
  "rayon",
  "scaleup-core",
+ "scaleup-wgpu",
  "serde_json",
  "tempfile",
 ]

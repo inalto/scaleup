@@ -1,5 +1,6 @@
 //! Model catalogue (`models/manifest.json`, embedded) and verified model downloads.
 
+use crate::backend::is_ncnn_model;
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -15,6 +16,21 @@ const BUILTIN_MANIFEST: &str = include_str!("../../../models/manifest.json");
 
 fn default_format() -> String {
     "onnx".into()
+}
+
+const NCNN_FORMAT: &str = "ncnn";
+/// Models imported by the user, in the models folder, in manifest format.
+const LOCAL_OVERLAY: &str = "local.json";
+
+/// The entries of `<dir>/local.json`. A missing file is normal; an unreadable one is not fatal.
+fn read_overlay(dir: &Path) -> Vec<ModelEntry> {
+    let Ok(text) = fs::read_to_string(dir.join(LOCAL_OVERLAY)) else {
+        return Vec::new();
+    };
+    parse_manifest(&text).unwrap_or_else(|e| {
+        tracing::warn!("ignoring {}: {e}", dir.join(LOCAL_OVERLAY).display());
+        Vec::new()
+    })
 }
 
 /// One model in the catalogue.
@@ -35,7 +51,7 @@ pub struct ModelEntry {
     pub tags: Vec<String>,
     #[serde(default)]
     pub notes: String,
-    /// File format; only `"onnx"` in v1.
+    /// File format: `"onnx"`, or `"ncnn"` for `.param`/`.bin` pairs.
     #[serde(default = "default_format")]
     pub format: String,
 }
@@ -90,7 +106,12 @@ impl Registry {
 
     /// Embedded catalogue, custom models directory.
     pub fn with_dir(dir: PathBuf) -> Self {
-        let entries = parse_manifest(BUILTIN_MANIFEST).expect("embedded manifest is valid");
+        let mut entries = parse_manifest(BUILTIN_MANIFEST).expect("embedded manifest is valid");
+        for local in read_overlay(&dir) {
+            if !entries.iter().any(|e| e.id == local.id) {
+                entries.push(local);
+            }
+        }
         Self::from_entries(entries, dir)
     }
 
@@ -109,6 +130,68 @@ impl Registry {
         self
     }
 
+    /// Copies every `.param`/`.bin` pair in `dir` into the models folder and lists them in the local
+    /// overlay. Returns the imported ids. The license of an imported model is not known here, so it
+    /// is marked non-commercial until its owner says otherwise.
+    pub fn import_ncnn(&mut self, dir: &Path) -> Result<Vec<String>> {
+        fs::create_dir_all(&self.models_dir)?;
+        let mut files: Vec<PathBuf> = fs::read_dir(dir)?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| is_ncnn_model(p) && p.with_extension("bin").is_file())
+            .collect();
+        files.sort();
+        let mut overlay = read_overlay(&self.models_dir);
+        let mut ids = Vec::new();
+        for param in files {
+            let Some(id) = param.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            let builtin = self.get(&id).is_some_and(|e| e.format != NCNN_FORMAT);
+            if builtin {
+                continue;
+            }
+            let bin = param.with_extension("bin");
+            fs::copy(&param, self.models_dir.join(format!("{id}.param")))?;
+            fs::copy(&bin, self.models_dir.join(format!("{id}.bin")))?;
+            let entry = ModelEntry {
+                id: id.clone(),
+                name: id.clone(),
+                arch: "ncnn".into(),
+                scale: scale_from_name(&id),
+                license: "unknown".into(),
+                commercial: false,
+                size_bytes: fs::metadata(&bin)?.len(),
+                url: String::new(),
+                sha256: String::new(),
+                tags: Vec::new(),
+                notes: format!("imported from {}", dir.display()),
+                format: NCNN_FORMAT.into(),
+            };
+            overlay.retain(|e| e.id != id);
+            overlay.push(entry.clone());
+            self.entries.retain(|e| e.id != id);
+            self.entries.push(entry);
+            ids.push(id);
+        }
+        let json = serde_json::json!({ "version": 1, "models": overlay });
+        fs::write(self.models_dir.join(LOCAL_OVERLAY), json.to_string())?;
+        Ok(ids)
+    }
+
+    /// Removes the local files of catalogue model `id`.
+    pub fn delete_local(&self, id: &str) -> Result<()> {
+        let path = self.local_path(id);
+        fs::remove_file(&path)?;
+        if is_ncnn_model(&path) {
+            match fs::remove_file(path.with_extension("bin")) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     pub fn entries(&self) -> &[ModelEntry] {
         &self.entries
     }
@@ -121,9 +204,13 @@ impl Registry {
         self.entries.iter().find(|e| e.id == id)
     }
 
-    /// `<models_dir>/<id>.onnx`.
+    /// `<models_dir>/<id>.onnx`, or `<id>.param` for an ncnn model (its `.bin` sits next to it).
     pub fn local_path(&self, id: &str) -> PathBuf {
-        self.models_dir.join(format!("{id}.onnx"))
+        let ext = match self.get(id) {
+            Some(e) if e.format == NCNN_FORMAT => "param",
+            _ => "onnx",
+        };
+        self.models_dir.join(format!("{id}.{ext}"))
     }
 
     pub fn is_downloaded(&self, id: &str) -> bool {
@@ -264,6 +351,93 @@ pub fn scale_from_name(name: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_pair(dir: &Path, name: &str) {
+        std::fs::write(dir.join(format!("{name}.param")), b"7767517").unwrap();
+        std::fs::write(dir.join(format!("{name}.bin")), b"weights").unwrap();
+    }
+
+    #[test]
+    fn resolve_param_path() {
+        let d = tempfile::tempdir().unwrap();
+        write_pair(d.path(), "m");
+        let reg = Registry::with_dir(d.path().join("models"));
+        let path = d.path().join("m.param");
+        let resolved = reg.resolve(path.to_str().unwrap()).unwrap();
+        assert_eq!(resolved.path, path);
+        assert_eq!(resolved.entry, None);
+    }
+
+    #[test]
+    fn local_overlay_lists_imported_models() {
+        let src = tempfile::tempdir().unwrap();
+        write_pair(src.path(), "my-model-2x");
+        write_pair(src.path(), "other-4x");
+        std::fs::write(src.path().join("lonely.param"), b"no bin next to me").unwrap();
+        let models = tempfile::tempdir().unwrap();
+        let mut reg = Registry::with_dir(models.path().to_path_buf());
+        let before = reg.entries().len();
+        let mut ids = reg.import_ncnn(src.path()).unwrap();
+        ids.sort();
+        assert_eq!(ids, ["my-model-2x", "other-4x"]);
+        assert_eq!(reg.entries().len(), before + 2);
+
+        // A fresh registry sees them too, without any download.
+        let reg = Registry::with_dir(models.path().to_path_buf());
+        let e = reg.get("my-model-2x").expect("listed from the overlay");
+        assert_eq!(e.format, "ncnn");
+        assert_eq!(e.scale, 2);
+        assert!(
+            !e.commercial,
+            "license unknown means not free for commercial use"
+        );
+        assert_eq!(
+            reg.local_path("my-model-2x"),
+            models.path().join("my-model-2x.param")
+        );
+        assert!(reg.is_downloaded("my-model-2x"));
+        assert!(models.path().join("my-model-2x.bin").is_file());
+        assert_eq!(
+            reg.ensure("my-model-2x", &mut |_, _| {}).unwrap(),
+            models.path().join("my-model-2x.param")
+        );
+    }
+
+    #[test]
+    fn import_twice_does_not_duplicate_and_keeps_builtin_ids() {
+        let src = tempfile::tempdir().unwrap();
+        write_pair(src.path(), "m");
+        write_pair(src.path(), "realesr-general-x4v3");
+        let models = tempfile::tempdir().unwrap();
+        let mut reg = Registry::with_dir(models.path().to_path_buf());
+        let ids = reg.import_ncnn(src.path()).unwrap();
+        assert_eq!(ids, ["m"], "a catalogue id is not replaced");
+        let count = reg.entries().len();
+        reg.import_ncnn(src.path()).unwrap();
+        assert_eq!(reg.entries().len(), count);
+        let reg = Registry::with_dir(models.path().to_path_buf());
+        assert_eq!(reg.entries().len(), count);
+    }
+
+    #[test]
+    fn delete_local_removes_both_ncnn_files() {
+        let src = tempfile::tempdir().unwrap();
+        write_pair(src.path(), "m");
+        let models = tempfile::tempdir().unwrap();
+        let mut reg = Registry::with_dir(models.path().to_path_buf());
+        reg.import_ncnn(src.path()).unwrap();
+        reg.delete_local("m").unwrap();
+        assert!(!reg.is_downloaded("m"));
+        assert!(!models.path().join("m.bin").exists());
+    }
+
+    #[test]
+    fn corrupt_overlay_is_ignored() {
+        let models = tempfile::tempdir().unwrap();
+        std::fs::write(models.path().join("local.json"), b"{nope").unwrap();
+        let reg = Registry::with_dir(models.path().to_path_buf());
+        assert!(!reg.entries().is_empty());
+    }
     use crate::ScaleUpError;
     use sha2::{Digest, Sha256};
     use std::io::{Read, Write};

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 scaleup-core = { path = "../scaleup-core" }
+scaleup-wgpu = { path = "../scaleup-wgpu" }
 eframe = { version = "0.34", features = ["default", "persistence", "wgpu"] }
 rfd = "0.15"
 open = "5"

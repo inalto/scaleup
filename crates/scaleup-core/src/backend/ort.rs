@@ -156,6 +156,11 @@ impl OrtBackend {
         environment()?;
         let device = match pref {
             DevicePreference::Cpu => cpu_device(),
+            DevicePreference::Vulkan(_) => {
+                return Err(ScaleUpError::InvalidOption(
+                    "ONNX Runtime has no Vulkan device; vk:<n> needs the wgpu backend".into(),
+                ));
+            }
             DevicePreference::Auto | DevicePreference::Gpu(_) => {
                 let index = if let DevicePreference::Gpu(i) = pref {
                     i

@@ -56,7 +56,7 @@ fn yes_no(b: bool) -> &'static str {
 }
 
 pub fn run_models(cmd: &ModelsCmd, cancel: &CancelToken) -> Result<i32, ScaleUpError> {
-    let reg = registry_for(None);
+    let mut reg = registry_for(None);
     match cmd {
         ModelsCmd::List => {
             let head = ["ID", "SCALE", "LICENSE", "COMMERCIAL", "DOWNLOADED"].map(String::from);
@@ -119,6 +119,11 @@ pub fn run_models(cmd: &ModelsCmd, cancel: &CancelToken) -> Result<i32, ScaleUpE
                 cancel,
             )?;
             println!("{}", path.display());
+        }
+        ModelsCmd::Import { dir } => {
+            for id in reg.import_ncnn(dir)? {
+                println!("{id}");
+            }
         }
         ModelsCmd::Path { id } => {
             reg.get(id).ok_or_else(|| unknown(id))?;

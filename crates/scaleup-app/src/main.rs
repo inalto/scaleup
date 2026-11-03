@@ -22,6 +22,7 @@ fn icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result {
+    scaleup_wgpu::register();
     // An image or folder on the command line is selected at startup (file associations, scripts).
     let initial = std::env::args_os().nth(1).map(std::path::PathBuf::from);
     let options = eframe::NativeOptions {

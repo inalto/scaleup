@@ -16,7 +16,8 @@ pub mod tiling;
 pub mod tta;
 
 pub use backend::{
-    Backend, DeviceInfo, DeviceKind, DevicePreference, Model, create_backend, list_devices,
+    Backend, DeviceInfo, DeviceKind, DevicePreference, ExtraBackend, Model, create_backend,
+    list_devices, register_extra_backend,
 };
 pub use error::{Result, ScaleUpError};
 pub use facade::{FileJob, Upscaler};

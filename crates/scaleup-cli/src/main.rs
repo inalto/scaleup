@@ -15,6 +15,7 @@ use report::Reporter;
 use upscale::{EXIT_CANCELLED, EXIT_USAGE, exit_code_for};
 
 fn main() {
+    scaleup_wgpu::register();
     let mut cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {

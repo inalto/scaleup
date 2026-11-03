@@ -388,12 +388,13 @@ impl Worker {
             )?;
         }
         let model = upscaler.load(model_id, &mut |_, _| {})?;
+        let device = upscaler.active_device().name;
         self.emit(WorkerEvent::Log(format!(
-            "model {model_id} ({}x) on {}, automatic tile size {}",
+            "model {model_id} ({}x) on {device}, automatic tile size {}",
             model.scale(),
-            upscaler.device().name,
             upscaler.effective_tile(0)
         )));
+        self.emit(WorkerEvent::Device(device));
         self.model = Some((model_id.to_string(), model));
         Ok(())
     }

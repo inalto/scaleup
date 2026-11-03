@@ -161,6 +161,10 @@ pub fn run_upscale(
     }
     let model = upscaler.load(&args.model, &mut |_, _| {})?;
     rep.info(&format!("model: {model_id} ({}x)", model.scale()));
+    let active = upscaler.active_device();
+    if active != *upscaler.device() {
+        rep.info(&format!("device for this model: {}", active.name));
+    }
 
     let opts = UpscaleOptions {
         tile_size: args.tile,

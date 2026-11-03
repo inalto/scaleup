@@ -2,9 +2,10 @@
 //! [`Model::run`] on RGB tiles.
 
 use std::path::Path;
+use std::sync::OnceLock;
 
-use crate::Result;
 use crate::image32::Image32;
+use crate::{Result, ScaleUpError};
 
 #[cfg(any(test, feature = "testing"))]
 pub mod fake;
@@ -40,6 +41,50 @@ pub enum DevicePreference {
     Auto,
     Cpu,
     Gpu(u32),
+    /// A specific adapter of the registered Vulkan/Metal/DX12 backend.
+    Vulkan(u32),
+}
+
+/// A backend this crate cannot depend on directly (it depends on this crate), plugged in at startup.
+#[derive(Clone, Copy)]
+pub struct ExtraBackend {
+    pub create: fn(DevicePreference) -> Result<Box<dyn Backend>>,
+    pub devices: fn() -> Vec<DeviceInfo>,
+}
+
+static EXTRA: OnceLock<ExtraBackend> = OnceLock::new();
+
+/// Makes `extra` available to [`create_backend`] and [`list_devices`]. The first call wins.
+pub fn register_extra_backend(extra: ExtraBackend) {
+    let _ = EXTRA.set(extra);
+}
+
+/// The registered backend, if any.
+pub fn extra_backend() -> Option<ExtraBackend> {
+    EXTRA.get().copied()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BackendChoice {
+    Ort,
+    Extra,
+}
+
+/// Which backend serves `pref`. ONNX Runtime first, for the GPU providers it has; the extra backend
+/// covers GPUs it cannot reach; a CPU run stays on ONNX Runtime. `forced` is `SCALEUP_BACKEND`.
+pub(crate) fn choose_backend(
+    pref: DevicePreference,
+    forced: Option<&str>,
+    ort_has_gpu: bool,
+    extra_has_gpu: bool,
+) -> BackendChoice {
+    use BackendChoice::{Extra, Ort};
+    match (pref, forced) {
+        (DevicePreference::Vulkan(_), _) | (_, Some("wgpu")) => Extra,
+        (_, Some("ort")) => Ort,
+        (DevicePreference::Auto, _) if !ort_has_gpu && extra_has_gpu => Extra,
+        _ => Ort,
+    }
 }
 
 impl DevicePreference {
@@ -48,6 +93,10 @@ impl DevicePreference {
         match s.trim().to_ascii_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
             "cpu" => Ok(Self::Cpu),
+            n if n.starts_with("vk:") => n[3..]
+                .parse()
+                .map(Self::Vulkan)
+                .map_err(|_| format!("invalid device {n:?} (expected vk:<index>)")),
             n if n.len() == 1 && n.as_bytes()[0].is_ascii_digit() => {
                 Ok(Self::Gpu(u32::from(n.as_bytes()[0] - b"0"[0])))
             }
@@ -62,6 +111,10 @@ pub trait Backend: Send + Sync {
     fn name(&self) -> &'static str;
     fn device(&self) -> &DeviceInfo;
     fn load_model(&self, path: &Path, scale_hint: Option<u32>) -> Result<Box<dyn Model>>;
+    /// Whether this backend can load the model file at `path`.
+    fn handles(&self, path: &Path) -> bool {
+        !is_ncnn_model(path)
+    }
 }
 
 pub trait Model: Send + Sync {
@@ -82,15 +135,47 @@ pub mod ort;
 
 pub use self::ort::OrtBackend;
 
+/// An ncnn network, named by its `.param` file.
+pub fn is_ncnn_model(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("param"))
+}
+
 /// Devices usable on this machine: the GPU the ORT backend would pick (if any), then the CPU.
 pub fn list_devices() -> Vec<DeviceInfo> {
-    self::ort::available_devices()
+    let mut devices = self::ort::available_devices();
+    if let Some(extra) = extra_backend() {
+        devices.extend((extra.devices)());
+    }
+    devices
 }
 
 /// The default backend (ONNX Runtime) for `pref`. A GPU that fails to initialise falls back to the
 /// CPU with a warning rather than an error.
 pub fn create_backend(pref: DevicePreference) -> Result<Box<dyn Backend>> {
-    Ok(Box::new(OrtBackend::new(pref)?))
+    let extra = extra_backend();
+    let extra_gpu = extra.is_some_and(|e| (e.devices)().iter().any(|d| d.kind.is_gpu()));
+    let forced = std::env::var("SCALEUP_BACKEND").ok();
+    let forced = forced.as_deref();
+    if choose_backend(pref, forced, false, true) == BackendChoice::Extra
+        && choose_backend(pref, forced, true, true) == BackendChoice::Extra
+    {
+        // Asked for by name: failing is better than quietly running somewhere else.
+        let extra = extra.ok_or_else(|| {
+            ScaleUpError::Backend("this build has no Vulkan/Metal/DX12 backend".into())
+        })?;
+        return (extra.create)(pref);
+    }
+    let ort = OrtBackend::new(pref)?;
+    if choose_backend(pref, forced, ort.device().kind.is_gpu(), extra_gpu) == BackendChoice::Extra
+        && let Some(extra) = extra
+    {
+        match (extra.create)(pref) {
+            Ok(backend) => return Ok(backend),
+            Err(e) => tracing::warn!("wgpu backend unavailable: {e}"),
+        }
+    }
+    Ok(Box::new(ort))
 }
 
 #[cfg(test)]
@@ -98,10 +183,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn create_backend_prefers_ort_gpu_then_wgpu_then_cpu() {
+        use BackendChoice::{Extra, Ort};
+        use DevicePreference::{Auto, Cpu, Gpu, Vulkan};
+        // Auto: ONNX Runtime GPU, else the extra backend's GPU, else ONNX Runtime on the CPU.
+        assert_eq!(choose_backend(Auto, None, true, true), Ort);
+        assert_eq!(choose_backend(Auto, None, false, true), Extra);
+        assert_eq!(choose_backend(Auto, None, false, false), Ort);
+        // Explicit choices are honoured.
+        assert_eq!(choose_backend(Cpu, None, false, true), Ort);
+        assert_eq!(choose_backend(Gpu(0), None, false, true), Ort);
+        assert_eq!(choose_backend(Vulkan(0), None, true, true), Extra);
+        // The environment override, for deterministic runs.
+        assert_eq!(choose_backend(Auto, Some("wgpu"), true, true), Extra);
+        assert_eq!(choose_backend(Auto, Some("ort"), false, true), Ort);
+        assert_eq!(choose_backend(Vulkan(0), Some("ort"), true, true), Extra);
+    }
+
+    #[test]
+    fn ncnn_models_are_recognised_by_extension() {
+        assert!(is_ncnn_model(Path::new("a/b.PARAM")));
+        assert!(!is_ncnn_model(Path::new("a/b.onnx")));
+    }
+
+    #[test]
     fn parse_preference_cases() {
         assert_eq!(DevicePreference::parse("auto"), Ok(DevicePreference::Auto));
         assert_eq!(DevicePreference::parse("CPU"), Ok(DevicePreference::Cpu));
         assert_eq!(DevicePreference::parse(" 3 "), Ok(DevicePreference::Gpu(3)));
+        assert_eq!(
+            DevicePreference::parse("vk:2"),
+            Ok(DevicePreference::Vulkan(2))
+        );
+        assert!(DevicePreference::parse("vk:x").is_err());
         assert!(DevicePreference::parse("10").is_err());
         assert!(DevicePreference::parse("").is_err());
     }

@@ -18,6 +18,30 @@ fn manifest_ids() -> Vec<String> {
 }
 
 #[test]
+fn models_import_copies_pairs_and_lists_them() {
+    let models = tempfile::tempdir().unwrap();
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(src.path().join("mine-4x.param"), b"7767517").unwrap();
+    std::fs::write(src.path().join("mine-4x.bin"), b"w").unwrap();
+    let out = scaleup()
+        .env("SCALEUP_MODELS_DIR", models.path())
+        .args(["models", "import"])
+        .arg(src.path())
+        .assert()
+        .code(0);
+    let text = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(text.contains("mine-4x"), "{text}");
+    assert!(models.path().join("mine-4x.bin").is_file());
+    let out = scaleup()
+        .env("SCALEUP_MODELS_DIR", models.path())
+        .args(["models", "list"])
+        .assert()
+        .code(0);
+    let text = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(text.contains("mine-4x"), "{text}");
+}
+
+#[test]
 fn models_list_table() {
     let dir = tempfile::tempdir().unwrap();
     let out = scaleup()

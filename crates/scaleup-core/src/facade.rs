@@ -2,8 +2,12 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
-use crate::backend::{Backend, DeviceInfo, DevicePreference, Model, create_backend};
+use crate::backend::{
+    Backend, DeviceInfo, DevicePreference, Model, OrtBackend, create_backend, extra_backend,
+    is_ncnn_model,
+};
 use crate::io::{OutputFormat, load_image, save_image};
 use crate::pipeline::{CancelToken, Phase, Progress, UpscaleOptions, upscale};
 use crate::registry::{Registry, scale_from_name};
@@ -29,6 +33,10 @@ pub struct FileJob {
 pub struct Upscaler {
     backend: Box<dyn Backend>,
     registry: Registry,
+    /// Created on demand for model files the main backend cannot load.
+    other_backend: OnceLock<Box<dyn Backend>>,
+    /// Device of the most recently loaded model.
+    active: Mutex<DeviceInfo>,
 }
 
 /// Tiles one `upscale` pass over a `w`×`h` image will report (×2 when alpha gets its own pass).
@@ -40,14 +48,48 @@ fn pass_tiles(w: u32, h: u32, tile: u32, overlap: u32, alpha: bool) -> u32 {
 impl Upscaler {
     /// Creates the default backend for `pref` (GPU failure falls back to CPU).
     pub fn new(pref: DevicePreference, registry: Registry) -> Result<Self> {
+        let backend = create_backend(pref)?;
         Ok(Self {
-            backend: create_backend(pref)?,
+            active: Mutex::new(backend.device().clone()),
+            backend,
             registry,
+            other_backend: OnceLock::new(),
         })
     }
 
     pub fn device(&self) -> &DeviceInfo {
         self.backend.device()
+    }
+
+    /// Where the last loaded model runs. Differs from [`Upscaler::device`] when the model's format
+    /// needed the other backend.
+    pub fn active_device(&self) -> DeviceInfo {
+        self.active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The backend for the model file at `path`: ncnn files need the registered backend, and ONNX
+    /// files need ONNX Runtime whatever device was chosen.
+    fn backend_for(&self, path: &Path) -> Result<&dyn Backend> {
+        if self.backend.handles(path) {
+            return Ok(self.backend.as_ref());
+        }
+        if let Some(b) = self.other_backend.get() {
+            return Ok(b.as_ref());
+        }
+        let created: Box<dyn Backend> = if is_ncnn_model(path) {
+            let extra = extra_backend().ok_or_else(|| {
+                ScaleUpError::Model(
+                    "ncnn models need the wgpu backend, absent from this build".into(),
+                )
+            })?;
+            (extra.create)(DevicePreference::Auto)?
+        } else {
+            Box::new(OrtBackend::new(DevicePreference::Auto)?)
+        };
+        Ok(self.other_backend.get_or_init(|| created).as_ref())
     }
 
     pub fn registry(&self) -> &Registry {
@@ -70,13 +112,16 @@ impl Upscaler {
                 (resolved.path, resolved.scale)
             }
         };
-        self.backend.load_model(&path, scale)
+        let backend = self.backend_for(&path)?;
+        let model = backend.load_model(&path, scale)?;
+        *self.active.lock().unwrap_or_else(|e| e.into_inner()) = backend.device().clone();
+        Ok(model)
     }
 
     /// `requested`, or the device's default tile size when it is 0.
     pub fn effective_tile(&self, requested: u32) -> u32 {
         if requested == 0 {
-            auto_tile_size(self.device().kind, None)
+            auto_tile_size(self.active_device().kind, None)
         } else {
             requested
         }
@@ -211,6 +256,19 @@ impl Upscaler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ncnn_model_without_its_backend_is_a_clear_error() {
+        let d = tempfile::tempdir().unwrap();
+        let param = d.path().join("m.param");
+        std::fs::write(&param, b"7767517").unwrap();
+        let up = cpu_upscaler(d.path());
+        let err = up
+            .load(param.to_str().unwrap(), &mut |_, _| {})
+            .err()
+            .expect("no ncnn backend is registered in this test binary");
+        assert!(err.to_string().contains("ncnn"), "{err}");
+    }
     use crate::ScaleUpError;
     use crate::backend::DeviceKind;
     use image::{Rgba, RgbaImage};
