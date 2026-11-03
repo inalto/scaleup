@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "realesr-general-x4v3",
+      "name": "Real-ESRGAN General v3 (fast)",
+      "arch": "SRVGGNetCompact",
+      "scale": 4,
+      "license": "BSD-3-Clause",
+      "commercial": true,
+      "size_bytes": 0,
+      "url": "",
+      "sha256": "",
+      "tags": ["photo", "fast", "default"],
+      "notes": "xinntao/Real-ESRGAN"
+    },
+    {
+      "id": "realesrgan-x4plus",
+      "name": "Real-ESRGAN x4plus",
+      "arch": "RRDBNet",
+      "scale": 4,
+      "license": "BSD-3-Clause",
+      "commercial": true,
+      "size_bytes": 0,
+      "url": "",
+      "sha256": "",
+      "tags": ["photo"],
+      "notes": "xinntao/Real-ESRGAN"
+    },
+    {
+      "id": "realesrgan-x4plus-anime",
+      "name": "Real-ESRGAN x4plus Anime",
+      "arch": "RRDBNet",
+      "scale": 4,
+      "license": "BSD-3-Clause",
+      "commercial": true,
+      "size_bytes": 0,
+      "url": "",
+      "sha256": "",
+      "tags": ["anime"],
+      "notes": "xinntao/Real-ESRGAN"
+    },
+    {
+      "id": "realesrgan-x2plus",
+      "name": "Real-ESRGAN x2plus",
+      "arch": "RRDBNet",
+      "scale": 2,
+      "license": "BSD-3-Clause",
+      "commercial": true,
+      "size_bytes": 0,
+      "url": "",
+      "sha256": "",
+      "tags": ["photo"],
+      "notes": "xinntao/Real-ESRGAN"
+    },
+    {
+      "id": "realesr-animevideov3",
+      "name": "Real-ESRGAN AnimeVideo v3 (very fast)",
+      "arch": "SRVGGNetCompact",
+      "scale": 4,
+      "license": "BSD-3-Clause",
+      "commercial": true,
+      "size_bytes": 0,
+      "url": "",
+      "sha256": "",
+      "tags": ["anime", "fast"],
+      "notes": "xinntao/Real-ESRGAN"
+    },
+    {
+      "id": "4xNomosUni_span_multijpg",
+      "name": "Nomos Uni SPAN multi-JPEG",
+      "arch": "SPAN",
+      "scale": 4,
+      "license": "CC-BY-4.0",
+      "commercial": true,
+      "size_bytes": 0,
+      "url": "",
+      "sha256": "",
+      "tags": ["photo", "fast"],
+      "notes": "by Phips (Philip Hofmann)"
+    },
+    {
+      "id": "4xRealWebPhoto_v4_dat2",
+      "name": "RealWebPhoto v4 DAT-2 (high quality, slow)",
+      "arch": "DAT",
+      "scale": 4,
+      "license": "CC-BY-4.0",
+      "commercial": true,
+      "size_bytes": 0,
+      "url": "",
+      "sha256": "",
+      "tags": ["photo", "quality", "slow"],
+      "notes": "by Phips (Philip Hofmann); input is padded to a multiple of 16"
+    }
+  ]
+}
