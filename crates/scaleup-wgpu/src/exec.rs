@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use scaleup_core::{Image32, Result, ScaleUpError};
 use wgpu::util::DeviceExt;
 
+use crate::kernels::pack_weights;
 use crate::kernels::{
     Buf, ConvOp, Kernels, Recorder, create_tensor_buffer, read_back, tensor_bytes,
 };
@@ -209,6 +210,8 @@ pub fn plan(graph: &Graph, in_c: u32, in_h: u32, in_w: u32) -> Result<Plan> {
 struct LayerBuffers {
     a: wgpu::Buffer,
     b: Option<wgpu::Buffer>,
+    /// `a` holds [`crate::kernels::pack_weights`] output rather than plain weights.
+    packed: bool,
 }
 
 /// Runs plans on one device. Runs are serialised: they share the buffer pool, and the GPU would
@@ -237,14 +240,33 @@ impl Executor {
             .iter()
             .map(|l| match &l.kind {
                 LayerKind::Conv {
-                    weights, biases, ..
-                } => Some(LayerBuffers {
-                    a: upload(weights),
-                    b: (!biases.is_empty()).then(|| upload(biases)),
-                }),
+                    weights,
+                    biases,
+                    out,
+                    k: size,
+                    ..
+                } => {
+                    let packed = kernels.has_tiled() && *size == 3;
+                    let a = if packed {
+                        let c_in = (weights.len() / (*out as usize * 9)) as u32;
+                        let p: Vec<f32> = pack_weights(weights, *out, c_in)
+                            .into_iter()
+                            .flatten()
+                            .collect();
+                        upload(&p)
+                    } else {
+                        upload(weights)
+                    };
+                    Some(LayerBuffers {
+                        a,
+                        b: (!biases.is_empty()).then(|| upload(biases)),
+                        packed,
+                    })
+                }
                 LayerKind::PRelu { slopes } => Some(LayerBuffers {
                     a: upload(slopes),
                     b: None,
+                    packed: false,
                 }),
                 _ => None,
             })
@@ -301,6 +323,7 @@ impl Executor {
                         biases: w.b.as_ref(),
                         k: *size,
                         act: *act,
+                        packed: w.packed.then_some(&w.a),
                     },
                 );
             }

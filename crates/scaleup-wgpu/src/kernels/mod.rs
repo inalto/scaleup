@@ -60,6 +60,27 @@ const MODE_MUL: u32 = 1;
 const MODE_SCALAR_ADD: u32 = 2;
 const MODE_SCALAR_MUL: u32 = 3;
 
+/// Workgroup memory the fast convolution needs, as the plan's gate states it.
+const TILED_WORKGROUP_STORAGE: u32 = 16_384;
+
+/// Whether this device can use the shared-memory convolution.
+pub fn use_tiled(limits: &wgpu::Limits) -> bool {
+    limits.max_compute_workgroup_storage_size >= TILED_WORKGROUP_STORAGE
+}
+
+/// `[out][in][3][3]` scalars rearranged to `[block][in][3][3]` vec4s, four outputs per block; missing
+/// outputs of the last block are zero.
+pub fn pack_weights(weights: &[f32], out: u32, c_in: u32) -> Vec<[f32; 4]> {
+    let cells = (c_in * 9) as usize;
+    let mut packed = vec![[0.0; 4]; out.div_ceil(4) as usize * cells];
+    for o in 0..out as usize {
+        for cell in 0..cells {
+            packed[o / 4 * cells + cell][o % 4] = weights[o * cells + cell];
+        }
+    }
+    packed
+}
+
 /// Convolution description; `weights` are `[out][in][k][k]`.
 pub struct ConvOp<'a> {
     pub src: &'a Buf,
@@ -69,6 +90,8 @@ pub struct ConvOp<'a> {
     pub biases: Option<&'a wgpu::Buffer>,
     pub k: u32,
     pub act: Activation,
+    /// [`pack_weights`] of `weights`; with it, a capable device uses the fast kernel.
+    pub packed: Option<&'a wgpu::Buffer>,
 }
 
 /// Records dispatches, submitting whenever enough work has piled up.
@@ -146,6 +169,8 @@ pub struct Kernels {
     eltwise: wgpu::ComputePipeline,
     interp: wgpu::ComputePipeline,
     shuffle: wgpu::ComputePipeline,
+    /// The shared-memory convolution, on devices with the workgroup storage for it.
+    tiled: Option<wgpu::ComputePipeline>,
     /// Bound where a kernel does not use an auxiliary buffer.
     dummy: wgpu::Buffer,
     uniform_stride: u64,
@@ -212,6 +237,8 @@ impl Kernels {
             eltwise: pipeline("eltwise", include_str!("eltwise.wgsl")),
             interp: pipeline("interp", include_str!("interp_nearest.wgsl")),
             shuffle: pipeline("shuffle", include_str!("pixel_shuffle.wgsl")),
+            tiled: use_tiled(limits)
+                .then(|| pipeline("conv tiled", include_str!("conv3x3_tiled.wgsl"))),
             dummy: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("unused"),
                 size: 16,
@@ -296,9 +323,22 @@ impl Kernels {
         self.dispatch(rec, pipeline, bind_group, params, groups, work);
     }
 
+    /// Whether [`Kernels::conv`] will use [`ConvOp::packed`] for 3x3 convolutions.
+    pub fn has_tiled(&self) -> bool {
+        self.tiled.is_some()
+    }
+
     pub fn conv(&self, rec: &mut Recorder<'_>, op: &ConvOp<'_>) {
         let (src, dst) = (op.src, op.dst);
-        let bg = self.bind(rec, &src.buffer, &dst.buffer, Some(op.weights), op.biases);
+        let fast = match (&self.tiled, op.packed) {
+            (Some(pipeline), Some(packed)) if op.k == 3 => Some((pipeline, packed)),
+            _ => None,
+        };
+        let (pipeline, weights, side) = match fast {
+            Some((pipeline, packed)) => (pipeline, packed, 16),
+            None => (&self.conv, op.weights, 8),
+        };
+        let bg = self.bind(rec, &src.buffer, &dst.buffer, Some(weights), op.biases);
         let (act, slope) = match op.act {
             Activation::None => (ACT_NONE, 0.0),
             Activation::Relu => (ACT_RELU, 0.0),
@@ -309,8 +349,8 @@ impl Kernels {
             * u64::from(CHANNELS_PER_PASS)
             * u64::from(op.k * op.k);
         let band = ((DISPATCH_WORK / macs_per_row.max(1)) as u32)
-            .clamp(8, dst.h.max(8))
-            .next_multiple_of(8);
+            .clamp(side, dst.h.max(side))
+            .next_multiple_of(side);
         for c0 in (0..dst.c).step_by(CHANNELS_PER_PASS as usize) {
             for y0 in (0..dst.h).step_by(band as usize) {
                 let y1 = (y0 + band).min(dst.h);
@@ -328,9 +368,9 @@ impl Kernels {
                     has_bias: u32::from(op.biases.is_some()),
                     ..Params::default()
                 };
-                let groups = [dst.w.div_ceil(8), (y1 - y0).div_ceil(8), 1];
+                let groups = [dst.w.div_ceil(side), (y1 - y0).div_ceil(side), 1];
                 let work = macs_per_row * u64::from(y1 - y0);
-                self.dispatch(rec, &self.conv, &bg, &params, groups, work);
+                self.dispatch(rec, pipeline, &bg, &params, groups, work);
             }
         }
     }
@@ -628,6 +668,7 @@ mod tests {
                 biases: bias.then_some(&bb),
                 k,
                 act,
+                packed: None,
             },
         );
         rec.flush();
@@ -643,6 +684,86 @@ mod tests {
         run_conv(g, &src, 8, 3, Activation::Leaky(0.2), 3, true);
         run_conv(g, &src, 5, 3, Activation::Relu, 4, false);
         run_conv(g, &src, 3, 1, Activation::None, 5, true);
+    }
+
+    #[test]
+    fn pack_weights_layout() {
+        // 5 outputs, 1 input, 3x3: weight value = 10 * output + cell.
+        let weights: Vec<f32> = (0..5)
+            .flat_map(|o| (0..9).map(move |cell| (10 * o + cell) as f32))
+            .collect();
+        let packed = pack_weights(&weights, 5, 1);
+        assert_eq!(packed.len(), 18, "two blocks of 9 cells");
+        assert_eq!(packed[0], [0.0, 10.0, 20.0, 30.0]);
+        assert_eq!(packed[8], [8.0, 18.0, 28.0, 38.0]);
+        assert_eq!(packed[9], [40.0, 0.0, 0.0, 0.0]);
+        assert_eq!(packed[17], [48.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn tiled_gate_follows_workgroup_storage() {
+        let mut limits = wgpu::Limits::downlevel_defaults();
+        limits.max_compute_workgroup_storage_size = 16_352;
+        assert!(!use_tiled(&limits));
+        limits.max_compute_workgroup_storage_size = 32_768;
+        assert!(use_tiled(&limits));
+    }
+
+    fn run_tiled_conv(g: &Gpu, src: &Tensor, out: u32, act: Activation, seed: u32, bias: bool) {
+        let mut rng = Rng(seed);
+        let weights = rng.vec((out * src.c * 9) as usize);
+        let biases = if bias { rng.vec(out as usize) } else { vec![] };
+        let want = cpu_ref::conv(src, out, 3, &weights, &biases, act);
+        let s = upload(&g.device, &g.queue, src);
+        let d = empty(g, out, src.h, src.w);
+        let (wb, bb) = (raw(g, &weights), raw(g, &biases));
+        let packed: Vec<f32> = pack_weights(&weights, out, src.c)
+            .into_iter()
+            .flatten()
+            .collect();
+        let pb = raw(g, &packed);
+        let mut rec = Recorder::new(&g.kernels, &g.device, &g.queue);
+        g.kernels.conv(
+            &mut rec,
+            &ConvOp {
+                src: &s,
+                dst: &d,
+                weights: &wb,
+                biases: bias.then_some(&bb),
+                k: 3,
+                act,
+                packed: Some(&pb),
+            },
+        );
+        rec.flush();
+        assert_matches(g, &d, &want);
+    }
+
+    #[test]
+    fn tiled_conv_matches_ref() {
+        let Some(g) = gpu() else { return };
+        assert!(g.kernels.tiled.is_some(), "this test wants the fast path");
+        let mut rng = Rng(71);
+        // Sizes across tile edges; channel counts below, at and above a slab; a partial last block.
+        for (c_in, out, h, w) in [
+            (3, 4, 13, 11),
+            (8, 8, 16, 16),
+            (9, 7, 17, 33),
+            (20, 6, 40, 5),
+        ] {
+            let src = rng.tensor(c_in, h, w);
+            run_tiled_conv(g, &src, out, Activation::None, 72, true);
+            run_tiled_conv(g, &src, out, Activation::Leaky(0.2), 73, false);
+            run_tiled_conv(g, &src, out, Activation::Relu, 74, true);
+        }
+    }
+
+    #[test]
+    fn tiled_conv_cut_into_bands_matches_ref() {
+        let Some(g) = gpu() else { return };
+        let mut rng = Rng(75);
+        let src = rng.tensor(64, 300, 40);
+        run_tiled_conv(g, &src, 8, Activation::Leaky(0.2), 76, true);
     }
 
     #[test]
@@ -669,6 +790,7 @@ mod tests {
                 biases: None,
                 k: 3,
                 act: Activation::None,
+                packed: None,
             },
         );
         rec.flush();
