@@ -3,6 +3,7 @@
 
 mod app;
 mod state;
+mod worker;
 
 use eframe::egui;
 

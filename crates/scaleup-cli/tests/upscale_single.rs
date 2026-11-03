@@ -90,7 +90,16 @@ fn relative_model_path_with_space() {
     write_png(&dir.path().join("in.png"));
     scaleup()
         .current_dir(dir.path())
-        .args(["-i", "in.png", "-o", "out.png", "-n", "my model.onnx", "-g", "cpu"])
+        .args([
+            "-i",
+            "in.png",
+            "-o",
+            "out.png",
+            "-n",
+            "my model.onnx",
+            "-g",
+            "cpu",
+        ])
         .assert()
         .code(0);
     assert!(dir.path().join("out.png").is_file());

@@ -125,14 +125,7 @@ fn validate_gpu(s: &str) -> Result<String, String> {
 
 /// `auto`, `cpu` or a single digit GPU index.
 pub fn parse_gpu(s: &str) -> Result<DevicePreference, String> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "auto" => Ok(DevicePreference::Auto),
-        "cpu" => Ok(DevicePreference::Cpu),
-        n if n.len() == 1 && n.as_bytes()[0].is_ascii_digit() => {
-            Ok(DevicePreference::Gpu(n.parse().unwrap()))
-        }
-        other => Err(format!("invalid device '{other}' (expected auto, cpu or 0..9)")),
-    }
+    DevicePreference::parse(s)
 }
 
 #[cfg(test)]

@@ -43,9 +43,10 @@ fn models_list_table() {
 
 #[test]
 fn models_info_prints_license() {
-    let license =
-        std::fs::read_to_string(format!("{ROOT}/../../models/licenses/realesr-general-x4v3.txt"))
-            .unwrap();
+    let license = std::fs::read_to_string(format!(
+        "{ROOT}/../../models/licenses/realesr-general-x4v3.txt"
+    ))
+    .unwrap();
     let first = license.lines().next().unwrap().to_string();
     scaleup()
         .args(["models", "info", "realesr-general-x4v3"])

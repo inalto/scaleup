@@ -100,7 +100,9 @@ impl Reporter {
 
     pub fn summary(&self, done: usize, failed: usize, skipped: usize) {
         if self.json {
-            self.event(json!({"event": "summary", "done": done, "failed": failed, "skipped": skipped}));
+            self.event(
+                json!({"event": "summary", "done": done, "failed": failed, "skipped": skipped}),
+            );
         } else {
             self.line(&format!("{done} done, {failed} failed, {skipped} skipped"));
         }
@@ -153,7 +155,10 @@ mod tests {
 
     fn reporter(json: bool, verbose: bool) -> (Reporter, Buf) {
         let buf = Buf::default();
-        (Reporter::with_sink(json, verbose, Box::new(buf.clone())), buf)
+        (
+            Reporter::with_sink(json, verbose, Box::new(buf.clone())),
+            buf,
+        )
     }
 
     #[test]
@@ -189,7 +194,10 @@ mod tests {
 
     #[test]
     fn percent_from_tiles() {
-        assert_eq!(percent_from(&Progress::Tiles { done: 1, total: 4 }, 1.0), Some(25.0));
+        assert_eq!(
+            percent_from(&Progress::Tiles { done: 1, total: 4 }, 1.0),
+            Some(25.0)
+        );
         assert_eq!(percent_from(&Progress::Phase(Phase::Saving), 1.0), None);
     }
 }

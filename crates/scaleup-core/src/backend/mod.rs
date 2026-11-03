@@ -42,6 +42,22 @@ pub enum DevicePreference {
     Gpu(u32),
 }
 
+impl DevicePreference {
+    /// `auto`, `cpu` or a single digit GPU index.
+    pub fn parse(s: &str) -> std::result::Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "cpu" => Ok(Self::Cpu),
+            n if n.len() == 1 && n.as_bytes()[0].is_ascii_digit() => {
+                Ok(Self::Gpu(u32::from(n.as_bytes()[0] - b"0"[0])))
+            }
+            other => Err(format!(
+                "invalid device {other:?} (expected auto, cpu or 0..9)"
+            )),
+        }
+    }
+}
+
 pub trait Backend: Send + Sync {
     fn name(&self) -> &'static str;
     fn device(&self) -> &DeviceInfo;
@@ -71,4 +87,18 @@ pub fn list_devices() -> Vec<DeviceInfo> {
 /// CPU with a warning rather than an error.
 pub fn create_backend(pref: DevicePreference) -> Result<Box<dyn Backend>> {
     Ok(Box::new(OrtBackend::new(pref)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_preference_cases() {
+        assert_eq!(DevicePreference::parse("auto"), Ok(DevicePreference::Auto));
+        assert_eq!(DevicePreference::parse("CPU"), Ok(DevicePreference::Cpu));
+        assert_eq!(DevicePreference::parse(" 3 "), Ok(DevicePreference::Gpu(3)));
+        assert!(DevicePreference::parse("10").is_err());
+        assert!(DevicePreference::parse("").is_err());
+    }
 }

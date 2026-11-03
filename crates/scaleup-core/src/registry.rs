@@ -326,10 +326,8 @@ mod tests {
         assert_eq!(defaults.len(), 1);
         assert_eq!(defaults[0].id, "realesr-general-x4v3");
         assert!(
-            reg.entries()
-                .iter()
-                .all(|e| e.format == "onnx"
-                    && e.commercial != e.tags.iter().any(|t| t == "noncommercial"))
+            reg.entries().iter().all(|e| e.format == "onnx"
+                && e.commercial != e.tags.iter().any(|t| t == "noncommercial"))
         );
         assert_eq!(reg.get("realesrgan-x2plus").unwrap().scale, 2);
         assert!(reg.get("nope").is_none());
