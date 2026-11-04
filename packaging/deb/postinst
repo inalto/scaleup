@@ -1,0 +1,11 @@
+#!/bin/sh
+# Expose the binaries installed under /usr/lib/scaleup (next to the ONNX Runtime libraries) on PATH.
+set -e
+case "$1" in
+  configure)
+    ln -sf /usr/lib/scaleup/scaleup /usr/bin/scaleup
+    ln -sf /usr/lib/scaleup/scaleup-app /usr/bin/scaleup-app
+    ;;
+esac
+#DEBHELPER#
+exit 0

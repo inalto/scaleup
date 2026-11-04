@@ -25,7 +25,8 @@ Download the archive or installer for your platform from the
 |---|---|---|
 | Windows x64 | `scaleup-<version>-x86_64-pc-windows-msvc.zip` | `scaleup-<version>-x86_64-pc-windows-msvc.msi` |
 | Linux x64 | `scaleup-<version>-x86_64-unknown-linux-gnu.tar.gz` | `scaleup_<version>_amd64.deb` |
-| macOS (Apple Silicon and Intel) | `scaleup-<version>-macos.tar.gz` (universal CLI) | `scaleup-<version>-macos.dmg` |
+| macOS Apple Silicon | `scaleup-<version>-aarch64-apple-darwin.tar.gz` | `scaleup-<version>-macos.dmg` (universal) |
+| macOS Intel | `scaleup-<version>-x86_64-apple-darwin.tar.gz` | `scaleup-<version>-macos.dmg` (universal) |
 
 Or build the command line from source:
 

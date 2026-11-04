@@ -23,3 +23,34 @@ serde_json.workspace = true
 [dev-dependencies]
 scaleup-core = { path = "../scaleup-core", features = ["testing"] }
 tempfile = "3"
+
+# `cargo deb -p scaleup-app --no-build` after `cargo build --release --workspace`.
+# `ort` loads its provider libraries from the directory next to the executable, so both binaries and the
+# `.so` files live in usr/lib/scaleup/ and postinst links them into /usr/bin.
+[package.metadata.deb]
+name = "scaleup"
+maintainer = "ScaleUP contributors <webmaster@inalto.com>"
+copyright = "ScaleUP contributors"
+license-file = ["../../LICENSE", "0"]
+extended-description = "AI image upscaler (Real-ESRGAN family) with a command line and a desktop app. Rust rebuild inspired by Upscayl."
+section = "graphics"
+priority = "optional"
+depends = "libgtk-3-0, libc6"
+maintainer-scripts = "../../packaging/deb"
+assets = [
+  ["target/release/scaleup", "usr/lib/scaleup/", "755"],
+  ["target/release/scaleup-app", "usr/lib/scaleup/", "755"],
+  ["target/release/libonnxruntime*.so*", "usr/lib/scaleup/", "644"],
+  ["../../assets/scaleup.desktop", "usr/share/applications/", "644"],
+  ["assets/icon.png", "usr/share/icons/hicolor/256x256/apps/scaleup.png", "644"],
+  ["../../README.md", "usr/share/doc/scaleup/README.md", "644"],
+  ["../../models/licenses/*", "usr/share/doc/scaleup/models/licenses/", "644"],
+]
+
+# `cargo wix -p scaleup-app --nocapture --no-build` (WiX 3 `candle`/`light` on PATH).
+[package.metadata.wix]
+include = ["../../packaging/wix/main.wxs"]
+name = "scaleup"
+product-name = "ScaleUP"
+license = "../../packaging/wix/License.rtf"
+eula = "../../packaging/wix/License.rtf"

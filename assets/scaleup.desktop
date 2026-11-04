@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ScaleUP
+GenericName=Image Upscaler
+Comment=AI image upscaling with a before/after view
+Exec=scaleup-app %f
+Icon=scaleup
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;
+MimeType=image/png;image/jpeg;image/webp;
+Keywords=upscale;upscayl;super-resolution;AI;
