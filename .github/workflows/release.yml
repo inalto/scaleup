@@ -1,0 +1,213 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version from tag
+        id: meta
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Cache ONNX Runtime download
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ort.pyke.io
+            ~/Library/Caches/ort.pyke.io
+            ~\AppData\Local\ort.pyke.io
+          key: ort-${{ runner.os }}-${{ matrix.target }}-rc15
+
+      - name: Install Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libxdo-dev
+
+      - name: Build
+        run: cargo build --release --workspace --target ${{ matrix.target }}
+
+      - name: List build output
+        shell: bash
+        run: ls -la target/${{ matrix.target }}/release | grep -E 'scaleup|onnxruntime|DirectML' || true
+
+      # ---------------------------------------------------------------- Linux: tar.gz + .deb
+      - name: Install cargo-deb
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          packaging/tar_linux.sh "${{ steps.meta.outputs.version }}" "${{ matrix.target }}"
+          cargo deb -p scaleup-app --no-build --target ${{ matrix.target }} --output dist/
+          ls -la dist
+
+      # ---------------------------------------------------------------- Windows: zip + .msi
+      - name: Install WiX 3
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "wix314.zip"
+          Invoke-WebRequest -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip" -OutFile $zip
+          $dir = Join-Path $env:RUNNER_TEMP "wix314"
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          Add-Content -Path $env:GITHUB_PATH -Value $dir
+
+      - name: Install cargo-wix
+        if: runner.os == 'Windows'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-wix
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = "${{ steps.meta.outputs.version }}"
+          $t = "${{ matrix.target }}"
+          powershell -ExecutionPolicy Bypass -File packaging\zip_windows.ps1 -Version $v -Target $t
+          cargo wix -p scaleup-app --nocapture --no-build --target $t --output "dist\scaleup-$v-$t.msi"
+          Get-ChildItem dist
+
+      # ---------------------------------------------------------------- macOS: raw binaries for the bundle job
+      - name: Stage binaries (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p stage/${{ matrix.target }}
+          cp -L target/${{ matrix.target }}/release/scaleup target/${{ matrix.target }}/release/scaleup-app stage/${{ matrix.target }}/
+          shopt -s nullglob
+          for lib in target/${{ matrix.target }}/release/libonnxruntime*.dylib; do cp -L "$lib" stage/${{ matrix.target }}/; done
+          ls -la stage/${{ matrix.target }}
+
+      - name: Upload binaries (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: stage/${{ matrix.target }}
+          if-no-files-found: error
+
+      - name: Upload packages
+        if: runner.os != 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  bundle-macos:
+    name: macOS bundle
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version from tag
+        id: meta
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-x86_64-apple-darwin
+          path: bin/x86_64-apple-darwin
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-aarch64-apple-darwin
+          path: bin/aarch64-apple-darwin
+
+      - name: Bundle, dmg and archives
+        run: |
+          chmod +x bin/*/scaleup bin/*/scaleup-app packaging/*.sh
+          packaging/bundle_macos.sh "${{ steps.meta.outputs.version }}" bin/x86_64-apple-darwin bin/aarch64-apple-darwin dist
+          rm -rf dist/ScaleUP.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: [build, bundle-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Release notes from CHANGELOG.md
+        id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          section="$version"
+          # Pre-release tags (v1.2.3-rc1) take the Unreleased section; final tags need their own.
+          if [[ "$version" == *-* ]]; then section="Unreleased"; fi
+          awk -v s="$section" '
+            $0 ~ "^## \\[" s "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no '## [$section]' section for tag $GITHUB_REF_NAME"
+            exit 1
+          fi
+          if [[ "$section" == "Unreleased" ]]; then
+            { echo "Pre-release $GITHUB_REF_NAME (notes from the Unreleased section)."; echo; cat notes.md; } > notes.tmp
+            mv notes.tmp notes.md
+          fi
+          echo "prerelease=$([[ "$version" == *-* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "--- notes.md"; cat notes.md
+          echo "--- dist"; ls -la dist
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: ScaleUP ${{ github.ref_name }}
+          body_path: notes.md
+          prerelease: ${{ steps.notes.outputs.prerelease }}
+          files: dist/*
+          fail_on_unmatched_files: true
