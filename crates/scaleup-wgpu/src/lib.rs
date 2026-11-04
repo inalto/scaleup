@@ -7,6 +7,7 @@ pub mod exec;
 pub mod kernels;
 pub mod model;
 pub mod ncnn;
+pub mod statedict;
 
 use scaleup_core::backend::is_ncnn_model;
 use scaleup_core::{
