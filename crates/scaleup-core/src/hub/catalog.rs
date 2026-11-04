@@ -336,17 +336,21 @@ pub enum Readiness {
     Unsupported,
 }
 
+/// Whether the architecture of `m` runs from its PyTorch file on this host.
+pub(crate) fn is_native(m: &ModelCard, caps: &Capabilities) -> bool {
+    caps.native_archs
+        .iter()
+        .any(|a| a.eq_ignore_ascii_case(&m.architecture))
+}
+
 /// The files of `m` this host can run: ONNX with an ONNX runtime, PyTorch files of a native
 /// architecture. Models that are not RGB-in, RGB-out have none.
-fn runnable_resources<'a>(
+pub(crate) fn runnable_resources<'a>(
     m: &'a ModelCard,
-    caps: &'a Capabilities,
+    caps: &Capabilities,
 ) -> impl Iterator<Item = &'a Resource> {
     let rgb = m.in_ch == 3;
-    let native = caps
-        .native_archs
-        .iter()
-        .any(|a| a.eq_ignore_ascii_case(&m.architecture));
+    let native = is_native(m, caps);
     m.resources.iter().filter(move |r| {
         rgb && match r.platform.as_deref() {
             Some("onnx") => caps.onnx,
@@ -384,7 +388,7 @@ pub fn readiness(card: &ModelCard, caps: &Capabilities, installed: &Installed) -
 }
 
 /// The host of an `http(s)` URL, lowercase, without port or credentials.
-fn url_host(url: &str) -> Option<String> {
+pub(crate) fn url_host(url: &str) -> Option<String> {
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;

@@ -68,6 +68,14 @@ impl Installed {
         self.models.iter().find(|m| m.id == id)
     }
 
+    /// Records `model`, replacing the entry with the same id in place or appending a new one.
+    pub fn upsert(&mut self, model: InstalledModel) {
+        match self.models.iter_mut().find(|m| m.id == model.id) {
+            Some(slot) => *slot = model,
+            None => self.models.push(model),
+        }
+    }
+
     /// Removes the record of `id`. Returns whether there was one.
     pub fn remove(&mut self, id: &str) -> bool {
         let before = self.models.len();
@@ -115,6 +123,19 @@ mod tests {
         fs::create_dir_all(dir.path().join("hub")).unwrap();
         fs::write(path(dir.path()), "{ not json").unwrap();
         assert!(Installed::load(dir.path()).models.is_empty());
+    }
+
+    #[test]
+    fn upsert_replaces_in_place() {
+        let mut inst = Installed::default();
+        inst.upsert(model("a"));
+        inst.upsert(model("b"));
+        let mut a2 = model("a");
+        a2.scale = 4;
+        inst.upsert(a2);
+        assert_eq!(inst.models.len(), 2);
+        assert_eq!(inst.models[0].scale, 4);
+        assert_eq!(inst.models[1].id, "b");
     }
 
     #[test]
