@@ -39,8 +39,10 @@ impl<'a> Reader<'a> {
     fn raw_f32(&mut self, count: usize, layer: &str) -> Result<Vec<f32>> {
         let bytes = self.take(count.saturating_mul(4), layer)?;
         Ok(bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect())
     }
 
@@ -53,9 +55,11 @@ impl<'a> Reader<'a> {
                 let size = count.saturating_mul(2).next_multiple_of(4);
                 let bytes = self.take(size, layer)?;
                 Ok(bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .take(count)
-                    .map(|b| half::f16::from_le_bytes([b[0], b[1]]).to_f32())
+                    .map(|b| half::f16::from_le_bytes(*b).to_f32())
                     .collect())
             }
             other => Err(ScaleUpError::Model(format!(
