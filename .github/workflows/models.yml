@@ -1,0 +1,43 @@
+name: models
+
+# Manual: exports every checkpoint in tools/sources.json to ONNX and uploads the files to the
+# models release so that models/manifest.json URLs resolve.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag that hosts the .onnx files
+        default: models-v1
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: tools/requirements.txt
+
+      - name: Install exporter dependencies
+        run: python -m pip install -r tools/requirements.txt
+
+      - name: Fetch checkpoints and licenses
+        run: python tools/fetch_sources.py
+
+      - name: Export every model to ONNX
+        run: python tools/export_onnx.py --all
+
+      - name: Upload to the models release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la models/cache/onnx
+          gh release view "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "${{ inputs.tag }}" models/cache/onnx/*.onnx --clobber --repo "$GITHUB_REPOSITORY"
