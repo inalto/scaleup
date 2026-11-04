@@ -40,7 +40,7 @@ PSNR of wgpu against `upscayl-bin.exe` on the same weights:
 | `upscayl-lite-4x` | interior, `parity_with_upscayl_bin` | 45.91 dB |
 | `digital-art-4x` | interior, `parity_with_upscayl_bin` | 47.67 dB |
 
-Differences concentrate at the image border, which the two engines pad differently. `upscayl-bin.exe` also runs with half-precision storage where available.
+The two engines pad the image border and place tiles differently, which explains part of the difference: `digital-art-4x` fell to 33.10 dB when both ran tile 128 on a high-contrast picture. The remaining difference has not been traced.
 
 ## Not done
 
