@@ -7,6 +7,7 @@
 pub mod backend;
 pub mod error;
 pub mod facade;
+pub mod hub;
 pub mod image32;
 pub mod io;
 pub mod pipeline;
