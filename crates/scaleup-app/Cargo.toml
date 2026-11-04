@@ -47,10 +47,11 @@ assets = [
   ["../../models/licenses/*", "usr/share/doc/scaleup/models/licenses/", "644"],
 ]
 
-# `cargo wix -p scaleup-app --nocapture --no-build` (WiX 3 `candle`/`light` on PATH).
+# `cargo wix -p scaleup-app --nocapture --no-build`, run from the repository root (WiX 3 `candle`/`light` on PATH);
+# cargo-wix resolves these paths against the current directory.
 [package.metadata.wix]
-include = ["../../packaging/wix/main.wxs"]
+include = ["packaging/wix/main.wxs"]
 name = "scaleup"
 product-name = "ScaleUP"
-license = "../../packaging/wix/License.rtf"
-eula = "../../packaging/wix/License.rtf"
+license = "packaging/wix/License.rtf"
+eula = "packaging/wix/License.rtf"

@@ -4,7 +4,7 @@
   Build: cargo build (release, workspace) then cargo wix (package scaleup-app, nocapture, no-build).
 
   Variables set by `cargo wix`: TargetTriple, TargetEnv, TargetVendor, CargoTargetBinDir, CargoTargetDir,
-  CargoProfile, Version. Paths below are relative to crates/scaleup-app (the package directory).
+  CargoProfile, Version. Paths below are relative to the repository root (run cargo wix from there).
 
   Installs into Program Files\ScaleUP\bin: both executables plus every library that `ort` copied next
   to them (DirectML.dll and the onnxruntime_providers DLLs); ONNX Runtime itself is linked statically.
@@ -52,14 +52,14 @@
                     <Component Id='License' Guid='*'>
                         <File Id='LicenseFile'
                             DiskId='1'
-                            Source='../../LICENSE'
+                            Source='LICENSE'
                             KeyPath='yes'/>
                     </Component>
                     <Component Id='Readme' Guid='*'>
                         <File Id='ReadmeFile'
                             Name='README.md'
                             DiskId='1'
-                            Source='../../README.md'
+                            Source='README.md'
                             KeyPath='yes'/>
                     </Component>
 
@@ -183,7 +183,7 @@
 
         <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
 
-        <Icon Id='ProductICO' SourceFile='../../assets/icon.ico'/>
+        <Icon Id='ProductICO' SourceFile='assets/icon.ico'/>
         <Property Id='ARPPRODUCTICON' Value='ProductICO' />
         <Property Id='ARPHELPLINK' Value='https://github.com/inalto/scaleup'/>
 
@@ -191,7 +191,7 @@
             <UIRef Id='WixUI_FeatureTree'/>
         </UI>
 
-        <WixVariable Id='WixUILicenseRtf' Value='../../packaging/wix/License.rtf'/>
+        <WixVariable Id='WixUILicenseRtf' Value='packaging/wix/License.rtf'/>
 
     </Product>
 

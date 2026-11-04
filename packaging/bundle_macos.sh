@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Builds the macOS release artefacts from two release builds (x86_64 and aarch64):
-#   dist/ScaleUP.app                               universal app bundle: Info.plist, icon.icns, both
-#                                                  binaries lipo-merged, any libonnxruntime*.dylib in
-#                                                  Contents/MacOS
+# Builds the macOS release artefacts from a release build:
+#   dist/ScaleUP.app                               app bundle: Info.plist, icon.icns, both binaries, any
+#                                                  libonnxruntime*.dylib in Contents/MacOS
 #   dist/scaleup-<version>-macos.dmg               compressed disk image of the bundle
-#   dist/scaleup-<version>-<target>.tar.gz         per-target archive (scaleup, scaleup-app, dylibs,
-#                                                  LICENSE, README.md, models/licenses/) for both targets
-# Usage: packaging/bundle_macos.sh <version> [x86_64-bin-dir] [aarch64-bin-dir] [out-dir]
+#   dist/scaleup-<version>-<target>.tar.gz         archive: scaleup, scaleup-app, dylibs, LICENSE,
+#                                                  README.md, models/licenses/
+# A second build directory makes the bundle universal (lipo) and adds that target's archive; `ort`
+# 2.0.0-rc.15 ships no prebuilt ONNX Runtime for x86_64-apple-darwin, so releases are arm64-only.
+# Usage: packaging/bundle_macos.sh <version> <aarch64-bin-dir> [x86_64-bin-dir] [out-dir]
 set -euo pipefail
 version="$1"
-x86="${2:-target/x86_64-apple-darwin/release}"
-arm="${3:-target/aarch64-apple-darwin/release}"
+arm="${2:-target/aarch64-apple-darwin/release}"
+x86="${3:-}"
 out="${4:-dist}"
 app="$out/ScaleUP.app"
 macos="$app/Contents/MacOS"
@@ -22,24 +23,28 @@ copy_docs() {
   cp models/licenses/*.txt "$1/models/licenses/"
 }
 
+# merge <name>: universal when an x86_64 build is present, else the arm64 file.
+merge() {
+  if [ -n "$x86" ] && [ -f "$x86/$1" ]; then
+    lipo -create "$x86/$1" "$arm/$1" -output "$macos/$1"
+  else
+    cp -L "$arm/$1" "$macos/$1"
+  fi
+}
+
 rm -rf "$app"
 mkdir -p "$macos" "$res" "$out"
 
-# --- universal app bundle -------------------------------------------------------------------------
-lipo -create "$x86/scaleup" "$arm/scaleup" -output "$macos/scaleup"
-lipo -create "$x86/scaleup-app" "$arm/scaleup-app" -output "$macos/scaleup-app"
+# --- app bundle -----------------------------------------------------------------------------------
+merge scaleup
+merge scaleup-app
 chmod 755 "$macos/scaleup" "$macos/scaleup-app"
 
 # ONNX Runtime is linked statically on macOS (pyke binaries); copy any dylib `ort` did produce so the
-# bundle keeps working when moved, merging per-arch copies into a universal one.
+# bundle keeps working when moved.
 shopt -s nullglob
 for lib in "$arm"/libonnxruntime*.dylib; do
-  base="$(basename "$lib")"
-  if [ -f "$x86/$base" ]; then
-    lipo -create "$x86/$base" "$lib" -output "$macos/$base"
-  else
-    cp -L "$lib" "$macos/$base"
-  fi
+  merge "$(basename "$lib")"
 done
 shopt -u nullglob
 
@@ -57,9 +62,8 @@ codesign --force --deep --sign - "$app"
 hdiutil create -volname ScaleUP -srcfolder "$app" -ov -format UDZO "$out/scaleup-$version-macos.dmg"
 
 # --- per-target archives --------------------------------------------------------------------------
-for pair in "x86_64-apple-darwin:$x86" "aarch64-apple-darwin:$arm"; do
-  target="${pair%%:*}"
-  bin_dir="${pair#*:}"
+archive() {
+  local target="$1" bin_dir="$2" name stage
   name="scaleup-$version-$target"
   stage="$(mktemp -d)/$name"
   mkdir -p "$stage"
@@ -72,7 +76,11 @@ for pair in "x86_64-apple-darwin:$x86" "aarch64-apple-darwin:$arm"; do
   copy_docs "$stage"
   tar -C "$(dirname "$stage")" -czf "$out/$name.tar.gz" "$name"
   rm -rf "$(dirname "$stage")"
-done
+}
+archive aarch64-apple-darwin "$arm"
+if [ -n "$x86" ]; then
+  archive x86_64-apple-darwin "$x86"
+fi
 
 echo "bundle contents:"
 find "$app" -type f | sort

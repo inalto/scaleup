@@ -25,7 +25,7 @@ jobs:
         include:
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
-          - { target: x86_64-apple-darwin, os: macos-latest }
+          # x86_64-apple-darwin is left out: ort 2.0.0-rc.15 has no prebuilt ONNX Runtime for it.
           - { target: aarch64-apple-darwin, os: macos-latest }
     steps:
       - uses: actions/checkout@v4
@@ -77,6 +77,7 @@ jobs:
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
+          chmod +x packaging/*.sh
           packaging/tar_linux.sh "${{ steps.meta.outputs.version }}" "${{ matrix.target }}"
           cargo deb -p scaleup-app --no-build --target ${{ matrix.target }} --output dist/
           ls -la dist
@@ -149,18 +150,13 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: bin-x86_64-apple-darwin
-          path: bin/x86_64-apple-darwin
-
-      - uses: actions/download-artifact@v4
-        with:
           name: bin-aarch64-apple-darwin
           path: bin/aarch64-apple-darwin
 
-      - name: Bundle, dmg and archives
+      - name: Bundle, dmg and archive
         run: |
           chmod +x bin/*/scaleup bin/*/scaleup-app packaging/*.sh
-          packaging/bundle_macos.sh "${{ steps.meta.outputs.version }}" bin/x86_64-apple-darwin bin/aarch64-apple-darwin dist
+          packaging/bundle_macos.sh "${{ steps.meta.outputs.version }}" bin/aarch64-apple-darwin "" dist
           rm -rf dist/ScaleUP.app
 
       - uses: actions/upload-artifact@v4
