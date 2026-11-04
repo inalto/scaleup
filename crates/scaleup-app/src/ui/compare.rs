@@ -179,7 +179,7 @@ impl CompareView {
             );
         };
         if self.after.is_some() && self.before.is_some() {
-            let stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
+            let stroke = egui::Stroke::new(2.0_f32, egui::Color32::WHITE);
             painter.line_segment(
                 [
                     egui::pos2(split_x, rect.top()),
