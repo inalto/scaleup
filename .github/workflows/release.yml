@@ -1,13 +1,12 @@
 name: release
 
 on:
-  push:
-    tags: ["v*"]
   # Dry runs (manual, or a push to a release-dry-run/* branch) build and package every target and
   # keep the files as workflow artifacts; only a `v*` tag creates the GitHub release.
-  workflow_dispatch:
   push:
+    tags: ["v*"]
     branches: ["release-dry-run/**"]
+  workflow_dispatch:
 
 permissions:
   contents: write
