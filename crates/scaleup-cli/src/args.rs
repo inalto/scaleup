@@ -76,6 +76,9 @@ pub struct UpscaleArgs {
     /// Tile size, 0 = automatic, otherwise at least 32
     #[arg(short = 't', long, default_value_t = 0, value_parser = parse_tile)]
     pub tile: u32,
+    /// Pixels of context around each tile, capped at a quarter tile (default: what the model asks for)
+    #[arg(long)]
+    pub tile_overlap: Option<u32>,
     /// Device: auto, cpu or a GPU index
     #[arg(short = 'g', long, default_value = "auto", value_parser = validate_gpu)]
     pub gpu: String,

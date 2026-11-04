@@ -8,7 +8,7 @@ use image::{Rgba, RgbaImage};
 use crate::backend::{DeviceKind, Model};
 use crate::image32::Image32;
 use crate::resize::{resize_rgba, target_size};
-use crate::tiling::{auto_tile_size, run_tiled_into, tile_grid};
+use crate::tiling::{auto_tile_size, room_for_overlap, run_tiled_into, tile_grid};
 use crate::tta::TtaModel;
 use crate::{Result, ScaleUpError};
 
@@ -25,12 +25,12 @@ fn fit_tile(tile: u32, overlap: u32, model: &dyn Model) -> u32 {
 }
 
 /// Knobs for one upscale.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UpscaleOptions {
     /// Tile edge in pixels; 0 = automatic.
     pub tile_size: u32,
-    /// Context added around each tile, in pixels.
-    pub tile_overlap: u32,
+    /// Context added around each tile, in pixels; `None` = what the model asks for.
+    pub tile_overlap: Option<u32>,
     /// Average over 8 dihedral variants (8× slower, slightly better).
     pub tta: bool,
     /// Final scale 2, 3 or 4; `None` = the model's scale.
@@ -39,15 +39,11 @@ pub struct UpscaleOptions {
     pub output_width: Option<u32>,
 }
 
-impl Default for UpscaleOptions {
-    fn default() -> Self {
-        Self {
-            tile_size: 0,
-            tile_overlap: 16,
-            tta: false,
-            output_scale: None,
-            output_width: None,
-        }
+impl UpscaleOptions {
+    /// The overlap to use with `model`.
+    pub fn overlap_for(&self, model: &dyn Model) -> u32 {
+        self.tile_overlap
+            .unwrap_or_else(|| model.preferred_overlap())
     }
 }
 
@@ -111,13 +107,14 @@ pub fn upscale(
         ));
     }
     let target = target_size(w, h, model.scale(), opts.output_scale, opts.output_width)?;
+    let overlap = opts.overlap_for(model);
     let tile = if opts.tile_size == 0 {
-        auto_tile_size(DeviceKind::Cpu, None)
+        room_for_overlap(auto_tile_size(DeviceKind::Cpu, None), overlap)
     } else {
         opts.tile_size
     };
-    let tile = fit_tile(tile, opts.tile_overlap, model);
-    let per_pass = tile_grid(w, h, tile, opts.tile_overlap)?.len() as u32;
+    let tile = fit_tile(tile, overlap, model);
+    let per_pass = tile_grid(w, h, tile, overlap)?.len() as u32;
     if cancel.is_cancelled() {
         return Err(ScaleUpError::Cancelled);
     }
@@ -165,7 +162,7 @@ pub fn upscale(
                 }
             }
         };
-        run_tiled_into(model, img, tile, opts.tile_overlap, &mut on_tile, &mut sink)
+        run_tiled_into(model, img, tile, overlap, &mut on_tile, &mut sink)
     };
     pass(&rgb, 0, 0..3, progress)?;
     if has_alpha {
@@ -251,6 +248,71 @@ mod tests {
             &CancelToken::new(),
         );
         (res, events)
+    }
+
+    /// Nearest 2× that asks for a given overlap.
+    struct WantsOverlap(u32);
+
+    impl Model for WantsOverlap {
+        fn scale(&self) -> u32 {
+            2
+        }
+
+        fn preferred_overlap(&self) -> u32 {
+            self.0
+        }
+
+        fn run(&self, tile: &Image32) -> Result<Image32> {
+            NearestModel { scale: 2 }.run(tile)
+        }
+    }
+
+    /// Tiles reported when `model` upscales a 300×200 image.
+    fn tiles_used(model: &dyn Model, opts: &UpscaleOptions) -> u32 {
+        let mut tiles = 0;
+        upscale(
+            model,
+            &opaque(300, 200),
+            opts,
+            &mut |p| {
+                if let Progress::Tiles { total, .. } = p {
+                    tiles = total
+                }
+            },
+            &CancelToken::new(),
+        )
+        .unwrap();
+        tiles
+    }
+
+    #[test]
+    fn model_chooses_the_overlap_by_default() {
+        let opts = UpscaleOptions {
+            tile_size: 128,
+            ..Default::default()
+        };
+        let want = tile_grid(300, 200, 128, 32).unwrap().len() as u32;
+        assert_eq!(tiles_used(&WantsOverlap(32), &opts), want);
+    }
+
+    #[test]
+    fn explicit_overlap_overrides_the_model() {
+        let opts = UpscaleOptions {
+            tile_size: 128,
+            tile_overlap: Some(8),
+            ..Default::default()
+        };
+        let want = tile_grid(300, 200, 128, 8).unwrap().len() as u32;
+        assert_eq!(tiles_used(&WantsOverlap(32), &opts), want);
+    }
+
+    #[test]
+    fn automatic_tile_grows_so_the_overlap_is_not_capped() {
+        let want = tile_grid(300, 200, 256, 64).unwrap().len() as u32;
+        assert_eq!(
+            tiles_used(&WantsOverlap(64), &UpscaleOptions::default()),
+            want
+        );
     }
 
     #[test]

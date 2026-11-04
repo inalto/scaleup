@@ -69,6 +69,10 @@ impl Model for TtaModel<'_> {
         self.inner.max_input_side()
     }
 
+    fn preferred_overlap(&self) -> u32 {
+        self.inner.preferred_overlap()
+    }
+
     fn run(&self, tile: &Image32) -> Result<Image32> {
         let mut sum: Option<Image32> = None;
         for k in 0..8 {
@@ -143,5 +147,22 @@ mod tests {
     fn tta_scale_passthrough() {
         let inner = NearestModel { scale: 3 };
         assert_eq!(TtaModel { inner: &inner }.scale(), 3);
+    }
+
+    #[test]
+    fn tta_passes_the_preferred_overlap_on() {
+        struct Wants24;
+        impl Model for Wants24 {
+            fn scale(&self) -> u32 {
+                2
+            }
+            fn preferred_overlap(&self) -> u32 {
+                24
+            }
+            fn run(&self, tile: &Image32) -> crate::Result<Image32> {
+                NearestModel { scale: 2 }.run(tile)
+            }
+        }
+        assert_eq!(TtaModel { inner: &Wants24 }.preferred_overlap(), 24);
     }
 }

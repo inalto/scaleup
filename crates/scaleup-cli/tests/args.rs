@@ -38,3 +38,13 @@ fn bare_flags_reach_the_upscaler() {
         .assert()
         .code(2);
 }
+
+#[test]
+fn tile_overlap_flag_is_accepted() {
+    // Parsed; the missing input is an I/O error (2), not a usage error.
+    scaleup()
+        .args(["-i", "definitely-missing.png", "-o", "out.png", "-g", "cpu"])
+        .args(["--tile-overlap", "32"])
+        .assert()
+        .code(2);
+}

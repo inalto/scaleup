@@ -8,11 +8,12 @@ use crate::backend::{
     Backend, DeviceInfo, DevicePreference, Model, OrtBackend, create_backend, cross_preference,
     extra_backend, is_ncnn_model,
 };
+use crate::image32::Image32;
 use crate::io::{OutputFormat, load_image, save_image};
 use crate::pipeline::{CancelToken, Phase, Progress, UpscaleOptions, upscale};
 use crate::registry::{Registry, scale_from_name};
 use crate::resize::{resize_rgba, target_size};
-use crate::tiling::{auto_tile_size, tile_grid};
+use crate::tiling::{auto_tile_size, room_for_overlap, tile_grid};
 use crate::{Result, ScaleUpError};
 
 /// One input file → one output file.
@@ -27,6 +28,34 @@ pub struct FileJob {
     pub overwrite: bool,
     /// Run the model twice (second pass on the first result) before the final resize.
     pub double: bool,
+}
+
+/// A model whose catalogue entry names the overlap: the ONNX file itself does not say what it is.
+struct WithOverlap {
+    inner: Box<dyn Model>,
+    overlap: u32,
+}
+
+impl Model for WithOverlap {
+    fn scale(&self) -> u32 {
+        self.inner.scale()
+    }
+
+    fn input_multiple(&self) -> u32 {
+        self.inner.input_multiple()
+    }
+
+    fn max_input_side(&self) -> Option<u32> {
+        self.inner.max_input_side()
+    }
+
+    fn preferred_overlap(&self) -> u32 {
+        self.overlap
+    }
+
+    fn run(&self, tile: &Image32) -> Result<Image32> {
+        self.inner.run(tile)
+    }
 }
 
 /// A backend plus the model registry.
@@ -106,26 +135,33 @@ impl Upscaler {
         model: &str,
         download_progress: &mut dyn FnMut(u64, u64),
     ) -> Result<Box<dyn Model>> {
-        let (path, scale) = match self.registry.get(model) {
+        let (path, scale, overlap) = match self.registry.get(model) {
             Some(entry) => (
                 self.registry.ensure(model, download_progress)?,
                 Some(entry.scale),
+                entry.preferred_overlap(),
             ),
             None => {
                 let resolved = self.registry.resolve(model)?;
-                (resolved.path, resolved.scale)
+                (resolved.path, resolved.scale, None)
             }
         };
         let backend = self.backend_for(&path)?;
         let model = backend.load_model(&path, scale)?;
         *self.active.lock().unwrap_or_else(|e| e.into_inner()) = backend.device().clone();
-        Ok(model)
+        Ok(match overlap {
+            Some(overlap) => Box::new(WithOverlap {
+                inner: model,
+                overlap,
+            }),
+            None => model,
+        })
     }
 
-    /// `requested`, or the device's default tile size when it is 0.
-    pub fn effective_tile(&self, requested: u32) -> u32 {
+    /// `requested`, or when it is 0 the device's default tile size, grown to leave room for `overlap`.
+    pub fn effective_tile(&self, requested: u32, overlap: u32) -> u32 {
         if requested == 0 {
-            auto_tile_size(self.active_device().kind, None)
+            room_for_overlap(auto_tile_size(self.active_device().kind, None), overlap)
         } else {
             requested
         }
@@ -148,7 +184,7 @@ impl Upscaler {
         progress(Progress::Phase(Phase::Loading));
         let input = load_image(&job.input)?;
         let opts = UpscaleOptions {
-            tile_size: self.effective_tile(opts.tile_size),
+            tile_size: self.effective_tile(opts.tile_size, opts.overlap_for(model)),
             ..opts.clone()
         };
 
@@ -194,7 +230,8 @@ impl Upscaler {
             ..opts.clone()
         };
         let alpha = input.pixels().any(|p| p[3] != 255);
-        let second_estimate = pass_tiles(w * s, h * s, opts.tile_size, opts.tile_overlap, alpha);
+        let second_estimate =
+            pass_tiles(w * s, h * s, opts.tile_size, opts.overlap_for(model), alpha);
 
         let mut first_total = 0;
         let first = upscale(
@@ -355,12 +392,46 @@ mod tests {
     }
 
     #[test]
+    fn catalogue_model_uses_the_overlap_of_its_architecture() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = crate::registry::ModelEntry {
+            id: "span".into(),
+            name: "span".into(),
+            arch: "SPAN".into(),
+            scale: 2,
+            license: "MIT".into(),
+            commercial: true,
+            size_bytes: 0,
+            url: String::new(),
+            sha256: String::new(),
+            tags: vec![],
+            notes: String::new(),
+            format: "onnx".into(),
+        };
+        let registry = Registry::from_entries(vec![entry], dir.path().to_path_buf());
+        std::fs::copy(fixture(), registry.local_path("span")).unwrap();
+        let up = Upscaler::new(DevicePreference::Cpu, registry).unwrap();
+        let model = up.load("span", &mut |_, _| {}).unwrap();
+        assert_eq!(model.preferred_overlap(), 16);
+        assert_eq!(model.scale(), 2);
+    }
+
+    #[test]
+    fn model_file_of_unknown_architecture_uses_the_safe_overlap() {
+        let dir = tempfile::tempdir().unwrap();
+        let up = cpu_upscaler(dir.path());
+        let model = up.load(&fixture(), &mut |_, _| {}).unwrap();
+        assert_eq!(model.preferred_overlap(), 64);
+    }
+
+    #[test]
     fn effective_tile_uses_device_default() {
         let dir = tempfile::tempdir().unwrap();
         let up = cpu_upscaler(dir.path());
         assert_eq!(up.device().kind, DeviceKind::Cpu);
-        assert_eq!(up.effective_tile(0), 128);
-        assert_eq!(up.effective_tile(300), 300);
+        assert_eq!(up.effective_tile(0, 16), 128);
+        assert_eq!(up.effective_tile(0, 64), 256);
+        assert_eq!(up.effective_tile(300, 64), 300);
     }
 
     #[test]

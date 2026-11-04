@@ -424,7 +424,7 @@ impl Worker {
         self.emit(WorkerEvent::Log(format!(
             "model {model_id} ({}x) on {device}, automatic tile size {}",
             model.scale(),
-            upscaler.effective_tile(0)
+            upscaler.effective_tile(0, model.preferred_overlap())
         )));
         self.emit(WorkerEvent::Device(device));
         self.model = Some((model_id.to_string(), model));

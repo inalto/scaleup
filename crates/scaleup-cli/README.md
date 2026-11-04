@@ -22,6 +22,7 @@ scaleup --version
 | `-f` | `png`, `jpg` or `webp`; default is the output extension, else `png` | `-f webp` |
 | `-c` | quality 0..100 (default 90) | `-c 80` |
 | `-t` | tile size, `0` = automatic, otherwise at least 32 | `-t 256` |
+| `--tile-overlap` | pixels of context around each tile, capped at a quarter tile; default is what the model asks for | `--tile-overlap 32` |
 | `-g` | `auto`, `cpu` or a GPU index `0`..`9` | `-g cpu` |
 | `-x` | test-time augmentation (8x slower) | `-x` |
 | `--double` | run the model twice | `--double` |

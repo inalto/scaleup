@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use scaleup_core::{Image32, Model, Result, ScaleUpError};
 
 use crate::exec::{Executor, Plan, plan};
-use crate::ncnn::{Graph, infer_channels, infer_scale};
+use crate::ncnn::{Graph, LayerKind, infer_channels, infer_scale};
 
 const SIDE_STEP: u32 = 16;
 const SIDE_LIMIT: u32 = 16_384;
@@ -77,6 +77,21 @@ impl Model for NcnnModel {
         Some(self.max_side)
     }
 
+    /// By depth, from the seams measured in `BENCH.md`: the file does not name its architecture.
+    fn preferred_overlap(&self) -> u32 {
+        let convs = self
+            .graph
+            .layers
+            .iter()
+            .filter(|l| matches!(l.kind, LayerKind::Conv { .. }))
+            .count();
+        match convs {
+            0..=40 => 32,
+            41..=100 => 48,
+            _ => 64,
+        }
+    }
+
     fn run(&self, tile: &Image32) -> Result<Image32> {
         let plan = self.plan_for(tile.height, tile.width)?;
         self.exec.run(&self.graph, &plan, tile)
@@ -116,6 +131,20 @@ mod tests {
             }
         }
         img
+    }
+
+    #[test]
+    fn overlap_follows_the_depth_of_the_network() {
+        let Some(b) = backend() else { return };
+        for (name, want) in [
+            ("upscayl-lite-4x", 32),
+            ("digital-art-4x", 48),
+            ("upscayl-standard-4x", 64),
+        ] {
+            let Some(p) = model_path(name) else { continue };
+            let m = b.load_model(&p, None).unwrap();
+            assert_eq!(m.preferred_overlap(), want, "{name}");
+        }
     }
 
     #[test]
@@ -235,7 +264,7 @@ mod tests {
             let m = b.load_model(&model_path(name).unwrap(), None).unwrap();
             let opts = scaleup_core::UpscaleOptions {
                 tile_size: 256,
-                tile_overlap: 10,
+                tile_overlap: Some(10),
                 ..Default::default()
             };
             let ours = scaleup_core::upscale(

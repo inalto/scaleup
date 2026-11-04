@@ -174,10 +174,10 @@ pub fn run_upscale(
 
     let opts = UpscaleOptions {
         tile_size: args.tile,
+        tile_overlap: args.tile_overlap,
         tta: args.tta,
         output_scale: args.scale,
         output_width: args.width,
-        ..Default::default()
     };
     let ctx = Ctx {
         upscaler: &upscaler,

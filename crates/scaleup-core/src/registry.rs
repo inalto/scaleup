@@ -56,6 +56,18 @@ pub struct ModelEntry {
     pub format: String,
 }
 
+impl ModelEntry {
+    /// Tile overlap this architecture needs, when it has been measured. See `scaleup-wgpu/BENCH.md`.
+    pub fn preferred_overlap(&self) -> Option<u32> {
+        match self.arch.as_str() {
+            "SPAN" => Some(16),
+            "SRVGGNetCompact" => Some(32),
+            "RRDBNet" => Some(64),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct Manifest {
     models: Vec<ModelEntry>,
@@ -485,6 +497,25 @@ mod tests {
             tags: vec![],
             notes: String::new(),
             format: "onnx".into(),
+        }
+    }
+
+    #[test]
+    fn measured_architectures_name_their_overlap() {
+        let arch = |a: &str| ModelEntry {
+            arch: a.into(),
+            ..entry("m", String::new(), String::new())
+        };
+        assert_eq!(arch("SRVGGNetCompact").preferred_overlap(), Some(32));
+        assert_eq!(arch("SPAN").preferred_overlap(), Some(16));
+        assert_eq!(arch("RRDBNet").preferred_overlap(), Some(64));
+        assert_eq!(arch("ncnn").preferred_overlap(), None);
+    }
+
+    #[test]
+    fn every_catalogue_model_names_its_overlap() {
+        for e in Registry::builtin().entries() {
+            assert!(e.preferred_overlap().is_some(), "{}", e.id);
         }
     }
 

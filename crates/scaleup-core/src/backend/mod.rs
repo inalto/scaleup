@@ -127,6 +127,11 @@ pub trait Model: Send + Sync {
     fn max_input_side(&self) -> Option<u32> {
         None
     }
+    /// Context this network wants around each tile for the stitched result to show no seams, in
+    /// input pixels. A network that does not say gets the most any measured network needed.
+    fn preferred_overlap(&self) -> u32 {
+        64
+    }
     /// Output dimensions are input dimensions × [`Model::scale`].
     fn run(&self, tile: &Image32) -> Result<Image32>;
 }

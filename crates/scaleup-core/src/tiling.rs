@@ -87,6 +87,13 @@ pub fn effective_overlap(tile: u32, overlap: u32) -> u32 {
     overlap.min(tile / 4)
 }
 
+/// `tile`, grown if needed so that [`effective_overlap`] does not cap `overlap`. For automatic tile
+/// sizes only: with the overlap at its cap the stride is half a tile whatever the size, so this costs
+/// memory but no extra inference per pixel.
+pub fn room_for_overlap(tile: u32, overlap: u32) -> u32 {
+    tile.max(overlap.saturating_mul(4))
+}
+
 /// Default tile size (spec "Default tile size"): GPU with ≥ 6 GiB free → 512, other GPU → 256, CPU → 128.
 pub fn auto_tile_size(kind: DeviceKind, free_vram_bytes: Option<u64>) -> u32 {
     const SIX_GIB: u64 = 6 << 30;
