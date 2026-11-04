@@ -82,11 +82,13 @@ impl Http for UreqHttp {
             .collect();
         let content_type = header("content-type");
         let content_disposition = header("content-disposition");
+        // A decoded (compressed) body does not have the length of the header.
+        let encoded = header("content-encoding").is_some();
         let body = response.into_body();
         Ok(HttpResponse {
             content_type,
             content_disposition,
-            content_length: body.content_length(),
+            content_length: body.content_length().filter(|_| !encoded),
             cookies,
             body: Box::new(body.into_reader()),
         })
@@ -215,15 +217,33 @@ fn has_model_extension(name: &str) -> bool {
         .is_some_and(|(_, ext)| MODEL_EXTENSIONS.iter().any(|e| ext.eq_ignore_ascii_case(e)))
 }
 
-/// Keeps the last path segment, without control characters.
+/// The last path segment of `raw` when it is safe to use as a file name on every platform,
+/// else an empty string. Names with a drive prefix or stream marker (`:`), characters Windows
+/// forbids, control characters, a reserved device stem (`NUL`, `COM1`, ...) or a trailing dot
+/// are refused rather than repaired.
 fn sanitize_name(raw: &str) -> String {
-    let last = raw.rsplit(['/', '\\']).next().unwrap_or("");
-    let clean: String = last.chars().filter(|c| !c.is_control()).collect();
-    let clean = clean.trim().to_owned();
-    if clean == "." || clean == ".." {
+    let last = raw.rsplit(['/', '\\']).next().unwrap_or("").trim();
+    let stem = last.split('.').next().unwrap_or("").trim_end();
+    let upper = stem.to_ascii_uppercase();
+    let reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.len() == 4
+            && upper.as_bytes()[3].is_ascii_digit()
+            && upper.as_bytes()[3] != b'0');
+    let bad_char = |c: char| c.is_control() || matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*');
+    let one_component = {
+        let mut parts = Path::new(last).components();
+        matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none()
+    };
+    if last.is_empty()
+        || reserved
+        || last.chars().any(bad_char)
+        || last.ends_with(['.', ' '])
+        || !one_component
+    {
         String::new()
     } else {
-        clean
+        last.to_owned()
     }
 }
 
@@ -452,14 +472,27 @@ fn open_drive(http: &dyn Http, file_id: &str, fail: &dyn Fn() -> ScaleUpError) -
     Ok(second)
 }
 
-/// Streams the body to `dest`, hashing as it goes. Returns the SHA-256 in lowercase hex.
+/// The most bytes accepted for a file the card gives no size for.
+const MAX_UNKNOWN_SIZE: u64 = 4 * 1024 * 1024 * 1024;
+
+/// The most bytes accepted for a file: the card's size with some margin, else a fixed ceiling.
+fn byte_cap(size: Option<u64>) -> u64 {
+    size.map_or(MAX_UNKNOWN_SIZE, |s| {
+        s.saturating_add(s / 10).saturating_add(1024 * 1024)
+    })
+}
+
+/// Streams the body to `dest`, hashing as it goes. Returns the SHA-256 in lowercase hex. Fails
+/// when the body is longer than `cap` or shorter than its announced length.
 fn write_hashed(
     opened: Opened,
     dest: &Path,
     total_hint: Option<u64>,
+    cap: u64,
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<String> {
     let total = opened.content_length.or(total_hint);
+    let announced = opened.content_length;
     let name = dest.display().to_string();
     let io_err = |e: std::io::Error| ScaleUpError::Download(format!("{name}: {e}"));
     let mut out = BufWriter::new(File::create(dest)?);
@@ -475,7 +508,19 @@ fn write_hashed(
         hasher.update(&buf[..n]);
         out.write_all(&buf[..n])?;
         done += n as u64;
+        if done > cap {
+            return Err(ScaleUpError::Download(format!(
+                "{name}: the body is larger than the {cap} bytes expected"
+            )));
+        }
         progress(done, total);
+    }
+    if let Some(n) = announced
+        && n != done
+    {
+        return Err(ScaleUpError::Download(format!(
+            "{name}: truncated download, got {done} of {n} bytes"
+        )));
     }
     out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     Ok(format!("{:x}", hasher.finalize()))
@@ -576,7 +621,13 @@ pub fn install(
     fs::create_dir_all(&dir)?;
     let dest = dir.join(&name);
     let part = dir.join(format!("{name}.part"));
-    let actual = match write_hashed(opened, &part, resource.size, progress) {
+    let actual = match write_hashed(
+        opened,
+        &part,
+        resource.size,
+        byte_cap(resource.size),
+        progress,
+    ) {
         Ok(actual) => actual,
         Err(e) => {
             let _ = fs::remove_file(&part);
@@ -1238,6 +1289,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unsafe_file_names_fall_back_to_id_and_stay_in_the_model_folder() {
+        for bad in [
+            "C:evil.onnx",
+            "a:b.onnx",
+            "NUL.onnx",
+            "con",
+            "COM1.onnx",
+            "x.onnx.",
+            "a*b.onnx",
+        ] {
+            let c = card(
+                "span",
+                vec![resource(
+                    "onnx",
+                    "onnx",
+                    None,
+                    &["https://github.com/a/b/dl"],
+                )],
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let mut file = resp(b"w", "application/octet-stream");
+            file.content_disposition = Some(format!("attachment; filename=\"{bad}\""));
+            let http = Fake::with(vec![file]);
+            let m = install(&c, dir.path(), &onnx_caps(), &http, &mut |_, _| {}).unwrap();
+            let expected = dir.path().join("hub").join("4x-Test").join("4x-Test.onnx");
+            assert_eq!(m.file, expected, "{bad}");
+            assert!(m.file.is_file(), "{bad}");
+        }
+    }
+    #[test]
+    fn truncated_body_fails_even_without_a_card_hash() {
+        let c = card("span", vec![resource("onnx", "onnx", None, &[GH])]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut short = resp(b"half", "application/octet-stream");
+        short.content_length = Some(100);
+        let http = Fake::with(vec![short]);
+        let err = install(&c, dir.path(), &onnx_caps(), &http, &mut |_, _| {}).unwrap_err();
+        assert!(err.to_string().contains("truncated"), "{err}");
+        assert!(leftovers(dir.path()).is_empty());
+        assert!(Installed::load(dir.path()).models.is_empty());
+    }
+
+    #[test]
+    fn body_over_the_size_cap_fails_and_leaves_no_part() {
+        let mut r = resource("onnx", "onnx", None, &[GH]);
+        r.size = Some(10);
+        let c = card("span", vec![r]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut big = resp(&vec![7u8; 2 * 1024 * 1024], "application/octet-stream");
+        big.content_length = None;
+        let http = Fake::with(vec![big]);
+        let err = install(&c, dir.path(), &onnx_caps(), &http, &mut |_, _| {}).unwrap_err();
+        assert!(err.to_string().contains("larger than"), "{err}");
+        assert!(leftovers(dir.path()).is_empty());
+        assert_eq!(byte_cap(None), 4 * 1024 * 1024 * 1024);
+        assert_eq!(byte_cap(Some(1000)), 1100 + 1024 * 1024);
+    }
     #[test]
     fn rfc3339_known_dates() {
         assert_eq!(rfc3339_utc(0), "1970-01-01T00:00:00Z");
