@@ -10,7 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - CI on Linux, Windows and macOS (`cargo fmt`, `cargo clippy`, `cargo test`).
-- Release workflow: archives for the four targets, `.deb`, `.msi` and `.dmg` installers.
+- Release workflow: archives for Windows x64, Linux x64 and macOS arm64, plus `.deb`, `.msi` and `.dmg` installers.
 - Repository documentation: README, user guide, Upscayl compatibility notes, contribution files.
 
 ## [0.1.0] - 2026-11-04
