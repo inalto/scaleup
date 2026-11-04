@@ -20,8 +20,14 @@ const INPUT_SIDE: u32 = 18u;
 const SLAB: u32 = 8u;
 const PLANE: u32 = 324u; // 18 * 18
 const CACHE: u32 = 2592u; // 8 * 324, 10368 bytes
+const LOADS: u32 = 11u; // CACHE / 256, rounded up
 
 var<workgroup> cache: array<f32, 2592>;
+
+fn bias(i: u32) -> f32 {
+    if (p.c0 + i < p.c_out) { return aux_b[p.c0 + i]; }
+    return 0.0;
+}
 
 @compute @workgroup_size(16, 16, 1)
 fn main(
@@ -35,23 +41,25 @@ fn main(
 
     var sum = vec4<f32>(0.0);
     if (p.has_bias != 0u) {
-        for (var i = 0u; i < 4u; i++) {
-            if (p.c0 + i < p.c_out) { sum[i] = aux_b[p.c0 + i]; }
-        }
+        sum = vec4<f32>(bias(0u), bias(1u), bias(2u), bias(3u));
     }
 
     for (var base = 0u; base < p.c_in; base += SLAB) {
-        // Every invocation loads its share of the slab.
-        for (var i = li; i < CACHE; i += 256u) {
-            let ch = base + i / PLANE;
-            let rest = i % PLANE;
-            let sy = y0 + i32(rest / INPUT_SIDE);
-            let sx = x0 + i32(rest % INPUT_SIDE);
-            var v = 0.0;
-            if (ch < p.c_in && sy >= 0 && sx >= 0 && sy < i32(p.h) && sx < i32(p.w)) {
-                v = src[(ch * p.h + u32(sy)) * p.w + u32(sx)];
+        // Every invocation loads its share of the slab. The trip count must not depend on the
+        // invocation: FXC (DX12) refuses a barrier that follows such a loop.
+        for (var n = 0u; n < LOADS; n++) {
+            let i = li + n * 256u;
+            if (i < CACHE) {
+                let ch = base + i / PLANE;
+                let rest = i % PLANE;
+                let sy = y0 + i32(rest / INPUT_SIDE);
+                let sx = x0 + i32(rest % INPUT_SIDE);
+                var v = 0.0;
+                if (ch < p.c_in && sy >= 0 && sx >= 0 && sy < i32(p.h) && sx < i32(p.w)) {
+                    v = src[(ch * p.h + u32(sy)) * p.w + u32(sx)];
+                }
+                cache[i] = v;
             }
-            cache[i] = v;
         }
         workgroupBarrier();
 
@@ -78,9 +86,11 @@ fn main(
     } else if (p.act == 2u) {
         sum = select(sum, sum * p.slope, sum < vec4<f32>(0.0));
     }
-    for (var i = 0u; i < 4u; i++) {
-        if (p.c0 + i < p.c_out) {
-            dst[((p.c0 + i) * p.h + y) * p.w + x] = sum[i];
-        }
-    }
+    // Written out rather than looped: FXC unrolls loops over vector components, very slowly.
+    let at = y * p.w + x;
+    let plane_size = p.h * p.w;
+    dst[p.c0 * plane_size + at] = sum.x;
+    if (p.c0 + 1u < p.c_out) { dst[(p.c0 + 1u) * plane_size + at] = sum.y; }
+    if (p.c0 + 2u < p.c_out) { dst[(p.c0 + 2u) * plane_size + at] = sum.z; }
+    if (p.c0 + 3u < p.c_out) { dst[(p.c0 + 3u) * plane_size + at] = sum.w; }
 }

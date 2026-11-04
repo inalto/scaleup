@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::backend::{
-    Backend, DeviceInfo, DevicePreference, Model, OrtBackend, create_backend, extra_backend,
-    is_ncnn_model,
+    Backend, DeviceInfo, DevicePreference, Model, OrtBackend, create_backend, cross_preference,
+    extra_backend, is_ncnn_model,
 };
 use crate::io::{OutputFormat, load_image, save_image};
 use crate::pipeline::{CancelToken, Phase, Progress, UpscaleOptions, upscale};
@@ -33,6 +33,7 @@ pub struct FileJob {
 pub struct Upscaler {
     backend: Box<dyn Backend>,
     registry: Registry,
+    pref: DevicePreference,
     /// Created on demand for model files the main backend cannot load.
     other_backend: OnceLock<Box<dyn Backend>>,
     /// Device of the most recently loaded model.
@@ -53,6 +54,7 @@ impl Upscaler {
             active: Mutex::new(backend.device().clone()),
             backend,
             registry,
+            pref,
             other_backend: OnceLock::new(),
         })
     }
@@ -85,9 +87,11 @@ impl Upscaler {
                     "ncnn models need the wgpu backend, absent from this build".into(),
                 )
             })?;
-            (extra.create)(DevicePreference::Auto)?
+            (extra.create)(cross_preference(self.pref, true)).map_err(|e| {
+                ScaleUpError::Backend(format!("ncnn models need a GPU adapter: {e}"))
+            })?
         } else {
-            Box::new(OrtBackend::new(DevicePreference::Auto)?)
+            Box::new(OrtBackend::new(cross_preference(self.pref, false))?)
         };
         Ok(self.other_backend.get_or_init(|| created).as_ref())
     }

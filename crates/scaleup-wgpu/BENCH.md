@@ -45,3 +45,7 @@ Differences concentrate at the image border, which the two engines pad different
 ## Not done
 
 The optional half-precision storage for activations was not attempted.
+
+## Other APIs on this machine
+
+`kernels_work_on_every_adapter_of_this_machine` compiles the kernels and checks a convolution against the CPU reference on NVIDIA through Vulkan, NVIDIA through DX12, and the Microsoft Basic Render Driver. All three use the tiled kernel. Metal and Linux drivers have not been run.

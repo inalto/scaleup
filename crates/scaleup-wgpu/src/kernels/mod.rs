@@ -225,7 +225,12 @@ impl Kernels {
                 layout: Some(&pipeline_layout),
                 module: &module,
                 entry_point: Some("main"),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    // No kernel reads workgroup memory before writing it, and FXC takes a minute
+                    // over the generated initialisation of the tiled kernel's cache.
+                    zero_initialize_workgroup_memory: false,
+                    ..Default::default()
+                },
                 cache: None,
             })
         };
@@ -238,7 +243,23 @@ impl Kernels {
             interp: pipeline("interp", include_str!("interp_nearest.wgsl")),
             shuffle: pipeline("shuffle", include_str!("pixel_shuffle.wgsl")),
             tiled: use_tiled(limits)
-                .then(|| pipeline("conv tiled", include_str!("conv3x3_tiled.wgsl"))),
+                .then(|| {
+                    // Shader compilers differ between drivers. The direct kernel gives the same
+                    // result, so a refusal costs speed, not the run.
+                    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+                    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                    let compiled = pipeline("conv tiled", include_str!("conv3x3_tiled.wgsl"));
+                    let invalid = pollster::block_on(validation.pop());
+                    let failed = pollster::block_on(internal.pop());
+                    match invalid.or(failed) {
+                        None => Some(compiled),
+                        Some(e) => {
+                            tracing::warn!("using the direct convolution kernel: {e}");
+                            None
+                        }
+                    }
+                })
+                .flatten(),
             dummy: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("unused"),
                 size: 16,
@@ -684,6 +705,90 @@ mod tests {
         run_conv(g, &src, 8, 3, Activation::Leaky(0.2), 3, true);
         run_conv(g, &src, 5, 3, Activation::Relu, 4, false);
         run_conv(g, &src, 3, 1, Activation::None, 5, true);
+    }
+
+    /// Shader compilers differ: FXC behind DX12 refuses code that Vulkan accepts. Every API on this
+    /// machine must compile the kernels and compute the right numbers.
+    #[test]
+    fn kernels_work_on_every_adapter_of_this_machine() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+        let mut rng = Rng(81);
+        let src = rng.tensor(9, 17, 33);
+        let weights = rng.vec(7 * 9 * 9);
+        let biases = rng.vec(7);
+        let want = cpu_ref::conv(&src, 7, 3, &weights, &biases, Activation::Leaky(0.2));
+        for adapter in adapters {
+            let info = adapter.get_info();
+            let limits = adapter.limits();
+            let (device, queue) =
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                    required_limits: limits.clone(),
+                    ..Default::default()
+                }))
+                .unwrap();
+            let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+            let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let kernels = Kernels::new(&device, &limits);
+            assert!(pollster::block_on(validation.pop()).is_none(), "{info:?}");
+            assert!(pollster::block_on(internal.pop()).is_none(), "{info:?}");
+            assert_eq!(
+                kernels.has_tiled(),
+                use_tiled(&limits),
+                "{}: fast kernel refused",
+                info.name
+            );
+
+            let mk = |data: &[f32]| {
+                let b = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: (data.len() as u64 * 4).max(16),
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                queue.write_buffer(&b, 0, bytemuck::cast_slice(data));
+                b
+            };
+            let s = upload(&device, &queue, &src);
+            let d = Buf {
+                buffer: create_tensor_buffer(&device, tensor_bytes(7, 17, 33)),
+                c: 7,
+                h: 17,
+                w: 33,
+            };
+            let packed: Vec<f32> = pack_weights(&weights, 7, 9).into_iter().flatten().collect();
+            let (wb, bb, pb) = (mk(&weights), mk(&biases), mk(&packed));
+            let mut rec = Recorder::new(&kernels, &device, &queue);
+            kernels.conv(
+                &mut rec,
+                &ConvOp {
+                    src: &s,
+                    dst: &d,
+                    weights: if kernels.has_tiled() { &pb } else { &wb },
+                    biases: Some(&bb),
+                    k: 3,
+                    act: Activation::Leaky(0.2),
+                    packed: kernels.has_tiled().then_some(&pb),
+                },
+            );
+            rec.flush();
+            let got = read_back(&device, &queue, &d.buffer, want.data.len()).unwrap();
+            let worst = got
+                .iter()
+                .zip(&want.data)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            assert!(worst < 1e-3, "{}: max abs diff {worst}", info.name);
+            println!(
+                "{} {:?}: ok, tiled {}",
+                info.name,
+                info.backend,
+                kernels.has_tiled()
+            );
+        }
     }
 
     #[test]

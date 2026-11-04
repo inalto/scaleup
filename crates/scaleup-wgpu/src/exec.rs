@@ -227,6 +227,9 @@ pub struct Executor {
 impl Executor {
     /// Uploads the weights of `graph`.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, graph: &Graph) -> Result<Self> {
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let kernels = Kernels::new(&device, &device.limits());
         let upload = |data: &[f32]| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -271,6 +274,14 @@ impl Executor {
                 _ => None,
             })
             .collect();
+        let invalid = pollster::block_on(validation.pop());
+        let missing = pollster::block_on(memory.pop());
+        let failed = pollster::block_on(internal.pop());
+        if let Some(e) = missing.or(invalid).or(failed) {
+            return Err(ScaleUpError::Model(format!(
+                "cannot load the model on this GPU: {e}"
+            )));
+        }
         Ok(Self {
             device,
             queue,
@@ -355,8 +366,27 @@ impl Executor {
 
     pub fn run(&self, graph: &Graph, plan: &Plan, input: &Image32) -> Result<Image32> {
         let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
+        let size_hint = |e: wgpu::Error| {
+            ScaleUpError::Backend(format!(
+                "the GPU cannot run a {}x{} input, try a smaller tile size: {e}",
+                input.width, input.height
+            ))
+        };
         let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let slots = self.acquire(&mut pool, plan);
+        let invalid = pollster::block_on(validation.pop());
+        let missing = pollster::block_on(memory.pop());
+        // A buffer that failed to allocate must not be used: every later step would raise errors of
+        // its own.
+        if let Some(e) = missing.or(invalid) {
+            pool.clear();
+            return Err(size_hint(e));
+        }
+
+        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let buf = |blob: usize| {
             let (c, h, w) = plan.blob_shapes[blob];
             Buf {
@@ -385,16 +415,16 @@ impl Executor {
             &self.queue,
             &output.buffer,
             (c * h * w) as usize,
-        )?;
+        );
         drop(output);
-        if let Some(e) = pollster::block_on(memory.pop()) {
-            pool.clear();
-            return Err(ScaleUpError::Backend(format!(
-                "out of GPU memory for a {}x{} input, try a smaller tile size: {e}",
-                input.width, input.height
-            )));
-        }
+        let invalid = pollster::block_on(validation.pop());
+        let missing = pollster::block_on(memory.pop());
+        let failed = pollster::block_on(internal.pop());
         pool.clear();
+        if let Some(e) = missing.or(invalid).or(failed) {
+            return Err(size_hint(e));
+        }
+        let data = data?;
         pool.extend(slots);
         Ok(Image32 {
             width: w,
@@ -670,6 +700,30 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
         assert!(worst < 1e-3, "max abs diff {worst}");
+    }
+
+    /// A tile that cannot be allocated must come back as an error: wgpu would otherwise panic.
+    #[test]
+    fn unallocatable_plan_is_an_error_not_a_panic() {
+        let Ok(o) = crate::device::open_with_limits(
+            scaleup_core::DevicePreference::Auto,
+            wgpu::Limits::downlevel_defaults(),
+        ) else {
+            return;
+        };
+        let g = Graph {
+            layers: vec![
+                layer("in", LayerKind::Input, &[], &[0]),
+                layer("up", LayerKind::InterpNearest { scale: 300 }, &[0], &[1]),
+            ],
+            blob_count: 2,
+            input_blob: 0,
+            output_blob: 1,
+        };
+        let exec = Executor::new(o.device, o.queue, &g).unwrap();
+        let p = plan(&g, 3, 40, 40).unwrap();
+        let err = exec.run(&g, &p, &Image32::new(40, 40)).unwrap_err();
+        assert!(err.to_string().contains("smaller tile"), "{err}");
     }
 
     #[test]

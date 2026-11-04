@@ -135,6 +135,15 @@ pub mod ort;
 
 pub use self::ort::OrtBackend;
 
+/// The preference to give the backend of the other model format: an explicit choice carries over.
+pub(crate) fn cross_preference(pref: DevicePreference, to_ncnn: bool) -> DevicePreference {
+    match (pref, to_ncnn) {
+        (DevicePreference::Gpu(i), true) => DevicePreference::Vulkan(i),
+        (DevicePreference::Vulkan(i), false) => DevicePreference::Gpu(i),
+        (other, _) => other,
+    }
+}
+
 /// An ncnn network, named by its `.param` file.
 pub fn is_ncnn_model(path: &Path) -> bool {
     path.extension()
@@ -198,6 +207,17 @@ mod tests {
         assert_eq!(choose_backend(Auto, Some("wgpu"), true, true), Extra);
         assert_eq!(choose_backend(Auto, Some("ort"), false, true), Ort);
         assert_eq!(choose_backend(Vulkan(0), Some("ort"), true, true), Extra);
+    }
+
+    #[test]
+    fn explicit_device_choice_carries_across_formats() {
+        use DevicePreference::{Auto, Cpu, Gpu, Vulkan};
+        assert_eq!(cross_preference(Auto, true), Auto);
+        assert_eq!(cross_preference(Auto, false), Auto);
+        assert_eq!(cross_preference(Cpu, true), Cpu);
+        assert_eq!(cross_preference(Cpu, false), Cpu);
+        assert_eq!(cross_preference(Gpu(1), true), Vulkan(1));
+        assert_eq!(cross_preference(Vulkan(1), false), Gpu(1));
     }
 
     #[test]

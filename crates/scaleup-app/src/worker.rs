@@ -26,6 +26,9 @@ pub enum UiMsg {
     },
     Stop,
     ChangeDevice(String),
+    /// Makes the worker panic, as a GPU driver or validation failure would.
+    #[cfg(test)]
+    TestPanic,
     /// Fetch a catalogue model without running anything.
     Download(String),
     /// Decode this file as the new "before" image.
@@ -296,23 +299,52 @@ impl Worker {
     }
 
     fn run(&mut self) {
-        self.emit(WorkerEvent::Devices(list_devices()));
-        if let Err(e) = self.ensure_upscaler() {
-            self.emit(WorkerEvent::Error(e.to_string()));
-        }
-        while let Some(msg) = self.inbox.next() {
-            match msg {
-                UiMsg::Start { mode, settings } => self.start(&mode, &settings),
-                // Nothing is running, so there is nothing to stop.
-                UiMsg::Stop => {}
-                UiMsg::ChangeDevice(gpu) => self.change_device(gpu),
-                UiMsg::Preview(path) => match preview_event(&path, Which::Before) {
-                    Ok(ev) => self.emit(ev),
-                    Err(e) => self.emit(WorkerEvent::Error(format!("{}: {e}", path.display()))),
-                },
-                UiMsg::Download(id) => self.download(&id),
-                UiMsg::Quit => return,
+        self.guarded(|w| {
+            w.emit(WorkerEvent::Devices(list_devices()));
+            if let Err(e) = w.ensure_upscaler() {
+                w.emit(WorkerEvent::Error(e.to_string()));
             }
+        });
+        while let Some(msg) = self.inbox.next() {
+            if matches!(msg, UiMsg::Quit) {
+                return;
+            }
+            self.guarded(|w| w.handle(msg));
+        }
+    }
+
+    /// Runs `work`, turning a panic (wgpu raises GPU failures that way) into an `Error` event. The UI
+    /// would otherwise wait forever. Device and model are dropped: they may be what failed.
+    fn guarded(&mut self, work: impl FnOnce(&mut Self)) {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
+        if let Err(payload) = outcome {
+            let detail = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown failure");
+            self.model = None;
+            self.upscaler = None;
+            self.emit(WorkerEvent::Error(format!(
+                "processing stopped unexpectedly: {detail}"
+            )));
+        }
+    }
+
+    fn handle(&mut self, msg: UiMsg) {
+        match msg {
+            UiMsg::Start { mode, settings } => self.start(&mode, &settings),
+            // Nothing is running, so there is nothing to stop.
+            UiMsg::Stop => {}
+            UiMsg::ChangeDevice(gpu) => self.change_device(gpu),
+            UiMsg::Preview(path) => match preview_event(&path, Which::Before) {
+                Ok(ev) => self.emit(ev),
+                Err(e) => self.emit(WorkerEvent::Error(format!("{}: {e}", path.display()))),
+            },
+            UiMsg::Download(id) => self.download(&id),
+            #[cfg(test)]
+            UiMsg::TestPanic => panic!("test panic"),
+            UiMsg::Quit => {}
         }
     }
 
@@ -585,6 +617,33 @@ mod tests {
         h.tx.send(UiMsg::Download("remote".into())).unwrap();
         let evs = until_end(&h);
         assert!(matches!(evs.last(), Some(WorkerEvent::Error(_))), "{evs:?}");
+    }
+
+    #[test]
+    fn panic_in_worker_reports_error_and_recovers() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 8);
+        let h = cpu_worker(d.path());
+        h.tx.send(UiMsg::TestPanic).unwrap();
+        let evs = until_end(&h);
+        assert!(
+            matches!(evs.last(), Some(WorkerEvent::Error(e)) if e.contains("stopped unexpectedly")),
+            "{evs:?}"
+        );
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input),
+            settings: settings(d.path()),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert!(
+            matches!(
+                evs.last(),
+                Some(WorkerEvent::AllDone { done: 1, failed: 0 })
+            ),
+            "{evs:?}"
+        );
     }
 
     #[test]

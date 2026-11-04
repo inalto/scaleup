@@ -163,7 +163,13 @@ pub fn run_upscale(
     rep.info(&format!("model: {model_id} ({}x)", model.scale()));
     let active = upscaler.active_device();
     if active != *upscaler.device() {
-        rep.info(&format!("device for this model: {}", active.name));
+        let line = format!("this model runs on {}", active.name);
+        // Auto picked nothing in particular; an explicit choice deserves to know it was not used.
+        if pref == scaleup_core::DevicePreference::Auto {
+            rep.info(&line);
+        } else {
+            rep.warn(&line);
+        }
     }
 
     let opts = UpscaleOptions {

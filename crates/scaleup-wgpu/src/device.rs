@@ -62,17 +62,15 @@ fn usable_adapters() -> Vec<wgpu::Adapter> {
         let info = a.get_info();
         (type_rank(&info), backend_rank(info.backend))
     });
-    let mut seen = Vec::new();
-    adapters.retain(|a| {
-        let info = a.get_info();
-        let id = (info.vendor, info.device, info.name);
-        if seen.contains(&id) {
-            false
-        } else {
-            seen.push(id);
-            true
-        }
-    });
+    let keys: Vec<_> = adapters
+        .iter()
+        .map(|a| {
+            let info = a.get_info();
+            ((info.vendor, info.device, info.name), info.backend)
+        })
+        .collect();
+    let mut keep = distinct_cards(&keys).into_iter();
+    adapters.retain(|_| keep.next().unwrap_or(false));
     adapters
 }
 
@@ -132,9 +130,56 @@ fn open_impl(pref: DevicePreference, limits: Option<wgpu::Limits>) -> Result<Ope
     })
 }
 
+/// Which adapters of a best-first list to keep: each physical card once. Identical cards appear
+/// several times on one API, so the nth card of a kind on an API is matched to the nth on another.
+fn distinct_cards<K: PartialEq>(adapters: &[(K, wgpu::Backend)]) -> Vec<bool> {
+    adapters
+        .iter()
+        .enumerate()
+        .map(|(i, (key, backend))| {
+            let nth = adapters[..i]
+                .iter()
+                .filter(|(k, b)| k == key && b == backend)
+                .count();
+            // Kept unless an earlier API already showed this many cards of the kind.
+            let mut shown = 0;
+            let mut earlier: Vec<wgpu::Backend> = Vec::new();
+            for (k, b) in &adapters[..i] {
+                if k == key && b != backend && !earlier.contains(b) {
+                    earlier.push(*b);
+                    let count = adapters[..i]
+                        .iter()
+                        .filter(|(k2, b2)| k2 == key && b2 == b)
+                        .count();
+                    shown = shown.max(count);
+                }
+            }
+            nth >= shown
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identical_cards_stay_separate_and_apis_of_one_card_collapse() {
+        use wgpu::Backend::{Dx12, Vulkan};
+        let list = [
+            ("a", Vulkan),
+            ("a", Vulkan),
+            ("b", Vulkan),
+            ("a", Dx12),
+            ("a", Dx12),
+            ("b", Dx12),
+            ("c", Dx12),
+        ];
+        assert_eq!(
+            distinct_cards(&list),
+            [true, true, true, false, false, false, true]
+        );
+    }
 
     #[test]
     fn list_adapters_does_not_panic_without_gpu() {
