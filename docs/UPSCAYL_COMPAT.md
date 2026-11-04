@@ -17,7 +17,7 @@ exactly as the original binary does.
 | `-s output-scale` | `-s 2\|3\|4` | same semantics: model at native scale, then resize |
 | `-r resize` | not supported in v1 | use `-w <width>`; `WxH` and the resize-filter choice are not available |
 | `-w width` | `-w <px>` | same; overrides `-s` |
-| `-c compress` | `-c <0..100>` | **inverted meaning**: `upscayl-bin -c` is a compression amount (0 = none, the default); `scaleup -c` is a *quality* (100 = best, default 90). A script passing `-c 0` now gets the lowest quality; drop the flag or pass `-c 90` |
+| `-c compress` | `-c <0..100>` | **inverted meaning**: `upscayl-bin -c` is a compression amount (0 = none, the default); `scaleup -c` is a *quality* (100 = best, default 90). A script passing `-c 0` now gets the lowest JPEG quality (fastest PNG compression; WebP is always lossless); drop the flag or pass `-c 90` |
 | `-t tile-size` | `-t <n>` | same; `0` = auto; the multi-GPU `0,0,0` form is not supported |
 | `-m model-path` | `-m <dir>` | same; also `SCALEUP_MODELS_DIR` |
 | `-n model-name` | `-n <id\|file>` | same ids; also a path to an `.onnx` or `.param` file |

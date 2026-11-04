@@ -6,6 +6,9 @@ on:
     tags-ignore: ["v*"]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0

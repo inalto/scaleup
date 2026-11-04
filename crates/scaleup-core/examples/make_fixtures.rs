@@ -196,6 +196,28 @@ mod tests {
         assert_eq!(decode("odd_1001x733.png").color(), image::ColorType::Rgb8);
     }
 
+    /// The committed files are what the generator produces (compared as decoded pixels, so an
+    /// encoder update that changes bytes but not content does not fail the build).
+    #[test]
+    fn committed_fixtures_match_generator() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/images");
+        for (name, bytes) in fixtures() {
+            let committed = fs::read(dir.join(name))
+                .unwrap_or_else(|e| panic!("tests/fixtures/images/{name}: {e}"));
+            let want = image::load_from_memory(&bytes)
+                .expect("generated decodes")
+                .to_rgba8();
+            let got = image::load_from_memory(&committed)
+                .expect("committed decodes")
+                .to_rgba8();
+            assert_eq!(got.dimensions(), want.dimensions(), "{name}: dimensions");
+            assert!(
+                got.as_raw() == want.as_raw(),
+                "{name}: pixels differ; rerun make_fixtures"
+            );
+        }
+    }
+
     #[test]
     fn total_size_under_100_kib() {
         let total: usize = fixtures().iter().map(|(_, b)| b.len()).sum();

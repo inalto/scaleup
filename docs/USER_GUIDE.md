@@ -19,9 +19,11 @@ brackets is the command-line spelling, the app exposes the same setting in its s
 
 **"Non-commercial"** models are published under CC-BY-NC-SA-4.0: you may use them and their output
 for personal, educational or research purposes, but not for anything commercial (client work,
-products, paid content). The app shows them behind a badge and asks before the first use; the
-command line prints the license once. Which uses count as commercial is between you and the model
-author; when in doubt use a BSD or CC-BY model.
+products, paid content). The app lists them in a collapsed "Non-commercial" group with a license
+badge next to the selected model; the command line accepts them like any other id and does not
+warn, so check `scaleup models info <id>` (license name and the first line of its text) and
+`models/licenses/<id>.txt` for the full terms. Which uses count as commercial is between you and
+the model author; when in doubt use a BSD or CC-BY model.
 
 ## Scale versus custom width
 
@@ -62,9 +64,9 @@ actually need.
 ## Formats and quality
 
 `-f png|jpg|webp` picks the output format (default: the extension of `-o`, else PNG). `-c 0..100`
-is the quality (default 90): for JPEG and WebP it is the usual quality scale (100 = best), for PNG
-it selects the compression effort (0 = fastest, 100 = smallest file). PNG and WebP keep the alpha
-channel; JPEG flattens it on white.
+is the quality (default 90): for JPEG it is the usual quality scale (100 = best), for PNG it
+selects the compression effort (0 = fastest, 100 = smallest file). WebP output is always lossless
+and ignores `-c`. PNG and WebP keep the alpha channel; JPEG flattens it on white.
 
 ## Batch folders and output naming
 

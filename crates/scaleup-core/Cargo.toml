@@ -35,3 +35,8 @@ ort = { workspace = true, features = ["coreml"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+# The fixture generator carries its own tests (examples are not tested by default).
+[[example]]
+name = "make_fixtures"
+test = true

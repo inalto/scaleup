@@ -8,8 +8,10 @@ on:
     branches: ["release-dry-run/**"]
   workflow_dispatch:
 
+# Build jobs run third-party actions and an external download with a read-only token; only the
+# release job gets write access.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,16 +32,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # version      archive names and Info.plist, e.g. 0.1.0 or 0.1.0-rc1 (dry runs: 0.0.0-ciN)
+      # deb_version  Debian spelling, pre-release after "~" so it sorts before the final: 0.1.0~rc1
+      # msi_version  numeric ProductVersion (pre-release suffix dropped): 0.1.0
       - name: Version from tag
         id: meta
         shell: bash
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.0-ci$GITHUB_RUN_NUMBER"; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "deb_version=${v/-/\~}" >> "$GITHUB_OUTPUT"
+          echo "msi_version=${v%%-*}" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      # A final tag must match the workspace version so that the installers' own version fields
+      # (Add/Remove Programs, dpkg) agree with the release.
+      - name: Check tag against Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+        shell: bash
+        run: |
+          crate="$(cargo pkgid -p scaleup-app | sed 's/.*@//')"
+          if [[ "$crate" != "${{ steps.meta.outputs.version }}" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME but [workspace.package] version is $crate; bump Cargo.toml first"
+            exit 1
+          fi
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -79,8 +98,10 @@ jobs:
         run: |
           chmod +x packaging/*.sh
           packaging/tar_linux.sh "${{ steps.meta.outputs.version }}" "${{ matrix.target }}"
-          cargo deb -p scaleup-app --no-build --target ${{ matrix.target }} --output dist/
+          cargo deb -p scaleup-app --no-build --target ${{ matrix.target }} --deb-version "${{ steps.meta.outputs.deb_version }}-1" --output dist/
           ls -la dist
+          dpkg-deb -I dist/*.deb
+          dpkg-deb -c dist/*.deb
 
       # ---------------------------------------------------------------- Windows: zip + .msi
       - name: Install WiX 3
@@ -89,6 +110,9 @@ jobs:
         run: |
           $zip = Join-Path $env:RUNNER_TEMP "wix314.zip"
           Invoke-WebRequest -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip" -OutFile $zip
+          $expected = "6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31"
+          $actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          if ($actual -ne $expected) { throw "wix314-binaries.zip sha256 $actual, expected $expected" }
           $dir = Join-Path $env:RUNNER_TEMP "wix314"
           Expand-Archive -Path $zip -DestinationPath $dir -Force
           Add-Content -Path $env:GITHUB_PATH -Value $dir
@@ -106,7 +130,7 @@ jobs:
           $v = "${{ steps.meta.outputs.version }}"
           $t = "${{ matrix.target }}"
           powershell -ExecutionPolicy Bypass -File packaging\zip_windows.ps1 -Version $v -Target $t
-          cargo wix -p scaleup-app --nocapture --no-build --target $t --output "dist\scaleup-$v-$t.msi"
+          cargo wix -p scaleup-app --nocapture --no-build --target $t --install-version "${{ steps.meta.outputs.msi_version }}" --output "dist\scaleup-$v-$t.msi"
           Get-ChildItem dist
 
       # ---------------------------------------------------------------- macOS: raw binaries for the bundle job
@@ -170,6 +194,8 @@ jobs:
     needs: [build, bundle-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 

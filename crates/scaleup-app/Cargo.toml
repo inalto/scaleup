@@ -35,7 +35,8 @@ license-file = ["../../LICENSE", "0"]
 extended-description = "AI image upscaler (Real-ESRGAN family) with a command line and a desktop app. Rust rebuild inspired by Upscayl."
 section = "graphics"
 priority = "optional"
-depends = "libgtk-3-0, libc6"
+# $auto = dpkg-shlibdeps result (libc6 with the glibc version the binaries were built against, etc.).
+depends = "$auto, libgtk-3-0"
 maintainer-scripts = "../../packaging/deb"
 assets = [
   ["target/release/scaleup", "usr/lib/scaleup/", "755"],

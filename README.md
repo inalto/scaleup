@@ -19,12 +19,13 @@ More in [`docs/screenshots/`](docs/screenshots/).
 
 Download the archive or installer for your platform from the
 [Releases](https://github.com/inalto/scaleup/releases) page. Every archive contains `scaleup`,
-`scaleup-app`, the ONNX Runtime provider libraries, `LICENSE`, this README and the model licenses.
+`scaleup-app`, `LICENSE`, this README and the model licenses; the Windows and Linux archives also
+carry the ONNX Runtime provider libraries (ONNX Runtime itself is linked statically).
 
 | OS | Archive | Installer |
 |---|---|---|
 | Windows x64 | `scaleup-<version>-x86_64-pc-windows-msvc.zip` | `scaleup-<version>-x86_64-pc-windows-msvc.msi` |
-| Linux x64 | `scaleup-<version>-x86_64-unknown-linux-gnu.tar.gz` | `scaleup_<version>_amd64.deb` |
+| Linux x64 | `scaleup-<version>-x86_64-unknown-linux-gnu.tar.gz` | `scaleup_<version>-1_amd64.deb` |
 | macOS Apple Silicon | `scaleup-<version>-aarch64-apple-darwin.tar.gz` | `scaleup-<version>-macos.dmg` |
 
 Intel Macs are not covered by the release builds yet: the `ort` crate ships no prebuilt ONNX
@@ -65,8 +66,10 @@ next provider.
 
 ## Models
 
-The catalogue is `models/manifest.json`; every model's license text is in `models/licenses/` and is
-shown by `scaleup models info <id>`. Non-commercial models are listed but must be opted into.
+The catalogue is `models/manifest.json`; every model's license text is in `models/licenses/`, and
+`scaleup models info <id>` prints the license name. Non-commercial models are listed in a separate,
+collapsed group in the app and marked with a badge; the command line accepts them like any other
+id, so check the license before using their output.
 
 | id | Scale | License | Commercial use |
 |---|---|---|---|
@@ -84,7 +87,7 @@ Your own `.onnx` files work with `-n path/to/model.onnx`; folders of ncnn `.para
 
 ## Build from source
 
-Rust 1.85 or newer (edition 2024). On Linux install the GTK and xdo development packages first:
+Rust 1.88 or newer (edition 2024, let chains, `as_chunks`). On Linux install the GTK and xdo development packages first:
 
 ```bash
 sudo apt-get install libgtk-3-dev libxdo-dev
