@@ -1,0 +1,79 @@
+name: Bug report
+description: Something does not work as described in the user guide
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The fields below are what we need to reproduce it.
+  - type: input
+    id: version
+    attributes:
+      label: ScaleUP version
+      description: Output of `scaleup --version`, or the release you downloaded
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Windows
+        - Linux
+        - macOS
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: "Windows 11 24H2, Ubuntu 24.04, macOS 15.1"
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+      placeholder: "NVIDIA RTX 3060, driver 560.94 / Apple M2 / none"
+    validations:
+      required: true
+  - type: textarea
+    id: devices
+    attributes:
+      label: Output of `scaleup devices`
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or app settings
+      description: The exact `scaleup` command line, or the settings used in the app
+      render: shell
+      placeholder: "scaleup upscale -i in.jpg -o out/ -n realesrgan-x4plus -g auto"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: "realesrgan-x4plus, or the path to your own .onnx / .param"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Run with `-v` (or copy the app's log panel). Paste it as is.
+      render: text
+  - type: textarea
+    id: image
+    attributes:
+      label: Input image
+      description: If the problem depends on the image, attach it (or one that shows the same thing).
