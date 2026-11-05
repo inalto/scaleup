@@ -54,7 +54,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
         shell: bash
         run: |
-          crate="$(cargo pkgid -p scaleup-app | sed 's/.*@//')"
+          crate="$(cargo pkgid -p scaleup-app | sed 's/.*[#@]//')"
           if [[ "$crate" != "${{ steps.meta.outputs.version }}" ]]; then
             echo "::error::tag $GITHUB_REF_NAME but [workspace.package] version is $crate; bump Cargo.toml first"
             exit 1
