@@ -15,7 +15,7 @@ use super::download::{
     Checked, Fetched, Host, Http, check_id, check_import, classify_url, fetch,
     manual_pytorch_error, register,
 };
-use super::installed::InstalledModel;
+use super::installed::{Installed, InstalledModel};
 use crate::{Result, ScaleUpError};
 
 /// The line that installs what a conversion needs. Error messages carry it on a line of its own.
@@ -159,7 +159,9 @@ fn part_of(output: &Path) -> PathBuf {
 /// dynamic H/W, output `output`, opset 17). Fails with the script's one-line reason.
 ///
 /// `cancelled` is asked about every 100 ms while Python runs; when it answers true, Python is
-/// killed, `output` and its `.part` are removed and the result is [`ScaleUpError::Cancelled`].
+/// killed, the `.part` is removed and the result is [`ScaleUpError::Cancelled`]. The script only
+/// renames its `.part` over `output` on success, so a failure or cancel leaves an earlier
+/// `output` as it was.
 pub fn convert_to_onnx(
     python: &Python,
     input: &Path,
@@ -184,7 +186,6 @@ pub fn convert_to_onnx(
         .spawn()
         .map_err(|e| ScaleUpError::Model(format!("{}: {e}", python.exe.display())))?;
     let discard = || {
-        let _ = fs::remove_file(&output);
         let _ = fs::remove_file(part_of(&output));
     };
     let status = loop {
@@ -325,8 +326,9 @@ pub(crate) fn pick_pytorch(card: &ModelCard) -> Option<(&Resource, usize)> {
 /// with `python` and records the ONNX file in `installed.json` (`format: "onnx"`, `verified` as
 /// the download was, the ONNX file's SHA-256). `converting` is called between the two steps;
 /// `cancelled` is asked while Python runs (see [`convert_to_onnx`]). The PyTorch file is deleted
-/// afterwards, and on failure or cancel. A card whose PyTorch file is only on manual hosts fails
-/// with where to get it and the `hub import` to run.
+/// afterwards, and on failure or cancel unless it is the file of the installation still listed
+/// (a native install of the same file), which a failure leaves in place. A card whose PyTorch
+/// file is only on manual hosts fails with where to get it and the `hub import` to run.
 pub fn install_converted(
     card: &ModelCard,
     models_dir: &Path,
@@ -354,7 +356,12 @@ pub fn install_converted(
     converting();
     let onnx = file.with_extension("onnx");
     let converted = convert_and_hash(python, &file, &onnx, cancelled);
-    let _ = fs::remove_file(&file);
+    let listed = Installed::load(models_dir)
+        .get(&card.id)
+        .is_some_and(|m| m.file == file);
+    if converted.is_ok() || !listed {
+        let _ = fs::remove_file(&file);
+    }
     register(
         card,
         models_dir,
@@ -414,18 +421,18 @@ fn check_rgb(card: &ModelCard) -> Result<()> {
     Ok(())
 }
 
-/// [`convert_to_onnx`], then the SHA-256 of the result; `onnx` is removed on failure.
+/// [`convert_to_onnx`], then the SHA-256 of the result. A failed conversion leaves an earlier
+/// `onnx` (an installation still listed) alone; a converted file that cannot be hashed is removed.
 fn convert_and_hash(
     python: &Python,
     input: &Path,
     onnx: &Path,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<String> {
-    let result = convert_to_onnx(python, input, onnx, cancelled).and_then(|()| file_sha256(onnx));
-    if result.is_err() {
+    convert_to_onnx(python, input, onnx, cancelled)?;
+    file_sha256(onnx).inspect_err(|_| {
         let _ = fs::remove_file(onnx);
-    }
-    result
+    })
 }
 
 #[cfg(test)]
@@ -611,6 +618,163 @@ mod tests {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
         path
+    }
+
+    /// A stand-in for Python whose conversion writes `<output>.part` and fails at once, as the
+    /// real script does when spandrel rejects a checkpoint.
+    fn failing_python(dir: &Path) -> PathBuf {
+        #[cfg(windows)]
+        let (name, text) = (
+            "failing.cmd",
+            "@echo off\r\nif \"%~1\"==\"-c\" (\r\necho 3\r\nexit /b 0\r\n)\r\necho partial> \"%~3.part\"\r\necho unsupported model 1>&2\r\nexit /b 1\r\n",
+        );
+        #[cfg(not(windows))]
+        let (name, text) = (
+            "failing",
+            "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then echo 3; exit 0; fi\necho partial > \"$3.part\"\necho unsupported model >&2\nexit 1\n",
+        );
+        let path = dir.join(name);
+        fs::write(&path, text).unwrap();
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    const GOOD_ONNX: &[u8] = b"an earlier, good conversion";
+
+    #[test]
+    fn failed_conversion_keeps_an_existing_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let python = Python {
+            exe: failing_python(dir.path()),
+        };
+        let pth = dir.path().join("m.pth");
+        fs::write(&pth, b"x").unwrap();
+        let out = dir.path().join("m.onnx");
+        fs::write(&out, GOOD_ONNX).unwrap();
+        let err = convert_to_onnx(&python, &pth, &out, &mut || false).unwrap_err();
+        assert!(err.to_string().contains("unsupported model"), "{err}");
+        assert_eq!(fs::read(&out).unwrap(), GOOD_ONNX);
+        assert!(!part_of(&out).exists(), "the .part file is removed");
+    }
+
+    #[test]
+    fn cancelled_conversion_keeps_an_existing_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let python = Python {
+            exe: fake_python(dir.path(), true),
+        };
+        let pth = dir.path().join("m.pth");
+        fs::write(&pth, b"x").unwrap();
+        let out = dir.path().join("m.onnx");
+        fs::write(&out, GOOD_ONNX).unwrap();
+        let mut cancelled = cancel_after(Duration::from_millis(1500));
+        let err = convert_to_onnx(&python, &pth, &out, &mut cancelled).unwrap_err();
+        assert!(matches!(err, ScaleUpError::Cancelled), "{err:?}");
+        assert_eq!(fs::read(&out).unwrap(), GOOD_ONNX);
+        assert!(!part_of(&out).exists(), "the .part file is removed");
+    }
+
+    /// Registers `file` (with `bytes`) as the installed model of `c`, as an earlier install did.
+    fn installed_before(c: &ModelCard, models: &Path, file: &str, bytes: &[u8]) -> PathBuf {
+        let dir = models.join("hub").join(&c.id);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(file);
+        fs::write(&path, bytes).unwrap();
+        let format = Path::new(file)
+            .extension()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        register(c, models, path.clone(), format, sha(bytes), true, GH_PTH).unwrap();
+        path
+    }
+
+    #[test]
+    fn failed_reinstall_keeps_the_converted_installation() {
+        let dir = tempfile::tempdir().unwrap();
+        let python = Python {
+            exe: failing_python(dir.path()),
+        };
+        let models = dir.path().join("models");
+        let body = b"checkpoint".to_vec();
+        let c = card(
+            "dat",
+            vec![resource("pth", "pytorch", Some(sha(&body)), &[GH_PTH])],
+        );
+        let onnx = installed_before(&c, &models, "4x-Test.onnx", GOOD_ONNX);
+        let http = Fake::with(vec![resp(&body, "application/octet-stream")]);
+        install_converted(
+            &c,
+            &models,
+            &python,
+            &http,
+            &mut |_, _| {},
+            &mut || {},
+            &mut || false,
+        )
+        .unwrap_err();
+        assert_eq!(fs::read(&onnx).unwrap(), GOOD_ONNX);
+        assert_eq!(Installed::load(&models).get("4x-Test").unwrap().file, onnx);
+        assert!(
+            !onnx.with_extension("pth").exists(),
+            "the download is dropped"
+        );
+    }
+
+    #[test]
+    fn failed_conversion_keeps_a_native_installation_of_the_same_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let python = Python {
+            exe: failing_python(dir.path()),
+        };
+        let models = dir.path().join("models");
+        let body = b"checkpoint".to_vec();
+        let c = card(
+            "dat",
+            vec![resource("pth", "pytorch", Some(sha(&body)), &[GH_PTH])],
+        );
+        let pth = installed_before(&c, &models, "4x-Test.pth", &body);
+        let http = Fake::with(vec![resp(&body, "application/octet-stream")]);
+        install_converted(
+            &c,
+            &models,
+            &python,
+            &http,
+            &mut |_, _| {},
+            &mut || {},
+            &mut || false,
+        )
+        .unwrap_err();
+        assert_eq!(fs::read(&pth).unwrap(), body);
+        assert_eq!(Installed::load(&models).get("4x-Test").unwrap().file, pth);
+    }
+
+    #[test]
+    fn failed_import_conversion_keeps_the_converted_installation() {
+        let dir = tempfile::tempdir().unwrap();
+        let python = Python {
+            exe: failing_python(dir.path()),
+        };
+        let models = dir.path().join("models");
+        let src = dir.path().join("4x-Test.pth");
+        fs::write(&src, b"weights").unwrap();
+        let c = card(
+            "dat",
+            vec![resource(
+                "pth",
+                "pytorch",
+                Some(sha(b"weights")),
+                &["https://mega.nz/x"],
+            )],
+        );
+        let onnx = installed_before(&c, &models, "4x-Test.onnx", GOOD_ONNX);
+        import_converted(&c, &src, &models, &python, &mut || false).unwrap_err();
+        assert_eq!(fs::read(&onnx).unwrap(), GOOD_ONNX);
+        assert!(src.exists());
     }
 
     /// Answers false for `after`, then true.
