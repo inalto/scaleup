@@ -35,7 +35,8 @@ name says which was used (`_4x_` or `_3840px_`).
 
 ## Tile size and VRAM
 
-Images are cut into tiles that overlap by 16 px, so the whole image never has to fit in GPU memory.
+Images are cut into tiles that overlap by 16 to 64 px, depending on the model (`--tile-overlap`
+overrides it), so the whole image never has to fit in GPU memory.
 `-t 0` (auto, the default) picks a size by device:
 
 | Device | Auto tile |
@@ -46,7 +47,8 @@ Images are cut into tiles that overlap by 16 px, so the whole image never has to
 
 Lower it (`-t 256`, `-t 128`) when the run fails with an out-of-memory error, when the GPU is shared
 with other work, or when a large tile makes the UI stutter. Smaller tiles cost a little speed
-(more overlap is recomputed) and nothing in quality. Values below 32 are rejected. Images smaller
+(more overlap is recomputed) and nothing in quality, except for RealPLKSR models without layer norm
+(see [OpenModelDB](#openmodeldb)). Values below 32 are rejected. Images smaller
 than one tile are processed whole with reflect padding.
 
 ## TTA
@@ -128,13 +130,14 @@ what should happen and how fast it must be, and suggests five models with the re
 in the model picker under **From OpenModelDB**. A model whose file the catalogue lists without a sha256 is
 installed with a warning that it could not be verified.
 
-**RealPLKSR and tiles.** Most RealPLKSR models (those without layer norm, such as `4x-NomosWebPhoto-RealPLKSR`
-and `4x-RealPLKSR-Pretrain-V4`) normalise over the whole picture they are given, so each tile is normalised on
+**RealPLKSR and tiles.** RealPLKSR models without layer norm (such as `4x-NomosWebPhoto-RealPLKSR`
+and `4x-RealPLKSR-Pretrain-V4`; ScaleUP does not show which kind a model is) normalise over the whole picture they are given, so each tile is normalised on
 its own and the result depends on the tile layout: at the default tile, values differ from a one-tile run by
 under 1 level on average but by up to 79 in places, and faint lines can show where tiles meet. A larger overlap
 does not help. Set the tile size at least as large as the image's longer side (`-t 1024` for an image up to
 1024 px) so the image runs as one tile; that needs more GPU memory, and when the GPU cannot take a tile that
-size ScaleUP shrinks it and the effect comes back. This applies to the PyTorch file and to its ONNX conversion.
+size ScaleUP shrinks it and the effect comes back, so an image larger than the GPU's largest tile has no
+remedy yet. The same is expected of the model's ONNX conversion, which is tiled the same way.
 
 **On the command line** the same is available as `scaleup hub search | info | install | import | remove |
 recommend | refresh`; see `scaleup hub --help` and the [CLI README](../crates/scaleup-cli/README.md).
@@ -163,7 +166,7 @@ known.
 | "sha256 mismatch" or a model that fails to load after a download | delete the file in the models directory (see below) and run the command again; the download restarts and is verified. |
 | Download hangs or fails | check the proxy settings; `SCALEUP_MODELS_DIR` can point at a folder you filled manually from the Releases page. |
 | Output looks blurry | the model ran at its native scale and was downscaled: use a 2× model for 2×, or raise the output size. |
-| Seams or a grid in the output | report it with the image, model and `-t` value; tiles overlap by 16 px and should be invisible. |
+| Seams or a grid in the output | report it with the image, model and `-t` value; tiles overlap by the model's own amount (16 to 64 px) and should be invisible, except for RealPLKSR models without layer norm (see OpenModelDB). |
 | App window opens blank or crashes at start on Linux | install `libgtk-3-0` and a Vulkan driver (`mesa-vulkan-drivers`), or run the CLI. |
 
 Run with `-v` (or open the app's log panel) to see the device, model and phases.

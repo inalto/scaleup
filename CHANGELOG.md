@@ -19,6 +19,14 @@ First published release: everything listed under 0.2.0 and 0.1.0 below, with upd
 
 - The release workflow's check of the tag against the workspace version, which stopped the 0.2.0
   release before it built anything.
+- The Mish activation returned NaN for large values on DX12.
+- A failed or cancelled model conversion no longer removes an ONNX file converted earlier.
+- The tile overlap of a network follows the size of its convolutions, not only their number.
+
+### Known limitations
+
+- RealPLKSR models without layer norm normalise each tile on its own, so their output depends on the
+  tile size and faint lines can show where tiles meet (see the user guide, OpenModelDB).
 
 ## 0.2.0 - 2026-11-05
 
