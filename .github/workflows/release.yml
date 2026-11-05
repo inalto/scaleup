@@ -30,7 +30,7 @@ jobs:
           # x86_64-apple-darwin is left out: ort 2.0.0-rc.15 has no prebuilt ONNX Runtime for it.
           - { target: aarch64-apple-darwin, os: macos-latest }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # version      archive names and Info.plist, e.g. 0.1.0 or 0.1.0-rc1 (dry runs: 0.0.0-ciN)
       # deb_version  Debian spelling, pre-release after "~" so it sorts before the final: 0.1.0~rc1
@@ -164,7 +164,7 @@ jobs:
     needs: build
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Version from tag
         id: meta
@@ -197,7 +197,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v4
         with:
