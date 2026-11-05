@@ -1,4 +1,5 @@
 // mode 0: leaky ReLU with p.slope. mode 1: PReLU, aux_a holds p.factor slopes (one, or per channel).
+// mode 2: sigmoid. mode 3: SiLU, x * sigmoid(x). mode 4: Mish, x * tanh(ln(1 + exp(x))).
 struct Params {
     mode: u32, c_in: u32, c_out: u32, h: u32,
     w: u32, k: u32, act: u32, c0: u32,
@@ -11,17 +12,37 @@ struct Params {
 @group(0) @binding(3) var<storage, read> aux_b: array<f32>;
 @group(0) @binding(4) var<uniform> p: Params;
 
+// exp(-x) overflows to infinity for very negative x, which gives the right limit, 0.
+fn sigmoid(x: f32) -> f32 {
+    return 1.0 / (1.0 + exp(-x));
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= p.w || id.y >= p.h) { return; }
     let i = (id.z * p.h + id.y) * p.w + id.x;
+    let v = src[i];
+    if (p.mode == 2u) {
+        dst[i] = sigmoid(v);
+        return;
+    }
+    if (p.mode == 3u) {
+        dst[i] = v * sigmoid(v);
+        return;
+    }
+    if (p.mode == 4u) {
+        // ln(1 + exp(v)) is v to f32 precision from 20 up, where exp would overflow further on.
+        var softplus = v;
+        if (v < 20.0) { softplus = log(1.0 + exp(v)); }
+        dst[i] = v * tanh(softplus);
+        return;
+    }
     var slope = p.slope;
     if (p.mode == 1u) {
         var s = id.z;
         if (p.factor == 1u) { s = 0u; }
         slope = aux_a[s];
     }
-    let v = src[i];
     if (v < 0.0) {
         dst[i] = v * slope;
     } else {

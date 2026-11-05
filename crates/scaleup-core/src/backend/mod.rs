@@ -116,7 +116,7 @@ pub trait Backend: Send + Sync {
     fn load_model(&self, path: &Path, scale_hint: Option<u32>) -> Result<Box<dyn Model>>;
     /// Whether this backend can load the model file at `path`.
     fn handles(&self, path: &Path) -> bool {
-        !is_ncnn_model(path)
+        !is_extra_backend_model(path)
     }
 }
 
@@ -144,8 +144,8 @@ pub mod ort;
 pub use self::ort::OrtBackend;
 
 /// The preference to give the backend of the other model format: an explicit choice carries over.
-pub(crate) fn cross_preference(pref: DevicePreference, to_ncnn: bool) -> DevicePreference {
-    match (pref, to_ncnn) {
+pub(crate) fn cross_preference(pref: DevicePreference, to_extra: bool) -> DevicePreference {
+    match (pref, to_extra) {
         (DevicePreference::Gpu(i), true) => DevicePreference::Vulkan(i),
         (DevicePreference::Vulkan(i), false) => DevicePreference::Gpu(i),
         (other, _) => other,
@@ -156,6 +156,16 @@ pub(crate) fn cross_preference(pref: DevicePreference, to_ncnn: bool) -> DeviceP
 pub fn is_ncnn_model(path: &Path) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("param"))
+}
+
+/// A model file only the registered extra backend runs: an ncnn `.param`, or PyTorch weights
+/// (`.pth`, `.safetensors`).
+pub fn is_extra_backend_model(path: &Path) -> bool {
+    path.extension().is_some_and(|e| {
+        ["param", "pth", "safetensors"]
+            .iter()
+            .any(|x| e.eq_ignore_ascii_case(x))
+    })
 }
 
 /// Devices usable on this machine: the GPU the ORT backend would pick (if any), then the CPU.
@@ -232,6 +242,23 @@ mod tests {
     fn ncnn_models_are_recognised_by_extension() {
         assert!(is_ncnn_model(Path::new("a/b.PARAM")));
         assert!(!is_ncnn_model(Path::new("a/b.onnx")));
+        assert!(!is_ncnn_model(Path::new("a/b.pth")));
+    }
+
+    #[test]
+    fn extra_backend_models_are_recognised_by_extension() {
+        for runs in [
+            "a/b.param",
+            "a/b.PTH",
+            "b.pth",
+            "c.SafeTensors",
+            "d.safetensors",
+        ] {
+            assert!(is_extra_backend_model(Path::new(runs)), "{runs}");
+        }
+        for not in ["a/b.onnx", "b.bin", "pth", "c.pt", "d"] {
+            assert!(!is_extra_backend_model(Path::new(not)), "{not}");
+        }
     }
 
     #[test]

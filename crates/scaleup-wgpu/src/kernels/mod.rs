@@ -55,10 +55,24 @@ const ACT_LEAKY: u32 = 2;
 
 const MODE_LEAKY: u32 = 0;
 const MODE_PRELU: u32 = 1;
+const MODE_SIGMOID: u32 = 2;
+const MODE_SILU: u32 = 3;
+const MODE_MISH: u32 = 4;
 const MODE_WEIGHTED_SUM: u32 = 0;
 const MODE_MUL: u32 = 1;
 const MODE_SCALAR_ADD: u32 = 2;
 const MODE_SCALAR_MUL: u32 = 3;
+const MODE_NORMALIZE: u32 = 4;
+const MODE_LAYER_NORM: u32 = 0;
+const MODE_GROUP_NORM: u32 = 1;
+
+/// Element-wise activations without a parameter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Smooth {
+    Sigmoid,
+    Silu,
+    Mish,
+}
 
 /// Workgroup memory the fast convolution needs, as the plan's gate states it.
 const TILED_WORKGROUP_STORAGE: u32 = 16_384;
@@ -169,6 +183,9 @@ pub struct Kernels {
     eltwise: wgpu::ComputePipeline,
     interp: wgpu::ComputePipeline,
     shuffle: wgpu::ComputePipeline,
+    unshuffle: wgpu::ComputePipeline,
+    norm: wgpu::ComputePipeline,
+    group_stats: wgpu::ComputePipeline,
     /// The shared-memory convolution, on devices with the workgroup storage for it.
     tiled: Option<wgpu::ComputePipeline>,
     /// Bound where a kernel does not use an auxiliary buffer.
@@ -242,6 +259,9 @@ impl Kernels {
             eltwise: pipeline("eltwise", include_str!("eltwise.wgsl")),
             interp: pipeline("interp", include_str!("interp_nearest.wgsl")),
             shuffle: pipeline("shuffle", include_str!("pixel_shuffle.wgsl")),
+            unshuffle: pipeline("unshuffle", include_str!("pixel_unshuffle.wgsl")),
+            norm: pipeline("norm", include_str!("layernorm_c.wgsl")),
+            group_stats: pipeline("group stats", include_str!("group_stats.wgsl")),
             tiled: use_tiled(limits)
                 .then(|| {
                     // Shader compilers differ between drivers. The direct kernel gives the same
@@ -428,6 +448,94 @@ impl Kernels {
         self.per_pixel(rec, &self.activation, &bg, &params, dst);
     }
 
+    pub fn smooth(&self, rec: &mut Recorder<'_>, src: &Buf, dst: &Buf, f: Smooth) {
+        let bg = self.bind(rec, &src.buffer, &dst.buffer, None, None);
+        let params = Params {
+            mode: match f {
+                Smooth::Sigmoid => MODE_SIGMOID,
+                Smooth::Silu => MODE_SILU,
+                Smooth::Mish => MODE_MISH,
+            },
+            h: dst.h,
+            w: dst.w,
+            ..Params::default()
+        };
+        self.per_pixel(rec, &self.activation, &bg, &params, dst);
+    }
+
+    /// `dst = (src - mean[c]) * range`; `mean` holds one value per channel.
+    pub fn normalize(
+        &self,
+        rec: &mut Recorder<'_>,
+        src: &Buf,
+        dst: &Buf,
+        mean: &wgpu::Buffer,
+        range: f32,
+    ) {
+        let bg = self.bind(rec, &src.buffer, &dst.buffer, Some(mean), None);
+        let params = Params {
+            mode: MODE_NORMALIZE,
+            h: dst.h,
+            w: dst.w,
+            coeff_a: range,
+            ..Params::default()
+        };
+        self.per_pixel(rec, &self.eltwise, &bg, &params, dst);
+    }
+
+    /// Each pixel normalised over its channels, then scaled by `gamma` and shifted by `beta` (one
+    /// value per channel each).
+    pub fn layer_norm(
+        &self,
+        rec: &mut Recorder<'_>,
+        src: &Buf,
+        dst: &Buf,
+        gamma: &wgpu::Buffer,
+        beta: &wgpu::Buffer,
+        eps: f32,
+    ) {
+        let bg = self.bind(rec, &src.buffer, &dst.buffer, Some(gamma), Some(beta));
+        let params = Params {
+            mode: MODE_LAYER_NORM,
+            c_in: dst.c,
+            h: dst.h,
+            w: dst.w,
+            slope: eps,
+            ..Params::default()
+        };
+        // One invocation handles every channel of its pixel.
+        let groups = [dst.w.div_ceil(8), dst.h.div_ceil(8), 1];
+        let work = 3 * u64::from(dst.w) * u64::from(dst.h) * u64::from(dst.c);
+        self.dispatch(rec, &self.norm, &bg, &params, groups, work);
+    }
+
+    /// Group normalisation of `src` into `dst`.
+    pub fn group_norm(&self, rec: &mut Recorder<'_>, src: &Buf, dst: &Buf, op: &GroupNormOp<'_>) {
+        let per_group = dst.c / op.groups;
+        let work = u64::from(dst.w) * u64::from(dst.h) * u64::from(dst.c);
+        let bg = self.bind(rec, &src.buffer, op.stats, None, None);
+        let params = Params {
+            h: dst.h,
+            w: dst.w,
+            factor: per_group,
+            slope: op.eps,
+            ..Params::default()
+        };
+        let groups = [op.groups, 1, 1];
+        self.dispatch(rec, &self.group_stats, &bg, &params, groups, 2 * work);
+        let aux = (Some(op.gamma_beta), Some(op.stats));
+        let bg = self.bind(rec, &src.buffer, &dst.buffer, aux.0, aux.1);
+        let params = Params {
+            mode: MODE_GROUP_NORM,
+            c_in: dst.c,
+            h: dst.h,
+            w: dst.w,
+            factor: per_group,
+            ..Params::default()
+        };
+        self.per_pixel(rec, &self.norm, &bg, &params, dst);
+    }
+
     /// `dst = coeff_a * a + coeff_b * b`.
     pub fn weighted_sum(
         &self,
@@ -508,6 +616,20 @@ impl Kernels {
         self.per_pixel(rec, &self.shuffle, &bg, &params, dst);
     }
 
+    /// `dst` sides are `src` sides divided by `r`.
+    pub fn pixel_unshuffle(&self, rec: &mut Recorder<'_>, src: &Buf, dst: &Buf, r: u32) {
+        let bg = self.bind(rec, &src.buffer, &dst.buffer, None, None);
+        let params = Params {
+            h: dst.h,
+            w: dst.w,
+            factor: r,
+            y0: src.h,
+            y1: src.w,
+            ..Params::default()
+        };
+        self.per_pixel(rec, &self.unshuffle, &bg, &params, dst);
+    }
+
     /// Channel concatenation is a sequence of copies in planar layout.
     pub fn concat(&self, rec: &mut Recorder<'_>, inputs: &[&Buf], dst: &Buf) {
         let mut offset = 0;
@@ -518,6 +640,24 @@ impl Kernels {
             offset += size;
         }
     }
+
+    /// Channels `from..from + dst.c` of `src`: one copy in planar layout.
+    pub fn slice(&self, rec: &mut Recorder<'_>, src: &Buf, dst: &Buf, from: u32) {
+        let offset = tensor_bytes(from, src.h, src.w);
+        let size = tensor_bytes(dst.c, dst.h, dst.w);
+        rec.encoder()
+            .copy_buffer_to_buffer(&src.buffer, offset, &dst.buffer, 0, size);
+    }
+}
+
+/// Parameters of [`Kernels::group_norm`]: `groups` runs of consecutive channels.
+pub struct GroupNormOp<'a> {
+    pub groups: u32,
+    pub eps: f32,
+    /// One scale per channel, then one shift per channel.
+    pub gamma_beta: &'a wgpu::Buffer,
+    /// Scratch space, two values per group.
+    pub stats: &'a wgpu::Buffer,
 }
 
 /// Bytes of an f32 tensor.
@@ -662,6 +802,22 @@ pub(crate) mod test_gpu {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
         assert!(worst < 1e-4, "max abs diff {worst}");
+    }
+
+    /// As [`assert_matches`], within 1e-5 of the largest magnitude of `want` (at least 10).
+    pub fn assert_matches_rel(g: &Gpu, dst: &Buf, want: &Tensor) {
+        assert_eq!((dst.c, dst.h, dst.w), (want.c, want.h, want.w));
+        let scale = want.data.iter().fold(10.0_f32, |m, v| m.max(v.abs()));
+        let got = read_back(&g.device, &g.queue, &dst.buffer, want.data.len()).unwrap();
+        let worst = got
+            .iter()
+            .zip(&want.data)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            worst < 1e-5 * scale,
+            "max abs diff {worst} at scale {scale}"
+        );
     }
 }
 
@@ -937,6 +1093,68 @@ mod tests {
     }
 
     #[test]
+    fn smooth_activations_and_normalize_match_ref() {
+        let Some(g) = gpu() else { return };
+        let mut rng = Rng(12);
+        let mut src = rng.tensor(3, 9, 13);
+        // Far into both tails, where a naive formula overflows.
+        src.data[..4].copy_from_slice(&[-120.0, 120.0, -30.0, 30.0]);
+        let src = cpu_ref::scalar_mul(&src, 8.0);
+        let s = upload(&g.device, &g.queue, &src);
+        let ds: Vec<Buf> = (0..4).map(|_| empty(g, 3, 9, 13)).collect();
+        let mean = [0.4488, 0.4371, 0.4040];
+        let mb = raw(g, &mean);
+        let mut rec = Recorder::new(&g.kernels, &g.device, &g.queue);
+        g.kernels.smooth(&mut rec, &s, &ds[0], Smooth::Sigmoid);
+        g.kernels.smooth(&mut rec, &s, &ds[1], Smooth::Silu);
+        g.kernels.normalize(&mut rec, &s, &ds[2], &mb, 255.0);
+        g.kernels.smooth(&mut rec, &s, &ds[3], Smooth::Mish);
+        rec.flush();
+        assert_matches(g, &ds[0], &cpu_ref::sigmoid(&src));
+        assert_matches_rel(g, &ds[1], &cpu_ref::silu(&src));
+        assert_matches_rel(g, &ds[2], &cpu_ref::normalize(&src, &mean, 255.0));
+        assert_matches_rel(g, &ds[3], &cpu_ref::mish(&src));
+    }
+
+    /// Sizes that are not multiples of the workgroup sides, groups larger than the reduction's
+    /// thread count, and a common offset that a one-pass variance would lose.
+    #[test]
+    fn norms_and_slice_match_ref() {
+        let Some(g) = gpu() else { return };
+        let mut rng = Rng(13);
+        let src = cpu_ref::scalar_add(&rng.tensor(12, 21, 19), 40.0);
+        let s = upload(&g.device, &g.queue, &src);
+        let (gamma, beta) = (rng.vec(12), rng.vec(12));
+        let (gb, bb) = (raw(g, &gamma), raw(g, &beta));
+        let both = raw(g, &[gamma.as_slice(), beta.as_slice()].concat());
+        let ds: Vec<Buf> = (0..3).map(|_| empty(g, 12, 21, 19)).collect();
+        let part = empty(g, 5, 21, 19);
+        let stats: Vec<wgpu::Buffer> = (0..2)
+            .map(|_| create_tensor_buffer(&g.device, 64))
+            .collect();
+        let mut rec = Recorder::new(&g.kernels, &g.device, &g.queue);
+        g.kernels.layer_norm(&mut rec, &s, &ds[0], &gb, &bb, 1e-6);
+        for (i, groups) in [4, 1].into_iter().enumerate() {
+            let op = GroupNormOp {
+                groups,
+                eps: 1e-5,
+                gamma_beta: &both,
+                stats: &stats[i],
+            };
+            g.kernels.group_norm(&mut rec, &s, &ds[1 + i], &op);
+        }
+        g.kernels.slice(&mut rec, &s, &part, 3);
+        rec.flush();
+        let want = cpu_ref::layer_norm_c(&src, 1e-6, &gamma, &beta);
+        assert_matches(g, &ds[0], &want);
+        for (i, groups) in [4, 1].into_iter().enumerate() {
+            let want = cpu_ref::group_norm(&src, groups, 1e-5, &gamma, &beta);
+            assert_matches(g, &ds[1 + i], &want);
+        }
+        assert_matches(g, &part, &cpu_ref::slice(&src, 3, 8));
+    }
+
+    #[test]
     fn eltwise_and_binary_ops_match_ref() {
         let Some(g) = gpu() else { return };
         let mut rng = Rng(21);
@@ -1007,6 +1225,21 @@ mod tests {
         g.kernels.pixel_shuffle(&mut rec, &s, &d, 4);
         rec.flush();
         assert_matches(g, &d, &cpu_ref::pixel_shuffle(&a, 4));
+    }
+
+    #[test]
+    fn pixel_unshuffle_matches_ref() {
+        let Some(g) = gpu() else { return };
+        let mut rng = Rng(52);
+        for (r, c, h, w) in [(2, 3, 10, 14), (4, 3, 8, 12), (2, 5, 2, 18)] {
+            let a = rng.tensor(c, h, w);
+            let s = upload(&g.device, &g.queue, &a);
+            let d = empty(g, c * r * r, h / r, w / r);
+            let mut rec = Recorder::new(&g.kernels, &g.device, &g.queue);
+            g.kernels.pixel_unshuffle(&mut rec, &s, &d, r);
+            rec.flush();
+            assert_matches(g, &d, &cpu_ref::pixel_unshuffle(&a, r));
+        }
     }
 
     #[test]
