@@ -9,7 +9,7 @@ license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 image = "0.25"
-ndarray = "0.16"
+ndarray = "0.17"
 thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
