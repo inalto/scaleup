@@ -173,9 +173,10 @@ mod tests {
     /// The public API: `Upscaler` routes a `.pth` path to this backend and writes the result.
     #[test]
     fn upscaler_runs_a_pth_file_end_to_end() {
-        if WgpuBackend::new(DevicePreference::Auto).is_err() {
+        // A CI machine may only have a software adapter: the device is whatever this backend opens.
+        let Ok(own) = WgpuBackend::new(DevicePreference::Auto) else {
             return;
-        }
+        };
         register();
         let d = tempfile::tempdir().unwrap();
         let up = scaleup_core::Upscaler::new(
@@ -188,7 +189,7 @@ mod tests {
             .load(model_path.to_str().unwrap(), &mut |_, _| {})
             .unwrap();
         assert_eq!(model.scale(), 2);
-        assert_eq!(up.active_device().kind, scaleup_core::DeviceKind::Vulkan);
+        assert_eq!(up.active_device(), *own.device());
         let input = repo("tests/fixtures/images/gradient_64x48.png");
         let output = d.path().join("out.png");
         let job = scaleup_core::FileJob {
