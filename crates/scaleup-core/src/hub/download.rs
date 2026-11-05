@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 
 use super::catalog::{Capabilities, ModelCard, Resource, is_native, runnable_resources, url_host};
+use super::convert::{manual_pytorch, pick_pytorch};
 use super::installed::{Installed, InstalledModel};
 use crate::{Result, ScaleUpError};
 
@@ -115,7 +116,7 @@ fn is_id_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
 }
 
-/// `/file/d/<id>/â€¦` or an `id=<id>` query parameter.
+/// `/file/d/<id>/…` or an `id=<id>` query parameter.
 fn drive_file_id(url: &str) -> Option<String> {
     let rest = url.split_once("://")?.1;
     let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
@@ -196,6 +197,23 @@ fn manual_error(
     ScaleUpError::Download(msg)
 }
 
+/// The error for a card whose only PyTorch file is on a host the user opens in a browser: where to
+/// get it, under which name, and that importing it converts it.
+pub(crate) fn manual_pytorch_error(card: &ModelCard) -> ScaleUpError {
+    let why = format!(
+        "'{}' only has a PyTorch file, on a host that cannot be downloaded from automatically; importing it converts it to ONNX (needs Python)",
+        card.id
+    );
+    match manual_pytorch(card) {
+        Some((r, idx)) => {
+            let url = r.urls[idx].as_str();
+            let expected = file_name(url, None, &card.id, &r.kind.to_ascii_lowercase());
+            manual_error(card, &why, Some(url), &expected, non_empty(&r.sha256))
+        }
+        None => manual_error(card, &why, None, &format!("{}.pth", card.id), None),
+    }
+}
+
 /// Nothing but letters, digits, `.`, `_` and `-`, and no leading dot: the id names a folder.
 pub(crate) fn check_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()
@@ -266,7 +284,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The `filename` of a `Content-Disposition` header (`filename*=UTF-8''â€¦` wins).
+/// The `filename` of a `Content-Disposition` header (`filename*=UTF-8''…` wins).
 fn disposition_name(header: &str) -> Option<String> {
     let lower = header.to_ascii_lowercase();
     if let Some(at) = lower.find("filename*=") {
@@ -374,7 +392,7 @@ fn open(http: &dyn Http, url: &str, cookies: &[(String, String)]) -> Result<Open
     })
 }
 
-/// The value of `name="â€¦"` inside one tag.
+/// The value of `name="…"` inside one tag.
 fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let key = format!(" {name}=\"");
     let start = tag.find(&key)? + key.len();
@@ -568,16 +586,13 @@ pub fn install(
 ) -> Result<InstalledModel> {
     check_id(&card.id)?;
     let Some((resource, idx)) = pick_resource(card, caps) else {
-        let convertible = card.in_ch == 3
-            && card
-                .resources
-                .iter()
-                .any(|r| r.platform.as_deref() == Some("pytorch") && !r.urls.is_empty());
+        let rgb = card.in_ch == 3 && card.out_ch == 3;
         return Err(match card.resources.iter().find(|r| !r.urls.is_empty()) {
-            Some(_) if convertible => ScaleUpError::Download(format!(
+            Some(_) if rgb && pick_pytorch(card).is_some() => ScaleUpError::Download(format!(
                 "no file of '{}' ({}) can run on this machine as is; its PyTorch file can be converted to ONNX with `scaleup hub install {} --convert` (needs Python)",
                 card.id, card.architecture, card.id
             )),
+            Some(_) if rgb && manual_pytorch(card).is_some() => manual_pytorch_error(card),
             Some(_) => ScaleUpError::Download(format!(
                 "no file of '{}' ({}) can run on this machine",
                 card.id, card.architecture
@@ -766,6 +781,51 @@ pub(crate) fn register(
 /// (a card without a hash for that file type accepts it as unverified). The file is moved to
 /// `<models_dir>/hub/<id>/<its name>`; a file that does not match is left where it is.
 pub fn import_file(card: &ModelCard, file: &Path, models_dir: &Path) -> Result<InstalledModel> {
+    let Checked {
+        name,
+        format,
+        sha256,
+        verified,
+        source_url,
+    } = check_import(card, file)?;
+    let dir = models_dir.join("hub").join(&card.id);
+    fs::create_dir_all(&dir)?;
+    let dest = dir.join(&name);
+    if fs::rename(file, &dest).is_err() {
+        // Another drive: copy next to the destination, rename, then drop the original.
+        let part = dir.join(format!("{name}.part"));
+        let copied = fs::copy(file, &part).and_then(|_| fs::rename(&part, &dest));
+        if let Err(e) = copied {
+            let _ = fs::remove_file(&part);
+            return Err(e.into());
+        }
+        let _ = fs::remove_file(file);
+    }
+    register(
+        card,
+        models_dir,
+        dest,
+        format,
+        sha256,
+        verified,
+        &source_url,
+    )
+}
+
+/// A hand-downloaded file of a card that passed [`check_import`].
+pub(crate) struct Checked {
+    /// Its safe file name.
+    pub name: String,
+    pub format: String,
+    pub sha256: String,
+    pub verified: bool,
+    pub source_url: String,
+}
+
+/// Checks a file the user downloaded by hand against `card` without moving it: a model
+/// extension, and a SHA-256 that matches a file of the card (a card without a hash for that file
+/// type accepts it as unverified).
+pub(crate) fn check_import(card: &ModelCard, file: &Path) -> Result<Checked> {
     check_id(&card.id)?;
     let name = file
         .file_name()
@@ -816,28 +876,13 @@ pub fn import_file(card: &ModelCard, file: &Path, models_dir: &Path) -> Result<I
         .or_else(|| card.resources.iter().find_map(|r| r.urls.first()))
         .cloned()
         .unwrap_or_default();
-    let dir = models_dir.join("hub").join(&card.id);
-    fs::create_dir_all(&dir)?;
-    let dest = dir.join(&name);
-    if fs::rename(file, &dest).is_err() {
-        // Another drive: copy next to the destination, rename, then drop the original.
-        let part = dir.join(format!("{name}.part"));
-        let copied = fs::copy(file, &part).and_then(|_| fs::rename(&part, &dest));
-        if let Err(e) = copied {
-            let _ = fs::remove_file(&part);
-            return Err(e.into());
-        }
-        let _ = fs::remove_file(file);
-    }
-    register(
-        card,
-        models_dir,
-        dest,
+    Ok(Checked {
+        name,
         format,
-        actual,
+        sha256: actual,
         verified,
-        &source_url,
-    )
+        source_url,
+    })
 }
 
 /// A scripted [`Http`] and card builders, shared by the tests of the hub modules.

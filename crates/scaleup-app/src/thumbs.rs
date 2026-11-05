@@ -52,6 +52,23 @@ pub fn cache_key(url: &str) -> String {
     format!("{hash:016x}.png")
 }
 
+/// Largest image side accepted from the network.
+pub const MAX_DECODE_SIDE: u32 = 8192;
+/// Most memory the decoder may allocate.
+pub const MAX_DECODE_ALLOC: u64 = 64 * 1024 * 1024;
+
+/// Decodes an image with limits, so a small file that declares huge dimensions is refused
+/// before anything is allocated.
+pub fn decode(bytes: &[u8]) -> image::ImageResult<image::RgbaImage> {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_SIDE);
+    limits.max_image_height = Some(MAX_DECODE_SIDE);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+    reader.limits(limits);
+    Ok(reader.decode()?.into_rgba8())
+}
+
 /// The thumbnail at `url`, from `cache_dir` or else downloaded (`https://` only, at most
 /// [`MAX_BYTES`]), decoded, shrunk to [`MAX_SIDE`] and cached. `None` on any failure.
 pub fn load(http: &dyn Http, url: &str, cache_dir: &Path) -> Option<image::RgbaImage> {
@@ -75,12 +92,7 @@ pub fn load(http: &dyn Http, url: &str, cache_dir: &Path) -> Option<image::RgbaI
     if bytes.len() as u64 > MAX_BYTES {
         return None;
     }
-    let img = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?
-        .decode()
-        .ok()?
-        .into_rgba8();
+    let img = decode(&bytes).ok()?;
     let img = crate::worker::cap_long_side(img, MAX_SIDE);
     if std::fs::create_dir_all(cache_dir).is_ok() {
         let _ = img.save(&cached);
@@ -161,6 +173,32 @@ pub(crate) mod tests {
         ] {
             assert_eq!(resolve_url(bad), None, "{bad}");
         }
+    }
+
+    /// A 54-byte BMP header declaring `w`×`h` 24-bit pixels, followed by no pixel data.
+    fn bmp_header(w: u32, h: u32) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"BM");
+        b.extend_from_slice(&(54 + w * h * 3).to_le_bytes());
+        b.extend_from_slice(&[0; 4]);
+        b.extend_from_slice(&54u32.to_le_bytes());
+        b.extend_from_slice(&40u32.to_le_bytes());
+        b.extend_from_slice(&w.to_le_bytes());
+        b.extend_from_slice(&h.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&24u16.to_le_bytes());
+        b.extend_from_slice(&[0; 24]);
+        b
+    }
+
+    #[test]
+    fn decode_refuses_huge_declared_dimensions() {
+        let err = decode(&bmp_header(30_000, 30_000)).unwrap_err();
+        assert!(matches!(err, image::ImageError::Limits(_)), "{err:?}");
+        // Within the side limit but over the allocation limit: 6000×6000 RGBA is 144 MB.
+        let err = decode(&bmp_header(6000, 6000)).unwrap_err();
+        assert!(matches!(err, image::ImageError::Limits(_)), "{err:?}");
+        assert_eq!(decode(&png(3, 2)).unwrap().dimensions(), (3, 2));
     }
 
     #[test]

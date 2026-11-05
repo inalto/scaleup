@@ -4,6 +4,7 @@
 //! While a run is in progress the thread is busy, so it reads its inbox from the progress callbacks
 //! and between files: that is where `Stop` takes effect.
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::Read;
@@ -15,7 +16,8 @@ use std::thread::JoinHandle;
 use eframe::egui;
 use scaleup_core::hub::{
     Capabilities, Catalog, Http, HttpResponse, InstalledModel, ModelCard, Python, UreqHttp,
-    find_python, find_python_from, import_file, install, install_converted, uninstall,
+    find_python, find_python_from, import_converted, import_file, import_needs_conversion, install,
+    install_converted, uninstall,
 };
 use scaleup_core::io::is_supported_input;
 use scaleup_core::{
@@ -127,6 +129,9 @@ pub enum WorkerEvent {
         size: [u32; 2],
     },
     HubCatalog(Arc<Catalog>),
+    /// The catalogue could not be loaded. Separate from `Error`, so other failures do not touch the
+    /// window's loading state.
+    HubCatalogFailed(String),
     /// A model was installed (downloaded, imported or converted); the worker's registry lists it.
     HubInstalled(InstalledModel),
     /// A model was removed; the worker's registry no longer lists it.
@@ -451,7 +456,9 @@ impl Worker {
             UiMsg::Download(id) => self.download(&id),
             UiMsg::HubRefresh { force } => match self.catalog(force) {
                 Ok(cat) => self.emit(WorkerEvent::HubCatalog(cat)),
-                Err(e) => self.emit(WorkerEvent::Error(format!("OpenModelDB catalogue: {e}"))),
+                Err(e) => self.emit(WorkerEvent::HubCatalogFailed(format!(
+                    "OpenModelDB catalogue: {e}"
+                ))),
             },
             UiMsg::HubInstall(id) => self.hub_install(&id, HubJob::Download),
             UiMsg::HubConvert(id) => self.hub_install(&id, HubJob::Convert),
@@ -533,13 +540,19 @@ impl Worker {
             Ok(card) => card,
             Err(e) => return self.emit(WorkerEvent::Error(e.to_string())),
         };
+        let converts = match &job {
+            HubJob::Convert => true,
+            HubJob::Import(file) => import_needs_conversion(&card, file, &Capabilities::current()),
+            HubJob::Download => false,
+        };
         // Before downloading anything: without Python the file would be of no use.
-        let python = match job {
-            HubJob::Convert => match self.python() {
+        let python = if converts {
+            match self.python() {
                 Ok(p) => Some(p),
                 Err(e) => return self.emit(WorkerEvent::Error(e.to_string())),
-            },
-            _ => None,
+            }
+        } else {
+            None
         };
         let models_dir = self.registry.models_dir().to_path_buf();
         let cancel = CancelToken::new();
@@ -547,32 +560,44 @@ impl Worker {
             inner: self.hub.http.as_ref(),
             cancel: cancel.clone(),
         };
-        let (events, inbox) = (&self.events, &mut self.inbox);
+        let events = &self.events;
+        // Both the download progress and the conversion's cancel check read the inbox.
+        let inbox = RefCell::new(&mut self.inbox);
         let mut progress = |done: u64, total: Option<u64>| {
             events.send(WorkerEvent::Download {
                 done,
                 total: total.unwrap_or(0),
             });
-            inbox.poll(&cancel);
+            inbox.borrow_mut().poll(&cancel);
+        };
+        let mut cancelled = || {
+            inbox.borrow_mut().poll(&cancel);
+            cancel.is_cancelled()
+        };
+        let converting = || {
+            events.send(WorkerEvent::Progress {
+                file: 0,
+                files: 1,
+                percent: 0.0,
+                phase: "Converting to ONNX".into(),
+            })
         };
         let result = match (&job, &python) {
-            (HubJob::Import(file), _) => import_file(&card, file, &models_dir),
+            (HubJob::Import(file), Some(python)) => {
+                converting();
+                import_converted(&card, file, &models_dir, python, &mut cancelled)
+            }
+            (HubJob::Import(file), None) => import_file(&card, file, &models_dir),
             (_, Some(python)) => install_converted(
                 &card,
                 &models_dir,
                 python,
                 &http,
                 &mut progress,
-                &mut || {
-                    events.send(WorkerEvent::Progress {
-                        file: 0,
-                        files: 1,
-                        percent: 0.0,
-                        phase: "Converting to ONNX".into(),
-                    })
-                },
+                &mut || converting(),
+                &mut cancelled,
             ),
-            _ => install(
+            (_, None) => install(
                 &card,
                 &models_dir,
                 &Capabilities::current(),
@@ -1254,6 +1279,7 @@ mod tests {
             let end = matches!(
                 ev,
                 WorkerEvent::HubCatalog(_)
+                    | WorkerEvent::HubCatalogFailed(_)
                     | WorkerEvent::HubInstalled(_)
                     | WorkerEvent::HubRemoved(_)
                     | WorkerEvent::HubThumb { .. }
@@ -1407,6 +1433,120 @@ mod tests {
             "{e}"
         );
         assert!(http.seen.lock().unwrap().is_empty());
+    }
+
+    const CONVERT_URL: &str = "https://github.com/t/t/releases/download/v1/c.pth";
+
+    /// A stand-in for Python: passes the `-c` probes; as the converter it writes
+    /// `<output>.part`, sleeps about 5 s and fails.
+    fn slow_python(dir: &Path) -> PathBuf {
+        #[cfg(windows)]
+        let (name, text) = (
+            "python.cmd",
+            "@echo off\r\nif \"%~1\"==\"-c\" (\r\necho 3\r\nexit /b 0\r\n)\r\necho partial> \"%~3.part\"\r\nping -n 6 127.0.0.1 >nul\r\nexit /b 1\r\n",
+        );
+        #[cfg(not(windows))]
+        let (name, text) = (
+            "python",
+            "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then echo 3; exit 0; fi\necho partial > \"$3.part\"\nsleep 5\nexit 1\n",
+        );
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn hub_refresh_failure_is_its_own_event() {
+        let d = tempfile::tempdir().unwrap();
+        let h = spawn_with(
+            Registry::with_dir(d.path().join("models")),
+            "cpu",
+            HubConfig {
+                catalog_file: Some(d.path().join("missing.json")),
+                http: Arc::new(MapHttp::default()),
+                python: None,
+            },
+        );
+        h.tx.send(UiMsg::HubRefresh { force: false }).unwrap();
+        let evs = until_hub(&h);
+        assert!(
+            matches!(evs.last(), Some(WorkerEvent::HubCatalogFailed(e)) if e.contains("missing.json")),
+            "{evs:?}"
+        );
+    }
+
+    #[test]
+    fn stop_during_a_conversion_kills_python_and_leaves_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let python = slow_python(d.path());
+        let http = Arc::new(MapHttp {
+            bodies: [(CONVERT_URL.to_owned(), nearest_bytes())].into(),
+            ..MapHttp::default()
+        });
+        let h = hub_worker(d.path(), http, python.to_str());
+        h.tx.send(UiMsg::HubConvert("test-convert".into())).unwrap();
+        loop {
+            match h.rx.recv_timeout(Duration::from_secs(60)).unwrap() {
+                WorkerEvent::Progress { phase, .. } if phase.contains("Converting") => break,
+                WorkerEvent::Error(e) => panic!("{e}"),
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        let stopped_at = std::time::Instant::now();
+        h.tx.send(UiMsg::Stop).unwrap();
+        let evs = until_hub(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::Stopped { done: 0, total: 1 }),
+            "{evs:?}"
+        );
+        assert!(
+            stopped_at.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            stopped_at.elapsed()
+        );
+        let models = d.path().join("models");
+        let folder = models.join("hub").join("test-convert");
+        let left: Vec<_> = std::fs::read_dir(&folder).unwrap().flatten().collect();
+        assert!(left.is_empty(), "{left:?}");
+        assert!(
+            scaleup_core::hub::Installed::load(&models)
+                .models
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn hub_import_of_a_pytorch_file_converts_with_python() {
+        let d = tempfile::tempdir().unwrap();
+        let h = hub_worker(
+            d.path(),
+            Arc::new(MapHttp::default()),
+            Some("scaleup-no-such-python-xyz"),
+        );
+        let file = d.path().join("c.pth");
+        std::fs::copy(fixture(), &file).unwrap();
+        h.tx.send(UiMsg::HubImport {
+            id: "test-convert".into(),
+            file: file.clone(),
+        })
+        .unwrap();
+        let evs = until_hub(&h);
+        let Some(WorkerEvent::Error(e)) = evs.last() else {
+            panic!("{evs:?}")
+        };
+        assert!(
+            e.lines()
+                .any(|l| l.trim() == scaleup_core::hub::PIP_INSTALL),
+            "{e}"
+        );
+        assert!(file.exists());
     }
 
     #[test]

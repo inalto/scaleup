@@ -3,14 +3,18 @@
 use std::fs;
 use std::path::Path;
 
-use scaleup_core::ScaleUpError;
 use scaleup_core::hub::{check_checkpoint, convert_to_onnx, find_python};
+use scaleup_core::{CancelToken, ScaleUpError};
 
 use crate::models::registry_for;
 
 /// Converts `file` into `<out or models folder>/<stem>.onnx` and lists it as a local model.
 /// Everything that can be checked without Python is checked first.
-pub fn run_convert(file: &Path, out: Option<&Path>) -> Result<i32, ScaleUpError> {
+pub fn run_convert(
+    file: &Path,
+    out: Option<&Path>,
+    cancel: &CancelToken,
+) -> Result<i32, ScaleUpError> {
     check_checkpoint(file)?;
     let mut reg = registry_for(None);
     let id = file
@@ -28,7 +32,7 @@ pub fn run_convert(file: &Path, out: Option<&Path>) -> Result<i32, ScaleUpError>
     fs::create_dir_all(&dir)?;
     let onnx = dir.join(format!("{id}.onnx"));
     eprintln!("converting with {}", python.path().display());
-    convert_to_onnx(&python, file, &onnx)?;
+    convert_to_onnx(&python, file, &onnx, &mut || cancel.is_cancelled())?;
     let id = reg.import_onnx(&onnx)?;
     eprintln!(
         "listed as model '{id}'; its license is unknown, so it is marked non-commercial until you check"

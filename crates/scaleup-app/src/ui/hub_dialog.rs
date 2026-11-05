@@ -10,8 +10,8 @@ use eframe::egui;
 use egui::Color32;
 use scaleup_core::hub::{
     Ask, Capabilities, Catalog, Content, Filter, Goal, Installed, InstalledModel, LicenseClass,
-    ModelCard, PIP_INSTALL, Readiness, Recommendation, SpeedPref, expected_file_name,
-    pick_resource, readiness, recommend,
+    ModelCard, PIP_INSTALL, PytorchSource, Readiness, Recommendation, SpeedPref,
+    expected_file_name, pick_resource, pytorch_source, readiness, recommend,
 };
 
 use crate::state::HubFilters;
@@ -194,6 +194,10 @@ fn license_badge(ui: &mut egui::Ui, card: &ModelCard) {
 fn download_page(card: &ModelCard, caps: &Capabilities) -> Option<String> {
     pick_resource(card, caps)
         .map(|(r, idx)| r.urls[idx].clone())
+        .or_else(|| match pytorch_source(card) {
+            PytorchSource::Manual { url, .. } => Some(url),
+            _ => None,
+        })
         .filter(|u| u.starts_with("https://"))
 }
 
@@ -203,6 +207,9 @@ fn pick_model_file() -> Option<PathBuf> {
         .pick_file()
 }
 
+/// Content, goal, speed, the (commercial, runnable) toggles and the installed generation.
+type RecommendKey = (Content, Goal, SpeedPref, (bool, bool), u64);
+
 /// The question and answers of the "Recommend…" window.
 struct RecommendState {
     open: bool,
@@ -210,7 +217,7 @@ struct RecommendState {
     goal: Goal,
     speed: SpeedPref,
     /// The ask the results answer, with the installed generation.
-    key: Option<(Content, Goal, SpeedPref, bool, u64)>,
+    key: Option<RecommendKey>,
     results: Vec<Recommendation>,
 }
 
@@ -230,6 +237,76 @@ impl Default for RecommendState {
 /// Rows of the list: index into the catalogue and readiness.
 type Rows = Vec<(usize, Readiness)>;
 
+/// Where the catalogue request of the window stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CatalogLoad {
+    /// Not asked for since the window was opened.
+    #[default]
+    NotRequested,
+    Loading,
+    /// The last request failed: only Refresh (or opening the window again) asks again.
+    Failed,
+}
+
+/// A worker action the window can ask for, for [`action_enabled`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionKind {
+    Install,
+    Convert,
+    Import,
+    Remove,
+    Refresh,
+}
+
+/// Whether a button may be used. While a download, conversion, import or upscale runs
+/// (`busy`), nothing that queues work on the worker is; Refresh also waits for the catalogue
+/// request on its way (`loading`).
+pub fn action_enabled(kind: ActionKind, busy: bool, loading: bool) -> bool {
+    match kind {
+        ActionKind::Refresh => !busy && !loading,
+        ActionKind::Install | ActionKind::Convert | ActionKind::Import | ActionKind::Remove => {
+            !busy
+        }
+    }
+}
+
+/// Recommendations for `ask`, top five; only installed or usable-as-is models when
+/// `runnable_only`, as the list's "Runnable on this machine" toggle.
+fn recommend_for(cat: &Catalog, ask: &Ask, runnable_only: bool) -> Vec<Recommendation> {
+    recommend(cat, ask, cat.models.len())
+        .into_iter()
+        .filter(|r| !runnable_only || runnable(r.readiness))
+        .take(5)
+        .collect()
+}
+
+/// Loosens the filters that hide `card` (readiness `r`) from the list, leaving the others.
+fn relax_for(card: &ModelCard, r: Readiness, f: &mut HubFilters) {
+    if !f.scales.is_empty() && !f.scales.contains(&card.scale) {
+        f.scales.clear();
+    }
+    if !f.content.is_empty()
+        && !f
+            .content
+            .iter()
+            .any(|t| card.tags.iter().any(|c| c.eq_ignore_ascii_case(t)))
+    {
+        f.content.clear();
+    }
+    if f.arch
+        .as_ref()
+        .is_some_and(|a| !a.eq_ignore_ascii_case(&card.architecture))
+    {
+        f.arch = None;
+    }
+    if f.commercial_only && !scaleup_core::hub::commercial_ok(card.license_class()) {
+        f.commercial_only = false;
+    }
+    if f.runnable_only && !runnable(r) {
+        f.runnable_only = false;
+    }
+}
+
 #[derive(Default)]
 pub struct HubDialog {
     pub open: bool,
@@ -239,8 +316,7 @@ pub struct HubDialog {
     archs: Vec<String>,
     installed: Installed,
     caps: Capabilities,
-    /// A catalogue request is on its way.
-    loading: bool,
+    load: CatalogLoad,
     search: String,
     selected: Option<String>,
     /// Bumped when the catalogue or the installed list changes.
@@ -261,10 +337,51 @@ impl HubDialog {
         self.installed = Installed::load(models_dir);
         self.caps = Capabilities::current();
         self.generation += 1;
+        // A failed load is tried once more per opening.
+        if self.load == CatalogLoad::Failed {
+            self.load = CatalogLoad::NotRequested;
+        }
+    }
+
+    /// The catalogue request to send now, if any: automatically (`force == false`) only once
+    /// per opening while there is no catalogue; from the Refresh button whenever none is on its
+    /// way.
+    fn catalog_request(&mut self, force: bool) -> Option<HubAction> {
+        let ask = if force {
+            self.load != CatalogLoad::Loading
+        } else {
+            self.catalog.is_none() && self.load == CatalogLoad::NotRequested
+        };
+        ask.then(|| {
+            self.load = CatalogLoad::Loading;
+            HubAction::Refresh { force }
+        })
+    }
+
+    /// The catalogue request failed.
+    pub fn on_catalog_failed(&mut self) {
+        self.load = CatalogLoad::Failed;
+    }
+
+    fn loading(&self) -> bool {
+        self.load == CatalogLoad::Loading
+    }
+
+    /// Selects `id` and makes sure the list shows it: clears the search and loosens the filters
+    /// that hide it.
+    fn reveal(&mut self, id: &str, f: &mut HubFilters) {
+        let Some(card) = self.catalog.as_ref().and_then(|c| c.get(id)) else {
+            return;
+        };
+        let r = readiness(card, &self.caps, &self.installed);
+        relax_for(card, r, f);
+        self.search.clear();
+        self.selected = Some(id.to_owned());
+        self.scroll_to = Some(id.to_owned());
     }
 
     pub fn set_catalog(&mut self, cat: Arc<Catalog>) {
-        self.loading = false;
+        self.load = CatalogLoad::NotRequested;
         self.index = cat
             .models
             .iter()
@@ -292,11 +409,6 @@ impl HubDialog {
     pub fn on_removed(&mut self, id: &str) {
         self.installed.remove(id);
         self.generation += 1;
-    }
-
-    /// A request failed: stop waiting for the catalogue.
-    pub fn on_error(&mut self) {
-        self.loading = false;
     }
 
     pub fn set_thumbs(
@@ -330,23 +442,24 @@ impl HubDialog {
         if !self.open {
             return actions;
         }
-        if self.catalog.is_none() && !self.loading {
-            self.loading = true;
-            actions.push(HubAction::Refresh { force: false });
-        }
+        actions.extend(self.catalog_request(false));
         let mut open = self.open;
+        // Never larger than the app's window: at 800×600 a fixed size would hang off the edge.
+        let room =
+            (ctx.content_rect().size() - egui::vec2(24.0, 24.0)).max(egui::vec2(320.0, 240.0));
         egui::Window::new("Browse OpenModelDB")
             .open(&mut open)
-            .default_size([1040.0, 640.0])
-            .min_width(820.0)
-            .min_height(420.0)
+            .default_size(egui::vec2(1040.0, 640.0).min(room))
+            .min_width(room.x.min(600.0))
+            .min_height(room.y.min(360.0))
+            .max_size(room)
             .show(ctx, |ui| {
-                self.top_bar(ui, &mut actions);
+                self.top_bar(ui, busy, &mut actions);
                 self.filter_row(ui, filters);
                 ui.separator();
                 let Some(cat) = self.catalog.clone() else {
                     ui.horizontal(|ui| {
-                        if self.loading {
+                        if self.loading() {
                             ui.spinner();
                             ui.weak("Loading the OpenModelDB catalogue…");
                         } else {
@@ -374,7 +487,7 @@ impl HubDialog {
         actions
     }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<HubAction>) {
+    fn top_bar(&mut self, ui: &mut egui::Ui, busy: bool, actions: &mut Vec<HubAction>) {
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.search)
@@ -384,15 +497,15 @@ impl HubDialog {
             if ui.button("Recommend…").clicked() {
                 self.rec.open = !self.rec.open;
             }
+            let enabled = action_enabled(ActionKind::Refresh, busy, self.loading());
             if ui
-                .add_enabled(!self.loading, egui::Button::new("Refresh"))
+                .add_enabled(enabled, egui::Button::new("Refresh"))
                 .on_hover_text("Fetch the catalogue from openmodeldb.info again")
                 .clicked()
             {
-                self.loading = true;
-                actions.push(HubAction::Refresh { force: true });
+                actions.extend(self.catalog_request(true));
             }
-            if self.loading {
+            if self.loading() {
                 ui.spinner();
             }
             if let (Some(cat), Some((_, rows))) = (&self.catalog, &self.rows) {
@@ -522,7 +635,10 @@ impl HubDialog {
             }
             Readiness::Downloadable => {
                 if ui
-                    .add_enabled(!busy, egui::Button::new("Install"))
+                    .add_enabled(
+                        action_enabled(ActionKind::Install, busy, false),
+                        egui::Button::new("Install"),
+                    )
                     .clicked()
                 {
                     actions.push(HubAction::Install(card.id.clone()));
@@ -535,15 +651,29 @@ impl HubDialog {
                     self.open_page_button(ui, card);
                 }
             }
-            Readiness::NeedsConversion => {
-                if ui
-                    .add_enabled(!busy, egui::Button::new("Convert"))
-                    .on_hover_text("Download the PyTorch file and convert it to ONNX with Python")
-                    .clicked()
-                {
-                    actions.push(HubAction::Convert(card.id.clone()));
+            Readiness::NeedsConversion => match pytorch_source(card) {
+                PytorchSource::Download => {
+                    if ui
+                        .add_enabled(
+                            action_enabled(ActionKind::Convert, busy, false),
+                            egui::Button::new("Convert"),
+                        )
+                        .on_hover_text(
+                            "Download the PyTorch file and convert it to ONNX with Python",
+                        )
+                        .clicked()
+                    {
+                        actions.push(HubAction::Convert(card.id.clone()));
+                    }
                 }
-            }
+                PytorchSource::Manual { .. } if self.opened_pages.contains(&card.id) => {
+                    self.import_button(ui, card, busy, actions);
+                }
+                PytorchSource::Manual { .. } => self.open_page_button(ui, card),
+                PytorchSource::None => {
+                    ui.add_enabled(false, egui::Button::new("No file"));
+                }
+            },
             Readiness::Unsupported => {
                 ui.add_enabled(false, egui::Button::new("Unsupported"));
             }
@@ -575,7 +705,10 @@ impl HubDialog {
         actions: &mut Vec<HubAction>,
     ) {
         if ui
-            .add_enabled(!busy, egui::Button::new("Import file…"))
+            .add_enabled(
+                action_enabled(ActionKind::Import, busy, false),
+                egui::Button::new("Import file…"),
+            )
             .on_hover_text("Choose the file you downloaded; it is checked against the catalogue")
             .clicked()
             && let Some(file) = pick_model_file()
@@ -684,13 +817,22 @@ impl HubDialog {
                             .weak(),
                     );
                 }
-                if ui.add_enabled(!busy, egui::Button::new("Remove")).clicked() {
+                if ui
+                    .add_enabled(
+                        action_enabled(ActionKind::Remove, busy, false),
+                        egui::Button::new("Remove"),
+                    )
+                    .clicked()
+                {
                     actions.push(HubAction::Remove(card.id.clone()));
                 }
             }
             Readiness::Downloadable => {
                 if ui
-                    .add_enabled(!busy, egui::Button::new("Install"))
+                    .add_enabled(
+                        action_enabled(ActionKind::Install, busy, false),
+                        egui::Button::new("Install"),
+                    )
                     .clicked()
                 {
                     actions.push(HubAction::Install(card.id.clone()));
@@ -721,18 +863,52 @@ impl HubDialog {
                     self.import_button(ui, card, busy, actions);
                 });
             }
-            Readiness::NeedsConversion => {
-                ui.label(
-                    "Convert downloads the PyTorch file, checks its sha256 and converts it to ONNX with Python 3, which needs:",
-                );
-                ui.monospace(PIP_INSTALL);
-                if ui
-                    .add_enabled(!busy, egui::Button::new("Convert"))
-                    .clicked()
-                {
-                    actions.push(HubAction::Convert(card.id.clone()));
+            Readiness::NeedsConversion => match pytorch_source(card) {
+                PytorchSource::Download => {
+                    ui.label(
+                        "Convert downloads the PyTorch file, checks its sha256 and converts it to ONNX with Python 3, which needs:",
+                    );
+                    ui.monospace(PIP_INSTALL);
+                    if ui
+                        .add_enabled(
+                            action_enabled(ActionKind::Convert, busy, false),
+                            egui::Button::new("Convert"),
+                        )
+                        .clicked()
+                    {
+                        actions.push(HubAction::Convert(card.id.clone()));
+                    }
                 }
-            }
+                PytorchSource::Manual {
+                    url,
+                    file_name,
+                    sha256,
+                } => {
+                    ui.label(format!(
+                        "The PyTorch file is on a site ScaleUP cannot download from. Save it as '{file_name}', then choose Import file…: it is checked against the catalogue's sha256 and converted to ONNX with Python 3, which needs:"
+                    ));
+                    ui.monospace(PIP_INSTALL);
+                    match sha256 {
+                        Some(sha) => {
+                            ui.label(egui::RichText::new(format!("sha256 {sha}")).small().weak());
+                        }
+                        None => {
+                            ui.colored_label(
+                                WARN,
+                                "The catalogue lists no sha256 for this file: it will be installed unverified.",
+                            );
+                        }
+                    }
+                    ui.label(egui::RichText::new(url).small().weak());
+                    ui.horizontal(|ui| {
+                        self.open_page_button(ui, card);
+                        self.import_button(ui, card, busy, actions);
+                    });
+                }
+                PytorchSource::None => {
+                    ui.label("The catalogue lists no PyTorch file for it.");
+                }
+            },
             Readiness::Unsupported => {}
         }
         ui.separator();
@@ -788,12 +964,15 @@ impl HubDialog {
                         pick(ui, "rec_speed", &mut self.rec.speed, &SPEEDS);
                         ui.end_row();
                     });
-                ui.checkbox(&mut f.commercial_only, "Commercial use OK");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut f.commercial_only, "Commercial use OK");
+                    ui.checkbox(&mut f.runnable_only, "Runnable on this machine");
+                });
                 let key = (
                     self.rec.content,
                     self.rec.goal,
                     self.rec.speed,
-                    f.commercial_only,
+                    (f.commercial_only, f.runnable_only),
                     self.generation,
                 );
                 if self.rec.key != Some(key) {
@@ -806,7 +985,7 @@ impl HubDialog {
                         caps: self.caps.clone(),
                         installed: self.installed.clone(),
                     };
-                    self.rec.results = recommend(&cat, &ask, 5);
+                    self.rec.results = recommend_for(&cat, &ask, f.runnable_only);
                     self.rec.key = Some(key);
                 }
                 ui.separator();
@@ -828,9 +1007,7 @@ impl HubDialog {
                     ui.label(egui::RichText::new(rec.reasons.join("; ")).small());
                 }
                 if let Some(id) = picked {
-                    self.search.clear();
-                    self.scroll_to = Some(id.clone());
-                    self.selected = Some(id);
+                    self.reveal(&id, f);
                 }
             });
         self.rec.open = open;
@@ -1012,6 +1189,209 @@ mod tests {
                 r == Readiness::Installed
             );
         }
+    }
+
+    fn sample() -> Arc<Catalog> {
+        Arc::new(Catalog::parse(SAMPLE).unwrap())
+    }
+
+    #[test]
+    fn catalogue_is_asked_for_once_per_opening_and_refresh_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = HubDialog::default();
+        d.open_with(dir.path());
+        assert_eq!(
+            d.catalog_request(false),
+            Some(HubAction::Refresh { force: false })
+        );
+        // While it is on its way: no second request, from any side.
+        assert_eq!(d.catalog_request(false), None);
+        assert_eq!(d.catalog_request(true), None);
+        assert!(!action_enabled(ActionKind::Refresh, false, d.loading()));
+        // Failed: the next frames do not ask again.
+        d.on_catalog_failed();
+        for _ in 0..3 {
+            assert_eq!(d.catalog_request(false), None);
+        }
+        // Refresh does.
+        assert_eq!(
+            d.catalog_request(true),
+            Some(HubAction::Refresh { force: true })
+        );
+        d.on_catalog_failed();
+        // Opening the window again tries once more.
+        d.open_with(dir.path());
+        assert!(d.catalog_request(false).is_some());
+        assert_eq!(d.catalog_request(false), None);
+        // Loaded: no automatic request; Refresh still works.
+        d.set_catalog(sample());
+        assert_eq!(d.catalog_request(false), None);
+        assert!(d.catalog_request(true).is_some());
+    }
+
+    #[test]
+    fn busy_disables_every_worker_action() {
+        use ActionKind::*;
+        for kind in [Install, Convert, Import, Remove, Refresh] {
+            assert!(action_enabled(kind, false, false), "{kind:?}");
+            assert!(!action_enabled(kind, true, false), "{kind:?}");
+        }
+        assert!(!action_enabled(Refresh, false, true));
+        assert!(action_enabled(Install, false, true));
+    }
+
+    #[test]
+    fn recommend_respects_runnable_and_commercial() {
+        let cat = sample();
+        let caps = Capabilities {
+            onnx: true,
+            native_archs: vec!["esrgan".into()],
+        };
+        let ask = |commercial_only| Ask {
+            content: Content::Any,
+            goal: Goal::Any,
+            scale: None,
+            speed: SpeedPref::Balanced,
+            commercial_only,
+            caps: caps.clone(),
+            installed: Installed::default(),
+        };
+        let all = recommend_for(&cat, &ask(false), false);
+        assert!(all.len() == 5);
+        assert!(
+            recommend(&cat, &ask(false), 40)
+                .iter()
+                .any(|r| r.readiness == Readiness::NeedsConversion),
+            "the fixture has conversion-only picks to filter"
+        );
+        let runnable_only = recommend_for(&cat, &ask(true), true);
+        assert!(!runnable_only.is_empty() && runnable_only.len() <= 5);
+        for r in &runnable_only {
+            assert!(runnable(r.readiness), "{}", r.card.id);
+            assert!(
+                scaleup_core::hub::commercial_ok(r.card.license_class()),
+                "{}",
+                r.card.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_picked_recommendation_is_always_in_the_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = HubDialog::default();
+        d.open_with(dir.path());
+        d.caps = Capabilities {
+            onnx: true,
+            native_archs: vec!["esrgan".into()],
+        };
+        d.set_catalog(sample());
+        let cat = d.catalog.clone().unwrap();
+        // A conversion-only, non-commercial-or-unknown x4 card, hidden by nearly every filter.
+        let hidden = "4x-DRCT-L";
+        let mut f = HubFilters {
+            scales: vec![1],
+            content: vec!["pixel-art".into()],
+            arch: Some("span".into()),
+            ..HubFilters::default()
+        };
+        d.search = "zzz".into();
+        let in_rows = |d: &HubDialog, f: &HubFilters| {
+            hub_rows(&cat, &d.search, f, &d.caps, &d.installed)
+                .iter()
+                .any(|(m, _)| m.id == hidden)
+        };
+        assert!(!in_rows(&d, &f));
+        d.reveal(hidden, &mut f);
+        assert!(in_rows(&d, &f), "{f:?}");
+        assert_eq!(d.selected.as_deref(), Some(hidden));
+        assert_eq!(d.scroll_to.as_deref(), Some(hidden));
+        // Filters that did not hide it are kept.
+        let mut kept = HubFilters {
+            runnable_only: false,
+            commercial_only: false,
+            scales: vec![4, 2],
+            ..HubFilters::default()
+        };
+        d.reveal(hidden, &mut kept);
+        assert_eq!(kept.scales, [4, 2]);
+    }
+
+    /// Draws the window headless (egui_kittest + wgpu) into `$SCALEUP_RENDER_DIR/*.png` for a
+    /// person to look at. Run with `-- --ignored`; skipped when the variable is unset.
+    #[test]
+    #[ignore = "writes PNG files for a manual look; needs SCALEUP_RENDER_DIR and a GPU adapter"]
+    fn hub_dialog_renders() {
+        let Some(out) = std::env::var_os("SCALEUP_RENDER_DIR").map(PathBuf::from) else {
+            eprintln!("skipped: SCALEUP_RENDER_DIR is not set");
+            return;
+        };
+        std::fs::create_dir_all(&out).unwrap();
+        let caps = Capabilities {
+            onnx: true,
+            native_archs: vec!["esrgan".into(), "compact".into()],
+        };
+        let dialog = |loaded: bool| {
+            let mut d = HubDialog {
+                open: true,
+                caps: caps.clone(),
+                ..HubDialog::default()
+            };
+            if loaded {
+                d.set_catalog(sample());
+            } else {
+                d.load = CatalogLoad::Failed;
+            }
+            d
+        };
+        let render = |name: &str, size: [f32; 2], d: HubDialog, filters: HubFilters| {
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(size)
+                .wgpu()
+                .build_ui_state(
+                    |ui, (d, f): &mut (HubDialog, HubFilters)| {
+                        let ctx = ui.ctx().clone();
+                        d.show(&ctx, f, false);
+                    },
+                    (d, filters),
+                );
+            for _ in 0..4 {
+                harness.step();
+            }
+            let img = harness.render().expect("render");
+            let file = out.join(format!("{name}.png"));
+            img.save(&file).unwrap();
+            eprintln!("wrote {}", file.display());
+        };
+        let all = HubFilters {
+            commercial_only: false,
+            runnable_only: false,
+            ..HubFilters::default()
+        };
+        render(
+            "a-list-1200x800",
+            [1200.0, 800.0],
+            dialog(true),
+            HubFilters::default(),
+        );
+        let mut selected = dialog(true);
+        selected.selected = Some("4x-DRCT-L".into());
+        render("b-details-1200x800", [1200.0, 800.0], selected, all.clone());
+        let mut rec = dialog(true);
+        rec.rec.open = true;
+        render(
+            "c-recommend-1200x800",
+            [1200.0, 800.0],
+            rec,
+            HubFilters::default(),
+        );
+        render("d-list-800x600", [800.0, 600.0], dialog(true), all);
+        render(
+            "e-failed-1200x800",
+            [1200.0, 800.0],
+            dialog(false),
+            HubFilters::default(),
+        );
     }
 
     #[test]

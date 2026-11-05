@@ -134,7 +134,7 @@ pub fn run_models(cmd: &ModelsCmd, cancel: &CancelToken) -> Result<i32, ScaleUpE
             }
         }
         ModelsCmd::Convert { file, out } => {
-            return crate::convert::run_convert(file, out.as_deref());
+            return crate::convert::run_convert(file, out.as_deref(), cancel);
         }
         ModelsCmd::Path { id } => {
             reg.get(id).ok_or_else(|| unknown(id))?;

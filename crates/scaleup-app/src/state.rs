@@ -251,6 +251,11 @@ fn reduce(state: &mut AppState, ev: WorkerEvent) -> Option<Toast> {
                 ))
             });
         }
+        // Nothing was running: the status stays as it was.
+        WorkerEvent::HubCatalogFailed(message) => {
+            state.log.push(message.clone());
+            return Some(Toast::error(message));
+        }
         WorkerEvent::HubRemoved(id) => {
             if state.settings.model_id == id {
                 state.settings.model_id = Settings::default().model_id;
@@ -466,6 +471,18 @@ mod tests {
         st.settings.model_id = "other".into();
         apply_event(&mut st, WorkerEvent::HubRemoved("4x-Hub".into()));
         assert_eq!(st.settings.model_id, "other");
+    }
+
+    #[test]
+    fn hub_catalogue_failure_toasts_without_touching_the_status() {
+        let mut st = AppState {
+            status: Status::Done(PathBuf::from("o.png")),
+            ..AppState::default()
+        };
+        let toast = apply_event(&mut st, WorkerEvent::HubCatalogFailed("offline".into())).unwrap();
+        assert_eq!(toast.kind, ToastKind::Error);
+        assert_eq!(st.status, Status::Done(PathBuf::from("o.png")));
+        assert_eq!(st.log, ["offline"]);
     }
 
     #[test]

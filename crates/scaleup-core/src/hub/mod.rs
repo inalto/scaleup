@@ -12,8 +12,8 @@ pub use catalog::{
     speed_tier,
 };
 pub use convert::{
-    PIP_INSTALL, Python, check_checkpoint, convert_to_onnx, find_python, find_python_from,
-    install_converted,
+    PIP_INSTALL, Python, PytorchSource, check_checkpoint, convert_to_onnx, find_python,
+    find_python_from, import_converted, import_needs_conversion, install_converted, pytorch_source,
 };
 pub use download::{
     Host, Http, HttpResponse, UreqHttp, classify_url, expected_file_name, import_file, install,

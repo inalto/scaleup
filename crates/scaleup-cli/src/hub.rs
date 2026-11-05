@@ -3,13 +3,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use scaleup_core::ScaleUpError;
 use scaleup_core::hub::{
     Ask, Capabilities, Catalog, Content, Filter, Goal, Host, Installed, InstalledModel,
-    LicenseClass, ModelCard, Readiness, SpeedPref, UreqHttp, classify_license, classify_url,
-    commercial_ok, find_python, import_file, install, install_converted, readiness, recommend,
+    LicenseClass, ModelCard, PytorchSource, Readiness, SpeedPref, UreqHttp, classify_license,
+    classify_url, commercial_ok, find_python, import_converted, import_file,
+    import_needs_conversion, install, install_converted, pytorch_source, readiness, recommend,
     uninstall,
 };
+use scaleup_core::{CancelToken, ScaleUpError};
 
 use crate::args::HubCmd;
 use crate::models::{print_table, registry_for, yes_no};
@@ -56,16 +57,22 @@ fn ready_name(r: Readiness) -> &'static str {
     }
 }
 
-fn ready_help(r: Readiness, id: &str) -> String {
+fn ready_help(r: Readiness, card: &ModelCard) -> String {
+    let id = card.id.as_str();
     match r {
         Readiness::Installed => "installed and ready to use".into(),
         Readiness::Downloadable => format!("can be installed with `scaleup hub install {id}`"),
         Readiness::ManualDownload => {
             format!("download a file in a browser, then run `scaleup hub import {id} <file>`")
         }
-        Readiness::NeedsConversion => format!(
-            "only a PyTorch file, which this machine cannot run as is; convert it with `scaleup hub install {id} --convert` (needs Python)"
-        ),
+        Readiness::NeedsConversion => match pytorch_source(card) {
+            PytorchSource::Manual { .. } => format!(
+                "only a PyTorch file, on a host you open in a browser; download it, then `scaleup hub import {id} <file>` converts it (needs Python)"
+            ),
+            _ => format!(
+                "only a PyTorch file, which this machine cannot run as is; convert it with `scaleup hub install {id} --convert` (needs Python)"
+            ),
+        },
         Readiness::Unsupported => "no file this machine can run, or not an RGB model".into(),
     }
 }
@@ -219,7 +226,7 @@ fn info(models_dir: &Path, id: &str) -> Result<(), ScaleUpError> {
     println!(
         "ready:       {} ({})",
         ready_name(ready),
-        ready_help(ready, id)
+        ready_help(ready, card)
     );
     if let Some(m) = installed.get(id) {
         let state = if m.file.is_file() {
@@ -260,6 +267,7 @@ fn do_install(
     id: &str,
     resource: Option<usize>,
     convert: bool,
+    cancel: &CancelToken,
 ) -> Result<(), ScaleUpError> {
     let cat = load_catalog(models_dir, false)?;
     let mut card = find(&cat, id)?.clone();
@@ -285,6 +293,7 @@ fn do_install(
             &UreqHttp,
             &mut progress,
             &mut || eprintln!("converting with {}", python.path().display()),
+            &mut || cancel.is_cancelled(),
         )?
     } else {
         install(
@@ -359,7 +368,7 @@ fn do_recommend(
     Ok(())
 }
 
-pub fn run_hub(cmd: &HubCmd) -> Result<i32, ScaleUpError> {
+pub fn run_hub(cmd: &HubCmd, cancel: &CancelToken) -> Result<i32, ScaleUpError> {
     let dir = models_dir();
     match cmd {
         HubCmd::Search {
@@ -393,10 +402,17 @@ pub fn run_hub(cmd: &HubCmd) -> Result<i32, ScaleUpError> {
             id,
             resource,
             convert,
-        } => do_install(&dir, id, *resource, *convert)?,
+        } => do_install(&dir, id, *resource, *convert, cancel)?,
         HubCmd::Import { id, file } => {
             let cat = load_catalog(&dir, false)?;
-            let model = import_file(find(&cat, id)?, file, &dir)?;
+            let card = find(&cat, id)?;
+            let model = if import_needs_conversion(card, file, &Capabilities::current()) {
+                let python = find_python()?;
+                eprintln!("converting with {}", python.path().display());
+                import_converted(card, file, &dir, &python, &mut || cancel.is_cancelled())?
+            } else {
+                import_file(card, file, &dir)?
+            };
             warn_if_unverified(&model);
             println!("{}", model.file.display());
         }

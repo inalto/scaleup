@@ -129,7 +129,7 @@ impl App {
                 self.hub_dialog.on_removed(id);
                 self.reload_registry();
             }
-            WorkerEvent::Error(_) => self.hub_dialog.on_error(),
+            WorkerEvent::HubCatalogFailed(_) => self.hub_dialog.on_catalog_failed(),
             _ => {}
         }
         if let Some(toast) = apply_event(&mut self.state, ev) {
@@ -302,6 +302,7 @@ impl eframe::App for App {
                 self.state.status = Status::Downloading { done: 0, total: 0 };
                 self.send(UiMsg::Download(id));
             }
+            Some(DialogAction::RemoveHub(id)) => self.send(UiMsg::HubRemove(id)),
             Some(DialogAction::Delete(id)) => {
                 if let Err(e) = self.registry.delete_local(&id) {
                     self.toasts

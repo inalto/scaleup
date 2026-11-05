@@ -89,3 +89,20 @@ fn hub_install_convert_without_python_downloads_nothing() {
     assert!(err.lines().any(|l| l.trim() == PIP), "{err}");
     assert!(!models.path().join("hub").join("4x-DRCT-L").exists());
 }
+
+#[test]
+fn hub_import_of_a_pytorch_file_converts_and_needs_python() {
+    let models = tempfile::tempdir().unwrap();
+    let src = tempfile::tempdir().unwrap();
+    let pth = src.path().join("4x-DRCT-L.pth");
+    std::fs::write(&pth, b"weights").unwrap();
+    let a = without_python(models.path())
+        .args(["hub", "import", "4x-DRCT-L"])
+        .arg(&pth)
+        .assert()
+        .code(3);
+    let err = String::from_utf8(a.get_output().stderr.clone()).unwrap();
+    assert!(err.lines().any(|l| l.trim() == PIP), "{err}");
+    assert!(pth.exists(), "the user's file stays where it is");
+    assert!(!models.path().join("hub").join("4x-DRCT-L").exists());
+}

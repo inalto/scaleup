@@ -7,13 +7,16 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
-use super::catalog::{ModelCard, Resource};
-use super::download::{Fetched, Host, Http, check_id, classify_url, fetch, register};
+use super::catalog::{Capabilities, ModelCard, Resource, is_native};
+use super::download::{
+    Checked, Fetched, Host, Http, check_id, check_import, classify_url, fetch,
+    manual_pytorch_error, register,
+};
 use super::installed::InstalledModel;
 use crate::{Result, ScaleUpError};
 
@@ -144,32 +147,74 @@ pub fn check_checkpoint(input: &Path) -> Result<()> {
     }
 }
 
+/// How often a running conversion checks whether it was cancelled.
+const POLL: Duration = Duration::from_millis(100);
+
+/// The file the script writes before renaming it to `output`.
+fn part_of(output: &Path) -> PathBuf {
+    let mut name = output.file_name().unwrap_or_default().to_os_string();
+    name.push(".part");
+    output.with_file_name(name)
+}
+
 /// Converts checkpoint `input` to the ONNX file `output` (input `input` float32 [1,3,H,W] with
 /// dynamic H/W, output `output`, opset 17). Fails with the script's one-line reason.
-pub fn convert_to_onnx(python: &Python, input: &Path, output: &Path) -> Result<()> {
+///
+/// `cancelled` is asked about every 100 ms while Python runs; when it answers true, Python is
+/// killed, `output` and its `.part` are removed and the result is [`ScaleUpError::Cancelled`].
+pub fn convert_to_onnx(
+    python: &Python,
+    input: &Path,
+    output: &Path,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<()> {
     check_checkpoint(input)?;
     let input = std::path::absolute(input)?;
     let output = std::path::absolute(output)?;
     let scratch = Scratch::new()?;
     let script = scratch.0.join(SCRIPT_NAME);
     fs::write(&script, SCRIPT)?;
-    let run = python_command(python.exe.as_os_str(), &scratch.0)
+    // A file, not a pipe: a pipe nobody reads while polling could fill up and stall Python.
+    let log = scratch.0.join("stderr.txt");
+    let mut child = python_command(python.exe.as_os_str(), &scratch.0)
         .arg(&script)
         .arg(&input)
         .arg(&output)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(File::create(&log)?)
+        .spawn()
         .map_err(|e| ScaleUpError::Model(format!("{}: {e}", python.exe.display())))?;
-    if !run.status.success() {
-        let stderr = String::from_utf8_lossy(&run.stderr);
+    let discard = || {
+        let _ = fs::remove_file(&output);
+        let _ = fs::remove_file(part_of(&output));
+    };
+    let status = loop {
+        if cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            discard();
+            return Err(ScaleUpError::Cancelled);
+        }
+        match child.try_wait()? {
+            Some(status) => break status,
+            None => std::thread::sleep(POLL),
+        }
+    };
+    // Ctrl-C in a console reaches Python too, which then fails: that is a cancel, not an error.
+    if cancelled() {
+        discard();
+        return Err(ScaleUpError::Cancelled);
+    }
+    if !status.success() {
+        discard();
+        let stderr = fs::read_to_string(&log).unwrap_or_default();
         let reason = stderr
             .lines()
             .rev()
             .map(str::trim)
             .find(|l| !l.is_empty())
-            .map_or_else(
-                || format!("Python exited with {}", run.status),
-                str::to_owned,
-            );
+            .map_or_else(|| format!("Python exited with {status}"), str::to_owned);
         return Err(ScaleUpError::Model(format!(
             "converting {}: {reason}",
             input.display()
@@ -191,17 +236,80 @@ fn file_sha256(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn pytorch_resources(card: &ModelCard) -> impl Iterator<Item = &Resource> {
+    card.resources.iter().filter(|r| {
+        r.platform.as_deref() == Some("pytorch")
+            && CHECKPOINT_EXTENSIONS
+                .iter()
+                .any(|e| r.kind.eq_ignore_ascii_case(e))
+    })
+}
+
+/// A PyTorch file of `card` that is only on hosts the user opens in a browser, and the index of
+/// its first `https` URL (else its first URL). `None` when one can be downloaded automatically.
+pub(crate) fn manual_pytorch(card: &ModelCard) -> Option<(&Resource, usize)> {
+    if pick_pytorch(card).is_some() {
+        return None;
+    }
+    let r = pytorch_resources(card).find(|r| !r.urls.is_empty())?;
+    let idx = r
+        .urls
+        .iter()
+        .position(|u| u.starts_with("https://"))
+        .unwrap_or(0);
+    Some((r, idx))
+}
+
+/// Where the PyTorch file to convert comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PytorchSource {
+    /// The app downloads it ([`install_converted`]).
+    Download,
+    /// The user opens `url` in a browser, saves the file as `file_name` and imports it
+    /// ([`import_converted`]).
+    Manual {
+        url: String,
+        file_name: String,
+        sha256: Option<String>,
+    },
+    /// The card lists no PyTorch file.
+    None,
+}
+
+/// How the PyTorch file of `card` can be had: the same "non-manual host" test as
+/// [`install_converted`] and the error of [`super::install`].
+pub fn pytorch_source(card: &ModelCard) -> PytorchSource {
+    if pick_pytorch(card).is_some() {
+        return PytorchSource::Download;
+    }
+    match manual_pytorch(card) {
+        Some((r, idx)) => PytorchSource::Manual {
+            url: r.urls[idx].clone(),
+            file_name: super::download::expected_file_name(
+                &r.urls[idx],
+                &card.id,
+                &r.kind.to_ascii_lowercase(),
+            ),
+            sha256: r.sha256.clone().filter(|s| !s.trim().is_empty()),
+        },
+        None => PytorchSource::None,
+    }
+}
+
+/// Whether importing `file` for `card` means converting it: a PyTorch checkpoint of an
+/// architecture this host does not run natively.
+pub fn import_needs_conversion(card: &ModelCard, file: &Path, caps: &Capabilities) -> bool {
+    let ext = file
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    CHECKPOINT_EXTENSIONS.contains(&ext.as_str()) && !is_native(card, caps)
+}
+
 /// The PyTorch file of `card` to convert and its URL index: one on a host the app downloads
 /// from, safetensors before pth.
-fn pick_pytorch(card: &ModelCard) -> Option<(&Resource, usize)> {
-    card.resources
-        .iter()
-        .filter(|r| {
-            r.platform.as_deref() == Some("pytorch")
-                && CHECKPOINT_EXTENSIONS
-                    .iter()
-                    .any(|e| r.kind.eq_ignore_ascii_case(e))
-        })
+pub(crate) fn pick_pytorch(card: &ModelCard) -> Option<(&Resource, usize)> {
+    pytorch_resources(card)
         .filter_map(|r| {
             let idx = r
                 .urls
@@ -219,8 +327,10 @@ fn pick_pytorch(card: &ModelCard) -> Option<(&Resource, usize)> {
 
 /// Downloads the PyTorch file of `card` into `<models_dir>/hub/<id>/`, verifies it, converts it
 /// with `python` and records the ONNX file in `installed.json` (`format: "onnx"`, `verified` as
-/// the download was, the ONNX file's SHA-256). `converting` is called between the two steps.
-/// The PyTorch file is deleted afterwards, and on failure.
+/// the download was, the ONNX file's SHA-256). `converting` is called between the two steps;
+/// `cancelled` is asked while Python runs (see [`convert_to_onnx`]). The PyTorch file is deleted
+/// afterwards, and on failure or cancel. A card whose PyTorch file is only on manual hosts fails
+/// with where to get it and the `hub import` to run.
 pub fn install_converted(
     card: &ModelCard,
     models_dir: &Path,
@@ -228,19 +338,15 @@ pub fn install_converted(
     http: &dyn Http,
     progress: &mut dyn FnMut(u64, Option<u64>),
     converting: &mut dyn FnMut(),
+    cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<InstalledModel> {
-    check_id(&card.id)?;
-    if card.in_ch != 3 || card.out_ch != 3 {
-        return Err(ScaleUpError::Model(format!(
-            "'{}' is not an RGB model ({} in, {} out)",
-            card.id, card.in_ch, card.out_ch
-        )));
-    }
+    check_rgb(card)?;
     let Some((resource, idx)) = pick_pytorch(card) else {
-        return Err(ScaleUpError::Download(format!(
-            "'{}' has no PyTorch file the app can download; get one by hand and run `scaleup models convert <file>`",
-            card.id
-        )));
+        return Err(if manual_pytorch(card).is_some() {
+            manual_pytorch_error(card)
+        } else {
+            ScaleUpError::Download(format!("'{}' lists no PyTorch file to convert", card.id))
+        });
     };
     let Fetched {
         file,
@@ -251,16 +357,79 @@ pub fn install_converted(
     } = fetch(card, resource, idx, models_dir, http, progress)?;
     converting();
     let onnx = file.with_extension("onnx");
-    let converted = convert_to_onnx(python, &file, &onnx).and_then(|()| file_sha256(&onnx));
+    let converted = convert_and_hash(python, &file, &onnx, cancelled);
     let _ = fs::remove_file(&file);
-    let sha = match converted {
-        Ok(sha) => sha,
-        Err(e) => {
-            let _ = fs::remove_file(&onnx);
-            return Err(e);
-        }
-    };
-    register(card, models_dir, onnx, "onnx".into(), sha, verified, &url)
+    register(
+        card,
+        models_dir,
+        onnx,
+        "onnx".into(),
+        converted?,
+        verified,
+        &url,
+    )
+}
+
+/// Checks a PyTorch file the user downloaded for `card` against the catalogue (as
+/// [`super::import_file`] does), converts it into `<models_dir>/hub/<id>/<stem>.onnx` and records
+/// that. The user's file stays where it is.
+pub fn import_converted(
+    card: &ModelCard,
+    file: &Path,
+    models_dir: &Path,
+    python: &Python,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<InstalledModel> {
+    check_rgb(card)?;
+    check_checkpoint(file)?;
+    let Checked {
+        name,
+        sha256: _,
+        verified,
+        source_url,
+        ..
+    } = check_import(card, file)?;
+    let dir = models_dir.join("hub").join(&card.id);
+    fs::create_dir_all(&dir)?;
+    let stem = Path::new(&name)
+        .file_stem()
+        .map_or_else(|| card.id.clone(), |s| s.to_string_lossy().into_owned());
+    let onnx = dir.join(format!("{stem}.onnx"));
+    let sha = convert_and_hash(python, file, &onnx, cancelled)?;
+    register(
+        card,
+        models_dir,
+        onnx,
+        "onnx".into(),
+        sha,
+        verified,
+        &source_url,
+    )
+}
+
+fn check_rgb(card: &ModelCard) -> Result<()> {
+    check_id(&card.id)?;
+    if card.in_ch != 3 || card.out_ch != 3 {
+        return Err(ScaleUpError::Model(format!(
+            "'{}' is not an RGB model ({} in, {} out)",
+            card.id, card.in_ch, card.out_ch
+        )));
+    }
+    Ok(())
+}
+
+/// [`convert_to_onnx`], then the SHA-256 of the result; `onnx` is removed on failure.
+fn convert_and_hash(
+    python: &Python,
+    input: &Path,
+    onnx: &Path,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<String> {
+    let result = convert_to_onnx(python, input, onnx, cancelled).and_then(|()| file_sha256(onnx));
+    if result.is_err() {
+        let _ = fs::remove_file(onnx);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -319,7 +488,7 @@ mod tests {
         let pth = dir.path().join("m.pth");
         fs::write(&pth, b"x").unwrap();
         let out = dir.path().join("m.onnx");
-        let err = convert_to_onnx(&bogus_python(), &pth, &out).unwrap_err();
+        let err = convert_to_onnx(&bogus_python(), &pth, &out, &mut || false).unwrap_err();
         assert!(
             err.to_string().contains("scaleup-no-such-python-xyz"),
             "{err}"
@@ -356,9 +525,10 @@ mod tests {
             &http,
             &mut |_, _| {},
             &mut || {},
+            &mut || false,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("scaleup models convert"), "{err}");
+        assert!(err.to_string().contains("lists no PyTorch file"), "{err}");
         assert!(http.requests().is_empty());
     }
 
@@ -378,6 +548,7 @@ mod tests {
             &http,
             &mut |_, _| {},
             &mut || converted = true,
+            &mut || false,
         )
         .unwrap_err();
         assert!(err.to_string().contains("sha256 mismatch"), "{err}");
@@ -402,6 +573,7 @@ mod tests {
             &http,
             &mut |_, _| {},
             &mut || converted = true,
+            &mut || false,
         )
         .unwrap_err();
         assert!(
@@ -412,6 +584,237 @@ mod tests {
         let folder = dir.path().join("hub").join("4x-Test");
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 0);
         assert!(Installed::load(dir.path()).models.is_empty());
+    }
+
+    /// A stand-in for Python: answers the `-c` probes with "3". As the converter it writes
+    /// `<output>`, or (`slow`) writes `<output>.part`, sleeps about 5 s and fails.
+    fn fake_python(dir: &Path, slow: bool) -> PathBuf {
+        #[cfg(windows)]
+        let (name, text) = (
+            "python.cmd",
+            if slow {
+                "@echo off\r\nif \"%~1\"==\"-c\" (\r\necho 3\r\nexit /b 0\r\n)\r\necho partial> \"%~3.part\"\r\nping -n 6 127.0.0.1 >nul\r\nexit /b 1\r\n"
+            } else {
+                "@echo off\r\nif \"%~1\"==\"-c\" (\r\necho 3\r\nexit /b 0\r\n)\r\necho onnx> \"%~3\"\r\nexit /b 0\r\n"
+            },
+        );
+        #[cfg(not(windows))]
+        let (name, text) = (
+            "python",
+            if slow {
+                "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then echo 3; exit 0; fi\necho partial > \"$3.part\"\nsleep 5\nexit 1\n"
+            } else {
+                "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then echo 3; exit 0; fi\necho onnx > \"$3\"\nexit 0\n"
+            },
+        );
+        let path = dir.join(name);
+        fs::write(&path, text).unwrap();
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    /// Answers false for `after`, then true.
+    fn cancel_after(after: std::time::Duration) -> impl FnMut() -> bool {
+        let start = std::time::Instant::now();
+        move || start.elapsed() >= after
+    }
+
+    #[test]
+    fn fake_python_passes_the_probes() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake_python(dir.path(), false);
+        let python = find_python_from(Some(exe.clone().into_os_string())).unwrap();
+        assert_eq!(python.path(), exe);
+    }
+
+    #[test]
+    fn cancel_kills_python_and_removes_partial_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let python = Python {
+            exe: fake_python(dir.path(), true),
+        };
+        let pth = dir.path().join("m.pth");
+        fs::write(&pth, b"x").unwrap();
+        let out = dir.path().join("m.onnx");
+        let started = std::time::Instant::now();
+        let mut cancelled = cancel_after(Duration::from_millis(1500));
+        let err = convert_to_onnx(&python, &pth, &out, &mut cancelled).unwrap_err();
+        assert!(matches!(err, ScaleUpError::Cancelled), "{err:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(!out.exists());
+        assert!(!part_of(&out).exists(), "the .part file is removed");
+        assert!(pth.exists(), "the input is not ours to delete");
+    }
+
+    #[test]
+    fn install_converted_cancel_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let python = Python {
+            exe: fake_python(dir.path(), true),
+        };
+        let models = dir.path().join("models");
+        let body = b"checkpoint".to_vec();
+        let c = card(
+            "dat",
+            vec![resource("pth", "pytorch", Some(sha(&body)), &[GH_PTH])],
+        );
+        let http = Fake::with(vec![resp(&body, "application/octet-stream")]);
+        let err = install_converted(
+            &c,
+            &models,
+            &python,
+            &http,
+            &mut |_, _| {},
+            &mut || {},
+            &mut cancel_after(Duration::from_millis(1500)),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ScaleUpError::Cancelled), "{err:?}");
+        let folder = models.join("hub").join("4x-Test");
+        let left: Vec<_> = fs::read_dir(&folder).unwrap().flatten().collect();
+        assert!(left.is_empty(), "{left:?}");
+        assert!(Installed::load(&models).models.is_empty());
+    }
+
+    #[test]
+    fn install_converted_registers_the_onnx() {
+        let dir = tempfile::tempdir().unwrap();
+        let python = Python {
+            exe: fake_python(dir.path(), false),
+        };
+        let models = dir.path().join("models");
+        let body = b"checkpoint".to_vec();
+        let c = card(
+            "dat",
+            vec![resource("pth", "pytorch", Some(sha(&body)), &[GH_PTH])],
+        );
+        let http = Fake::with(vec![resp(&body, "application/octet-stream")]);
+        let m = install_converted(
+            &c,
+            &models,
+            &python,
+            &http,
+            &mut |_, _| {},
+            &mut || {},
+            &mut || false,
+        )
+        .unwrap();
+        assert_eq!(m.format, "onnx");
+        assert!(m.verified);
+        assert_eq!(
+            m.file,
+            models.join("hub").join("4x-Test").join("4x-Test.onnx")
+        );
+        assert_eq!(m.sha256, Some(file_sha256(&m.file).unwrap()));
+        assert!(
+            !m.file.with_extension("pth").exists(),
+            "the PyTorch file is dropped"
+        );
+    }
+
+    #[test]
+    fn manual_pytorch_cards_point_at_import_everywhere() {
+        let mega = "https://mega.nz/file/x/4x-Test.pth";
+        let c = card(
+            "dat",
+            vec![resource("pth", "pytorch", Some(sha(b"w")), &[mega])],
+        );
+        assert_eq!(
+            pytorch_source(&c),
+            PytorchSource::Manual {
+                url: mega.into(),
+                file_name: "4x-Test.pth".into(),
+                sha256: Some(sha(b"w")),
+            }
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let http = Fake::default();
+        let err = install_converted(
+            &c,
+            dir.path(),
+            &bogus_python(),
+            &http,
+            &mut |_, _| {},
+            &mut || {},
+            &mut || false,
+        )
+        .unwrap_err()
+        .to_string();
+        let caps = Capabilities {
+            onnx: true,
+            native_archs: Vec::new(),
+        };
+        let plain = super::super::install(&c, dir.path(), &caps, &http, &mut |_, _| {})
+            .unwrap_err()
+            .to_string();
+        for msg in [&err, &plain] {
+            assert!(msg.contains(mega), "{msg}");
+            assert!(msg.contains("scaleup hub import 4x-Test <file>"), "{msg}");
+            assert!(!msg.contains("--convert"), "{msg}");
+        }
+        assert!(http.requests().is_empty());
+        let gh = card("dat", vec![resource("pth", "pytorch", None, &[GH_PTH])]);
+        assert_eq!(pytorch_source(&gh), PytorchSource::Download);
+        let none = card("dat", vec![resource("onnx", "onnx", None, &[GH_PTH])]);
+        assert_eq!(pytorch_source(&none), PytorchSource::None);
+    }
+
+    #[test]
+    fn import_needs_conversion_for_pytorch_files_of_non_native_archs() {
+        let c = card("dat", Vec::new());
+        let none = Capabilities::default();
+        let dat = Capabilities {
+            onnx: true,
+            native_archs: vec!["DAT".into()],
+        };
+        assert!(import_needs_conversion(&c, Path::new("a.pth"), &none));
+        assert!(import_needs_conversion(
+            &c,
+            Path::new("a.SafeTensors"),
+            &none
+        ));
+        assert!(!import_needs_conversion(&c, Path::new("a.onnx"), &none));
+        assert!(!import_needs_conversion(&c, Path::new("a.pth"), &dat));
+    }
+
+    #[test]
+    fn import_converted_checks_converts_and_keeps_the_users_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let python = Python {
+            exe: fake_python(dir.path(), false),
+        };
+        let models = dir.path().join("models");
+        let src = dir.path().join("Downloaded.pth");
+        fs::write(&src, b"weights").unwrap();
+        let c = card(
+            "dat",
+            vec![resource(
+                "pth",
+                "pytorch",
+                Some(sha(b"weights")),
+                &["https://mega.nz/x"],
+            )],
+        );
+        let m = import_converted(&c, &src, &models, &python, &mut || false).unwrap();
+        assert!(m.verified);
+        assert_eq!(m.format, "onnx");
+        assert_eq!(
+            m.file,
+            models.join("hub").join("4x-Test").join("Downloaded.onnx")
+        );
+        assert!(src.exists());
+        let wrong = dir.path().join("wrong.pth");
+        fs::write(&wrong, b"other").unwrap();
+        let err = import_converted(&c, &wrong, &models, &python, &mut || false).unwrap_err();
+        assert!(err.to_string().contains("sha256 mismatch"), "{err}");
     }
 
     /// Run by hand: needs `tools/.venv` and `models/cache/src/realesr-animevideov3.pth`.
@@ -437,7 +840,7 @@ mod tests {
         let python = find_python_from(Some(venv.into_os_string())).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("animevideov3.onnx");
-        convert_to_onnx(&python, &pth, &out).unwrap();
+        convert_to_onnx(&python, &pth, &out, &mut || false).unwrap();
         let backend = OrtBackend::new(crate::DevicePreference::Cpu).unwrap();
         let model = backend.load_model(&out, None).unwrap();
         assert_eq!(model.scale(), 4);

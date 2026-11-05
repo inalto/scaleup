@@ -135,7 +135,11 @@ pip install spandrel torch onnx
 ```
 
 Without Python or those modules you get that line as the error (exit code 3 on the command line). Python only
-runs when you ask for a conversion. A converted local file is marked non-commercial, since its license is not
+runs when you ask for a conversion. Converting loads the downloaded checkpoint with your Python and PyTorch
+(through spandrel), so convert only files whose source you trust. A model whose PyTorch file is on a site
+ScaleUP cannot download from offers **Open download page** and **Import file…** instead of Convert; on the
+command line, `scaleup hub import <id> <file.pth>` converts such a file the same way. Stop (or Ctrl-C) ends a
+running conversion and leaves no files behind. A converted local file is marked non-commercial, since its license is not
 known.
 
 ## Troubleshooting
