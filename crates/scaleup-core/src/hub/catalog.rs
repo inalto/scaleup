@@ -19,7 +19,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BODY: u64 = 64 * 1024 * 1024;
 
 /// One downloadable file of a model.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct Resource {
     /// `"pytorch"` or `"onnx"`.
     pub platform: Option<String>,
@@ -33,7 +33,7 @@ pub struct Resource {
 }
 
 /// One model of the catalogue.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct ModelCard {
     /// The key of the model in the catalogue (filled by [`Catalog::parse`]).
     #[serde(skip)]
@@ -81,7 +81,7 @@ impl ModelCard {
 }
 
 /// The parsed catalogue and when it was downloaded.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Catalog {
     /// Sorted by id.
     pub models: Vec<ModelCard>,

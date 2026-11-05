@@ -5,12 +5,18 @@
 //! and between files: that is where `Stop` takes effect.
 
 use std::collections::VecDeque;
+use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 
 use eframe::egui;
+use scaleup_core::hub::{
+    Capabilities, Catalog, Http, HttpResponse, InstalledModel, ModelCard, Python, UreqHttp,
+    find_python, find_python_from, import_file, install, install_converted, uninstall,
+};
 use scaleup_core::io::is_supported_input;
 use scaleup_core::{
     CancelToken, DeviceInfo, DevicePreference, FileJob, Model, OutputFormat, Phase, Progress,
@@ -18,6 +24,28 @@ use scaleup_core::{
 };
 
 use crate::state::{Mode, Settings};
+use crate::thumbs;
+
+/// Where the OpenModelDB work of the worker gets its catalogue, files and Python.
+pub struct HubConfig {
+    /// A catalogue file that replaces the network fetch and the cache (`SCALEUP_HUB_CATALOG`,
+    /// as for the command line).
+    pub catalog_file: Option<PathBuf>,
+    pub http: Arc<dyn Http + Send + Sync>,
+    /// The Python to convert with, instead of `SCALEUP_PYTHON` or `PATH`.
+    pub python: Option<OsString>,
+}
+
+impl HubConfig {
+    /// The real network, `SCALEUP_HUB_CATALOG` when it is set, Python found the usual way.
+    pub fn from_env() -> Self {
+        Self {
+            catalog_file: std::env::var_os("SCALEUP_HUB_CATALOG").map(PathBuf::from),
+            http: Arc::new(UreqHttp),
+            python: None,
+        }
+    }
+}
 
 pub enum UiMsg {
     Start {
@@ -33,6 +61,23 @@ pub enum UiMsg {
     Download(String),
     /// Decode this file as the new "before" image.
     Preview(PathBuf),
+    /// Load the OpenModelDB catalogue: from the cache when it is under 24 h old, unless `force`.
+    HubRefresh {
+        force: bool,
+    },
+    /// Download, verify and install an OpenModelDB model.
+    HubInstall(String),
+    /// Delete an installed OpenModelDB model.
+    HubRemove(String),
+    /// Install a file the user downloaded by hand, after checking it against the catalogue.
+    HubImport {
+        id: String,
+        file: PathBuf,
+    },
+    /// Download the PyTorch file of a card and install it converted to ONNX.
+    HubConvert(String),
+    /// Fetch the before/after thumbnails of a card.
+    HubThumbs(String),
     Quit,
 }
 
@@ -81,6 +126,16 @@ pub enum WorkerEvent {
         /// Size of the file, which `image` may be a downscaled copy of.
         size: [u32; 2],
     },
+    HubCatalog(Arc<Catalog>),
+    /// A model was installed (downloaded, imported or converted); the worker's registry lists it.
+    HubInstalled(InstalledModel),
+    /// A model was removed; the worker's registry no longer lists it.
+    HubRemoved(String),
+    /// The before and after thumbnails of card `id`; a missing one is `None`.
+    HubThumb {
+        id: String,
+        img: [Option<egui::ColorImage>; 2],
+    },
 }
 
 pub struct WorkerHandle {
@@ -127,6 +182,10 @@ impl Drop for WorkerHandle {
 }
 
 pub fn spawn(registry: Registry, initial_gpu: &str) -> WorkerHandle {
+    spawn_with(registry, initial_gpu, HubConfig::from_env())
+}
+
+pub fn spawn_with(registry: Registry, initial_gpu: &str, hub: HubConfig) -> WorkerHandle {
     let (ui_tx, ui_rx) = channel();
     let (ev_tx, ev_rx) = channel();
     let gpu = initial_gpu.to_string();
@@ -149,6 +208,8 @@ pub fn spawn(registry: Registry, initial_gpu: &str) -> WorkerHandle {
                 gpu,
                 upscaler: None,
                 model: None,
+                hub,
+                catalog: None,
             };
             worker.run();
         })
@@ -291,6 +352,52 @@ struct Worker {
     upscaler: Option<Upscaler>,
     /// The loaded model and the `model_id` it came from.
     model: Option<(String, Box<dyn Model>)>,
+    hub: HubConfig,
+    /// The OpenModelDB catalogue, once loaded.
+    catalog: Option<Arc<Catalog>>,
+}
+
+/// Reads that fail once `cancel` is set, so a download stops at the next chunk.
+struct CancelRead {
+    inner: Box<dyn Read + Send>,
+    cancel: CancelToken,
+}
+
+impl Read for CancelRead {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancel.is_cancelled() {
+            // Not `Interrupted`: readers retry that.
+            return Err(std::io::Error::other("cancelled"));
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// `inner` with bodies that stop when `cancel` is set.
+struct CancelHttp<'a> {
+    inner: &'a dyn Http,
+    cancel: CancelToken,
+}
+
+impl Http for CancelHttp<'_> {
+    fn get(&self, url: &str, cookies: &[(String, String)]) -> Result<HttpResponse> {
+        if self.cancel.is_cancelled() {
+            return Err(ScaleUpError::Cancelled);
+        }
+        let mut response = self.inner.get(url, cookies)?;
+        response.body = Box::new(CancelRead {
+            inner: response.body,
+            cancel: self.cancel.clone(),
+        });
+        Ok(response)
+    }
+}
+
+/// How a card is to be installed.
+enum HubJob {
+    Download,
+    Convert,
+    Import(PathBuf),
 }
 
 impl Worker {
@@ -342,6 +449,21 @@ impl Worker {
                 Err(e) => self.emit(WorkerEvent::Error(format!("{}: {e}", path.display()))),
             },
             UiMsg::Download(id) => self.download(&id),
+            UiMsg::HubRefresh { force } => match self.catalog(force) {
+                Ok(cat) => self.emit(WorkerEvent::HubCatalog(cat)),
+                Err(e) => self.emit(WorkerEvent::Error(format!("OpenModelDB catalogue: {e}"))),
+            },
+            UiMsg::HubInstall(id) => self.hub_install(&id, HubJob::Download),
+            UiMsg::HubConvert(id) => self.hub_install(&id, HubJob::Convert),
+            UiMsg::HubImport { id, file } => self.hub_install(&id, HubJob::Import(file)),
+            UiMsg::HubRemove(id) => match uninstall(self.registry.models_dir(), &id) {
+                Ok(()) => {
+                    self.reload_registry();
+                    self.emit(WorkerEvent::HubRemoved(id));
+                }
+                Err(e) => self.emit(WorkerEvent::Error(e.to_string())),
+            },
+            UiMsg::HubThumbs(id) => self.hub_thumbs(id),
             #[cfg(test)]
             UiMsg::TestPanic => panic!("test panic"),
             UiMsg::Quit => {}
@@ -366,6 +488,125 @@ impl Worker {
             }
             Err(e) => self.emit(WorkerEvent::Error(e.to_string())),
         }
+    }
+
+    /// The OpenModelDB catalogue, loaded once (or again when `force`).
+    fn catalog(&mut self, force: bool) -> Result<Arc<Catalog>> {
+        if !force && let Some(cat) = &self.catalog {
+            return Ok(cat.clone());
+        }
+        let cat = match &self.hub.catalog_file {
+            Some(file) => Catalog::parse(
+                &std::fs::read_to_string(file)
+                    .map_err(|e| ScaleUpError::Model(format!("{}: {e}", file.display())))?,
+            )?,
+            None => Catalog::fetch(self.registry.models_dir(), force)?,
+        };
+        let cat = Arc::new(cat);
+        self.catalog = Some(cat.clone());
+        Ok(cat)
+    }
+
+    fn card(&mut self, id: &str) -> Result<ModelCard> {
+        self.catalog(false)?.get(id).cloned().ok_or_else(|| {
+            ScaleUpError::Model(format!("unknown model '{id}' in the OpenModelDB catalogue"))
+        })
+    }
+
+    fn python(&self) -> Result<Python> {
+        match &self.hub.python {
+            Some(exe) => find_python_from(Some(exe.clone())),
+            None => find_python(),
+        }
+    }
+
+    /// The registry reads `installed.json` when it is built: build it again so the new list is
+    /// used, and drop the upscaler, which holds a copy.
+    fn reload_registry(&mut self) {
+        self.registry = Registry::with_dir(self.registry.models_dir().to_path_buf());
+        self.upscaler = None;
+        self.model = None;
+    }
+
+    fn hub_install(&mut self, id: &str, job: HubJob) {
+        let card = match self.card(id) {
+            Ok(card) => card,
+            Err(e) => return self.emit(WorkerEvent::Error(e.to_string())),
+        };
+        // Before downloading anything: without Python the file would be of no use.
+        let python = match job {
+            HubJob::Convert => match self.python() {
+                Ok(p) => Some(p),
+                Err(e) => return self.emit(WorkerEvent::Error(e.to_string())),
+            },
+            _ => None,
+        };
+        let models_dir = self.registry.models_dir().to_path_buf();
+        let cancel = CancelToken::new();
+        let http = CancelHttp {
+            inner: self.hub.http.as_ref(),
+            cancel: cancel.clone(),
+        };
+        let (events, inbox) = (&self.events, &mut self.inbox);
+        let mut progress = |done: u64, total: Option<u64>| {
+            events.send(WorkerEvent::Download {
+                done,
+                total: total.unwrap_or(0),
+            });
+            inbox.poll(&cancel);
+        };
+        let result = match (&job, &python) {
+            (HubJob::Import(file), _) => import_file(&card, file, &models_dir),
+            (_, Some(python)) => install_converted(
+                &card,
+                &models_dir,
+                python,
+                &http,
+                &mut progress,
+                &mut || {
+                    events.send(WorkerEvent::Progress {
+                        file: 0,
+                        files: 1,
+                        percent: 0.0,
+                        phase: "Converting to ONNX".into(),
+                    })
+                },
+            ),
+            _ => install(
+                &card,
+                &models_dir,
+                &Capabilities::current(),
+                &http,
+                &mut progress,
+            ),
+        };
+        match result {
+            Ok(model) => {
+                self.reload_registry();
+                self.emit(WorkerEvent::HubInstalled(model));
+            }
+            Err(_) if cancel.is_cancelled() => {
+                self.emit(WorkerEvent::Stopped { done: 0, total: 1 });
+            }
+            Err(e) => self.emit(WorkerEvent::Error(e.to_string())),
+        }
+    }
+
+    /// Always answers, so the window stops waiting; a thumbnail that failed is `None`.
+    fn hub_thumbs(&mut self, id: String) {
+        let urls = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.get(&id))
+            .map(thumbs::pair_urls)
+            .unwrap_or_default();
+        let cache = self.registry.models_dir().join("hub").join("thumbs");
+        let img = urls.map(|url| {
+            let img = thumbs::load(self.hub.http.as_ref(), url.as_deref()?, &cache)?;
+            let size = [img.width() as usize, img.height() as usize];
+            Some(egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()))
+        });
+        self.emit(WorkerEvent::HubThumb { id, img });
     }
 
     /// A preview that cannot be decoded must not disturb the run: it only reaches the log.
@@ -916,6 +1157,279 @@ mod tests {
             last = Some(h.rx.recv_timeout(Duration::from_secs(120)).unwrap());
         }
         assert_eq!(last, Some(WorkerEvent::AllDone { done: 1, failed: 1 }));
+    }
+
+    /// Serves fixed bodies by URL; anything else fails. Records every URL asked for.
+    #[derive(Default)]
+    struct MapHttp {
+        bodies: std::collections::HashMap<String, Vec<u8>>,
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Http for MapHttp {
+        fn get(&self, url: &str, _: &[(String, String)]) -> Result<HttpResponse> {
+            self.seen.lock().unwrap().push(url.to_owned());
+            let body = self
+                .bodies
+                .get(url)
+                .cloned()
+                .ok_or_else(|| ScaleUpError::Download(format!("{url}: 404")))?;
+            Ok(HttpResponse {
+                content_type: Some("application/octet-stream".into()),
+                content_disposition: None,
+                content_length: Some(body.len() as u64),
+                cookies: Vec::new(),
+                body: Box::new(std::io::Cursor::new(body)),
+            })
+        }
+    }
+
+    const DIRECT_URL: &str = "https://github.com/t/t/releases/download/v1/test-direct.onnx";
+    const THUMB_URL: &str = "https://openmodeldb.info/thumbs/lr.png";
+    const NEAREST_SHA: &str = "5ab9a633273dd61a59a49a289c33e15da8f3f4d8e0bb81d068b562e54964a0ff";
+
+    /// A catalogue of synthetic cards around the nearest-neighbour fixture model.
+    fn write_catalogue(dir: &Path) -> PathBuf {
+        let card = |name: &str, arch: &str, resource: &str, extra: &str| {
+            format!(
+                r#""{name}": {{"name": "{name}", "author": "tests", "license": "MIT", "tags": [],
+                "description": "", "date": "2026-01-01", "architecture": "{arch}", "scale": 2,
+                "inputChannels": 3, "outputChannels": 3, "resources": [{resource}]{extra}}}"#
+            )
+        };
+        let res = |platform: &str, kind: &str, url: &str| {
+            format!(
+                r#"{{"platform": "{platform}", "type": "{kind}", "sha256": "{NEAREST_SHA}", "urls": ["{url}"]}}"#
+            )
+        };
+        let json = format!(
+            "{{{}, {}, {}}}",
+            card(
+                "test-direct",
+                "compact",
+                &res("onnx", "onnx", DIRECT_URL),
+                r#", "thumbnail": {"type": "paired", "LR": "/thumbs/lr.png", "SR": "http://plain.example/sr.png"}"#
+            ),
+            card(
+                "test-manual",
+                "compact",
+                &res("onnx", "onnx", "https://mega.nz/file/x"),
+                ""
+            ),
+            card(
+                "test-convert",
+                "dat",
+                &res(
+                    "pytorch",
+                    "pth",
+                    "https://github.com/t/t/releases/download/v1/c.pth"
+                ),
+                ""
+            ),
+        );
+        let file = dir.join("catalogue.json");
+        std::fs::write(&file, json).unwrap();
+        file
+    }
+
+    fn hub_worker(dir: &Path, http: Arc<MapHttp>, python: Option<&str>) -> WorkerHandle {
+        spawn_with(
+            Registry::with_dir(dir.join("models")),
+            "cpu",
+            HubConfig {
+                catalog_file: Some(write_catalogue(dir)),
+                http,
+                python: python.map(OsString::from),
+            },
+        )
+    }
+
+    /// Events up to and including the first hub answer, `Stopped` or `Error`.
+    fn until_hub(h: &WorkerHandle) -> Vec<WorkerEvent> {
+        let mut out = Vec::new();
+        loop {
+            let ev =
+                h.rx.recv_timeout(Duration::from_secs(120))
+                    .expect("worker went quiet");
+            let end = matches!(
+                ev,
+                WorkerEvent::HubCatalog(_)
+                    | WorkerEvent::HubInstalled(_)
+                    | WorkerEvent::HubRemoved(_)
+                    | WorkerEvent::HubThumb { .. }
+                    | WorkerEvent::Stopped { .. }
+                    | WorkerEvent::Error(_)
+            );
+            out.push(ev);
+            if end {
+                return out;
+            }
+        }
+    }
+
+    fn nearest_bytes() -> Vec<u8> {
+        std::fs::read(fixture()).unwrap()
+    }
+
+    #[test]
+    fn hub_refresh_sends_the_catalogue() {
+        let d = tempfile::tempdir().unwrap();
+        let sample = format!(
+            "{}/../../tests/fixtures/hub/models.sample.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let h = spawn_with(
+            Registry::with_dir(d.path().join("models")),
+            "cpu",
+            HubConfig {
+                catalog_file: Some(PathBuf::from(sample)),
+                http: Arc::new(MapHttp::default()),
+                python: None,
+            },
+        );
+        h.tx.send(UiMsg::HubRefresh { force: false }).unwrap();
+        let evs = until_hub(&h);
+        let Some(WorkerEvent::HubCatalog(cat)) = evs.last() else {
+            panic!("{evs:?}")
+        };
+        assert_eq!(cat.models.len(), 40);
+    }
+
+    #[test]
+    fn hub_install_downloads_verifies_and_the_model_runs() {
+        let d = tempfile::tempdir().unwrap();
+        let http = Arc::new(MapHttp {
+            bodies: [(DIRECT_URL.to_owned(), nearest_bytes())].into(),
+            ..MapHttp::default()
+        });
+        let h = hub_worker(d.path(), http, None);
+        h.tx.send(UiMsg::HubInstall("test-direct".into())).unwrap();
+        let evs = until_hub(&h);
+        assert!(
+            evs.iter()
+                .any(|e| matches!(e, WorkerEvent::Download { .. })),
+            "{evs:?}"
+        );
+        let Some(WorkerEvent::HubInstalled(m)) = evs.last() else {
+            panic!("{evs:?}")
+        };
+        assert!(m.verified);
+        assert!(
+            m.file
+                .starts_with(d.path().join("models").join("hub").join("test-direct"))
+        );
+
+        // The worker lists it at once: a run with its id needs no restart.
+        let input = d.path().join("a.png");
+        write_png(&input, 8);
+        let mut s = settings(d.path());
+        s.model_id = "test-direct".into();
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input),
+            settings: s,
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::AllDone { done: 1, failed: 0 }),
+            "{evs:?}"
+        );
+    }
+
+    #[test]
+    fn hub_import_then_remove() {
+        let d = tempfile::tempdir().unwrap();
+        let h = hub_worker(d.path(), Arc::new(MapHttp::default()), None);
+        let file = d.path().join("downloaded.onnx");
+        std::fs::copy(fixture(), &file).unwrap();
+        h.tx.send(UiMsg::HubImport {
+            id: "test-manual".into(),
+            file: file.clone(),
+        })
+        .unwrap();
+        let evs = until_hub(&h);
+        let Some(WorkerEvent::HubInstalled(m)) = evs.last() else {
+            panic!("{evs:?}")
+        };
+        assert!(m.verified && m.file.is_file() && !file.exists());
+
+        h.tx.send(UiMsg::HubRemove("test-manual".into())).unwrap();
+        let evs = until_hub(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::HubRemoved("test-manual".into()))
+        );
+        assert!(
+            !d.path()
+                .join("models")
+                .join("hub")
+                .join("test-manual")
+                .exists()
+        );
+        h.tx.send(UiMsg::HubRemove("test-manual".into())).unwrap();
+        let evs = until_hub(&h);
+        assert!(matches!(evs.last(), Some(WorkerEvent::Error(_))), "{evs:?}");
+    }
+
+    #[test]
+    fn hub_import_of_a_wrong_file_is_an_error() {
+        let d = tempfile::tempdir().unwrap();
+        let h = hub_worker(d.path(), Arc::new(MapHttp::default()), None);
+        let file = d.path().join("other.onnx");
+        std::fs::write(&file, b"not the model").unwrap();
+        h.tx.send(UiMsg::HubImport {
+            id: "test-manual".into(),
+            file: file.clone(),
+        })
+        .unwrap();
+        let evs = until_hub(&h);
+        assert!(
+            matches!(evs.last(), Some(WorkerEvent::Error(e)) if e.contains("sha256")),
+            "{evs:?}"
+        );
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn hub_convert_without_python_names_the_pip_line_and_downloads_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let http = Arc::new(MapHttp::default());
+        let h = hub_worker(d.path(), http.clone(), Some("scaleup-no-such-python-xyz"));
+        h.tx.send(UiMsg::HubConvert("test-convert".into())).unwrap();
+        let evs = until_hub(&h);
+        let Some(WorkerEvent::Error(e)) = evs.last() else {
+            panic!("{evs:?}")
+        };
+        assert!(
+            e.lines()
+                .any(|l| l.trim() == scaleup_core::hub::PIP_INSTALL),
+            "{e}"
+        );
+        assert!(http.seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn hub_thumbs_are_fetched_cached_and_missing_ones_are_none() {
+        let d = tempfile::tempdir().unwrap();
+        let http = Arc::new(MapHttp {
+            bodies: [(THUMB_URL.to_owned(), crate::thumbs::tests::png(512, 256))].into(),
+            ..MapHttp::default()
+        });
+        let h = hub_worker(d.path(), http.clone(), None);
+        h.tx.send(UiMsg::HubRefresh { force: false }).unwrap();
+        until_hub(&h);
+        h.tx.send(UiMsg::HubThumbs("test-direct".into())).unwrap();
+        let evs = until_hub(&h);
+        let Some(WorkerEvent::HubThumb { id, img: [lr, sr] }) = evs.last() else {
+            panic!("{evs:?}")
+        };
+        assert_eq!(id, "test-direct");
+        assert_eq!(lr.as_ref().map(|i| i.size), Some([256, 128]));
+        assert!(sr.is_none(), "plain http is never fetched");
+        let cache = d.path().join("models").join("hub").join("thumbs");
+        assert!(cache.join(crate::thumbs::cache_key(THUMB_URL)).is_file());
+        assert_eq!(*http.seen.lock().unwrap(), [THUMB_URL]);
     }
 
     #[test]

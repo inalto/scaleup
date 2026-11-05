@@ -4,7 +4,7 @@
 
 ```
 scaleup upscale -i <file|dir> -o <file|dir> [options]     (or bare: scaleup -i .. -o ..)
-scaleup models list | info <id> | download <id> | path <id>
+scaleup models list | info <id> | download <id> | path <id> | import <dir> | convert <file>
 scaleup hub search | info | install | import | remove | recommend | refresh
 scaleup devices
 scaleup --version
@@ -45,7 +45,7 @@ Browse [OpenModelDB](https://openmodeldb.info) and use its models like any other
 |---|---|
 | `hub search [text]` with `--scale`, `--tag`, `--arch`, `--commercial`, `--runnable`, `--refresh`, `--limit` | `scaleup hub search anime --scale 2 --commercial` |
 | `hub info <id>`: license in words, files, hosts, readiness | `scaleup hub info 2x-MLP-StarSample-V1-0` |
-| `hub install <id> [--resource N]` | `scaleup hub install 2x-MLP-StarSample-V1-0` |
+| `hub install <id> [--resource N] [--convert]`; `--convert` downloads the PyTorch file and converts it to ONNX (needs Python, see below) | `scaleup hub install 4x-DRCT-L --convert` |
 | `hub import <id> <file>`: a file downloaded by hand (checked against the catalogue's sha256) | `scaleup hub import 1x-DeH264-realplksr model.onnx` |
 | `hub remove <id>` | `scaleup hub remove 2x-MLP-StarSample-V1-0` |
 | `hub recommend` with `--content`, `--goal`, `--scale`, `--speed`, `--commercial`, `-n` | `scaleup hub recommend --content anime --speed fastest` |
@@ -54,6 +54,20 @@ Browse [OpenModelDB](https://openmodeldb.info) and use its models like any other
 The READY column is `installed`, `downloadable`, `manual` (the files are on a host you open in a browser; the
 error of `hub install` says which URL, file name and sha256, then use `hub import`), `needs-conversion` or
 `unsupported`. A file the catalogue lists without a sha256 installs with a warning.
+
+## Converting PyTorch models
+
+`scaleup models convert <file.pth|file.safetensors> [--out dir]` converts a checkpoint to ONNX (input `input`
+float32 [1,3,H,W], opset 17) and lists it as a local model named after the file; its license is unknown, so it
+is marked non-commercial. `hub install <id> --convert` does the same for an OpenModelDB model and records it as
+installed. Both run your own Python 3: `SCALEUP_PYTHON` (a path to the executable) if set, else `python3` or
+`python` on `PATH`, with these modules:
+
+```
+pip install spandrel torch onnx
+```
+
+Without them the command prints that line and exits 3. Python only runs when you ask for a conversion.
 
 ## Exit codes
 
