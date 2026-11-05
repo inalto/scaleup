@@ -51,20 +51,38 @@ fn unknown(id: &str) -> ScaleUpError {
     ScaleUpError::Model(format!("unknown model '{id}'"))
 }
 
-fn yes_no(b: bool) -> &'static str {
+pub fn yes_no(b: bool) -> &'static str {
     if b { "yes" } else { "no" }
+}
+
+/// Prints `head` and `rows` as plain text with left-aligned columns two spaces apart.
+pub fn print_table(head: &[&str], rows: Vec<Vec<String>>) {
+    let head: Vec<String> = head.iter().map(|h| (*h).to_owned()).collect();
+    let mut widths = vec![0usize; head.len()];
+    for row in std::iter::once(&head).chain(rows.iter()) {
+        for (w, cell) in widths.iter_mut().zip(row) {
+            *w = (*w).max(cell.chars().count());
+        }
+    }
+    for row in std::iter::once(&head).chain(rows.iter()) {
+        let line: Vec<String> = row
+            .iter()
+            .zip(&widths)
+            .map(|(c, w)| format!("{c:<w$}"))
+            .collect();
+        println!("{}", line.join("  ").trim_end());
+    }
 }
 
 pub fn run_models(cmd: &ModelsCmd, cancel: &CancelToken) -> Result<i32, ScaleUpError> {
     let mut reg = registry_for(None);
     match cmd {
         ModelsCmd::List => {
-            let head = ["ID", "SCALE", "LICENSE", "COMMERCIAL", "DOWNLOADED"].map(String::from);
-            let rows: Vec<[String; 5]> = reg
+            let rows = reg
                 .entries()
                 .iter()
                 .map(|e| {
-                    [
+                    vec![
                         e.id.clone(),
                         format!("{}x", e.scale),
                         e.license.clone(),
@@ -73,20 +91,10 @@ pub fn run_models(cmd: &ModelsCmd, cancel: &CancelToken) -> Result<i32, ScaleUpE
                     ]
                 })
                 .collect();
-            let mut widths = [0usize; 5];
-            for row in std::iter::once(&head).chain(rows.iter()) {
-                for (w, cell) in widths.iter_mut().zip(row) {
-                    *w = (*w).max(cell.len());
-                }
-            }
-            for row in std::iter::once(&head).chain(rows.iter()) {
-                let line: Vec<String> = row
-                    .iter()
-                    .zip(widths)
-                    .map(|(c, w)| format!("{c:<w$}"))
-                    .collect();
-                println!("{}", line.join("  ").trim_end());
-            }
+            print_table(
+                &["ID", "SCALE", "LICENSE", "COMMERCIAL", "DOWNLOADED"],
+                rows,
+            );
         }
         ModelsCmd::Info { id } => {
             let e = reg.get(id).ok_or_else(|| unknown(id))?;
@@ -124,6 +132,9 @@ pub fn run_models(cmd: &ModelsCmd, cancel: &CancelToken) -> Result<i32, ScaleUpE
             for id in reg.import_ncnn(dir)? {
                 println!("{id}");
             }
+        }
+        ModelsCmd::Convert { file, out } => {
+            return crate::convert::run_convert(file, out.as_deref(), cancel);
         }
         ModelsCmd::Path { id } => {
             reg.get(id).ok_or_else(|| unknown(id))?;

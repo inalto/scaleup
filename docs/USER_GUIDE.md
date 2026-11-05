@@ -97,6 +97,54 @@ there.
   which prints the ids it added. They then show up in `scaleup models list` and in the app's
   dropdown.
 - The app's "Custom model file" button does the same for one file.
+- PyTorch weights (`.pth`, `.safetensors`) of the ESRGAN, ESRGAN+, Compact (SRVGGNet), SPAN and
+  RealPLKSR architectures run on the `wgpu` backend as they are: `-n path/to/model.pth`. The
+  architecture is read from the file. RealPLKSR files with the DySample upsampler and models that
+  are not RGB to RGB are refused with a message that says so.
+- A PyTorch checkpoint of any other architecture can be converted to ONNX with your own Python, see
+  [OpenModelDB](#openmodeldb).
+
+## OpenModelDB
+
+[OpenModelDB](https://openmodeldb.info) lists several hundred community models. ScaleUP keeps a copy of its
+catalogue in `<models dir>/hub/` and fetches it again when it is older than 24 hours or when you ask.
+
+**In the app**, click **Browse OpenModelDB…** next to the model picker. Search by name, author or tag, and
+filter by scale, content, architecture, **Commercial use OK** (on by default: non-commercial and unlicensed
+models stay hidden until you turn it off) and **Runnable on this machine**. Each model shows its license
+(green: commercial use allowed, amber: share-alike or copyleft, red: non-commercial, grey: unknown) and its
+state:
+
+| State | Button |
+|---|---|
+| Installed | Installed ✓ (Remove in the details) |
+| Downloadable | **Install**: download, check the sha256, add to the list. ESRGAN, ESRGAN+, Compact, SPAN and RealPLKSR models run from their PyTorch file, others from an ONNX file |
+| Manual download | **Open download page**, save the file, then **Import file…**; it is checked against the catalogue's sha256 |
+| Needs conversion | **Convert**: download the PyTorch file and convert it to ONNX with Python |
+| Unsupported | none |
+
+Click a model for its description, files and before/after pictures. **Recommend…** asks what is in the image,
+what should happen and how fast it must be, and suggests five models with the reasons. Installed models appear
+in the model picker under **From OpenModelDB**. A model whose file the catalogue lists without a sha256 is
+installed with a warning that it could not be verified.
+
+**On the command line** the same is available as `scaleup hub search | info | install | import | remove |
+recommend | refresh`; see `scaleup hub --help` and the [CLI README](../crates/scaleup-cli/README.md).
+
+**Converting.** `scaleup hub install <id> --convert`, `scaleup models convert <file.pth> [--out dir]` and the
+app's Convert button run your own Python 3 (`SCALEUP_PYTHON` if set, else `python3` or `python` on `PATH`) with:
+
+```bash
+pip install spandrel torch onnx
+```
+
+Without Python or those modules you get that line as the error (exit code 3 on the command line). Python only
+runs when you ask for a conversion. Converting loads the downloaded checkpoint with your Python and PyTorch
+(through spandrel), so convert only files whose source you trust. A model whose PyTorch file is on a site
+ScaleUP cannot download from offers **Open download page** and **Import file…** instead of Convert; on the
+command line, `scaleup hub import <id> <file.pth>` converts such a file the same way. Stop (or Ctrl-C) ends a
+running conversion and leaves no files behind. A converted local file is marked non-commercial, since its license is not
+known.
 
 ## Troubleshooting
 

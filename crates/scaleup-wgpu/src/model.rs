@@ -25,18 +25,20 @@ fn largest_side(graph: &Graph, max_buffer: u64) -> Result<u32> {
     Ok(fits)
 }
 
-/// An ncnn network ready to run on one device.
-pub struct NcnnModel {
+/// A network (from an ncnn file or a state dict) ready to run on one device.
+pub struct GraphModel {
     graph: Graph,
     scale: u32,
+    input_multiple: u32,
     exec: Executor,
     max_side: u32,
     plans: Mutex<HashMap<(u32, u32), Arc<Plan>>>,
 }
 
-impl NcnnModel {
-    /// `max_buffer` is the largest single buffer the device can bind.
-    pub fn new(graph: Graph, exec: Executor, max_buffer: u64) -> Result<Self> {
+impl GraphModel {
+    /// `max_buffer` is the largest single buffer the device can bind; input sides must be
+    /// multiples of `input_multiple`.
+    pub fn new(graph: Graph, exec: Executor, max_buffer: u64, input_multiple: u32) -> Result<Self> {
         let channels = infer_channels(&graph, 3)?[graph.output_blob];
         if channels != 3 {
             return Err(ScaleUpError::Model(format!(
@@ -44,7 +46,8 @@ impl NcnnModel {
             )));
         }
         Ok(Self {
-            scale: infer_scale(&graph),
+            scale: infer_scale(&graph)?,
+            input_multiple,
             max_side: largest_side(&graph, max_buffer)?,
             graph,
             exec,
@@ -63,14 +66,14 @@ impl NcnnModel {
     }
 }
 
-impl Model for NcnnModel {
+impl Model for GraphModel {
     fn scale(&self) -> u32 {
         self.scale
     }
 
-    /// These networks are fully convolutional: any input size works.
+    /// 1 for these fully convolutional networks, unless they start with a pixel unshuffle.
     fn input_multiple(&self) -> u32 {
-        1
+        self.input_multiple
     }
 
     fn max_input_side(&self) -> Option<u32> {
@@ -148,13 +151,15 @@ mod tests {
     }
 
     #[test]
-    fn loads_only_param_files() {
+    fn refuses_onnx_files() {
         let Some(b) = backend() else { return };
+        assert!(!b.handles(Path::new("model.onnx")));
+        assert!(b.handles(Path::new("model.param")) && b.handles(Path::new("model.PTH")));
         let err = b
             .load_model(Path::new("model.onnx"), None)
             .err()
             .expect("onnx refused");
-        assert!(err.to_string().contains("ncnn"), "{err}");
+        assert!(err.to_string().contains("ncnn .param and PyTorch"), "{err}");
     }
 
     #[test]
@@ -292,6 +297,118 @@ mod tests {
             println!("{name}: {psnr:.2} dB");
             assert!(psnr > 40.0, "{name}: {psnr:.2} dB");
         }
+    }
+
+    fn sd_fixture(name: &str) -> PathBuf {
+        crate::build::tests::fixture(name)
+    }
+
+    fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+        assert_eq!(a.len(), b.len());
+        a.iter()
+            .zip(b)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max)
+    }
+
+    #[test]
+    fn state_dict_models_report_their_scale() {
+        let Some(b) = backend() else { return };
+        for (name, scale) in [("tiny_compact.pth", 2), ("tiny_esrgan.pth", 4)] {
+            let m = b.load_model(&sd_fixture(name), None).unwrap();
+            assert_eq!((m.scale(), m.input_multiple()), (scale, 1), "{name}");
+            let out = m.run(&picture(12, 9)).unwrap();
+            assert_eq!((out.width, out.height), (12 * scale, 9 * scale), "{name}");
+        }
+    }
+
+    /// Review focus 4, through the backend: a 2x ESRGAN built on a 4x network behind a pixel
+    /// unshuffle by 2, as RealESRGAN_x2plus.
+    #[test]
+    fn unshuffling_esrgan_file_reports_external_scale_and_multiple() {
+        use crate::build::esrgan::tests::{Rrdb, entries};
+        use ::safetensors::tensor::{Dtype, TensorView, serialize_to_file};
+        let Some(b) = backend() else { return };
+        let n = Rrdb {
+            in_nc: 12,
+            nf: 8,
+            nb: 1,
+            gc: 4,
+            log2_scale: 2,
+            plus: false,
+        };
+        let sd = crate::build::tests::random_dict(
+            &entries(&n),
+            &mut crate::kernels::test_gpu::Rng(11),
+            0.2,
+            false,
+        );
+        let bytes: Vec<(String, Vec<usize>, Vec<u8>)> = sd
+            .tensors
+            .iter()
+            .map(|(k, t)| {
+                let b = t.data.iter().flat_map(|v| v.to_le_bytes()).collect();
+                (k.clone(), t.shape.clone(), b)
+            })
+            .collect();
+        let views: Vec<(String, TensorView<'_>)> = bytes
+            .iter()
+            .map(|(k, shape, b)| {
+                (
+                    k.clone(),
+                    TensorView::new(Dtype::F32, shape.clone(), b).unwrap(),
+                )
+            })
+            .collect();
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("2x_random.safetensors");
+        serialize_to_file(views, None, &path).unwrap();
+
+        let m = b.load_model(&path, None).unwrap();
+        assert_eq!((m.scale(), m.input_multiple()), (2, 2));
+        let err = m.run(&picture(13, 10)).unwrap_err().to_string();
+        assert!(err.contains("multiple of 2"), "{err}");
+        let img = picture(12, 10);
+        let out = m.run(&img).unwrap();
+        assert_eq!((out.width, out.height), (24, 20));
+        let graph = crate::build::build(&crate::arch::detect(&sd).unwrap(), &sd).unwrap();
+        let want = crate::cpu_ref::run_graph(
+            &graph,
+            &crate::cpu_ref::Tensor {
+                c: 3,
+                h: 10,
+                w: 12,
+                data: img.data.clone(),
+            },
+        );
+        let worst = max_abs_diff(&out.data, &want.data);
+        assert!(worst < 1e-3, "max abs diff {worst}");
+    }
+
+    /// As [`tiled_equals_whole_within_tolerance`], for the RRDB fixture: 36 convolutions, a
+    /// receptive radius of about 33 input pixels.
+    #[test]
+    fn esrgan_fixture_runs_tiled_equals_whole() {
+        let Some(b) = backend() else { return };
+        let m = b.load_model(&sd_fixture("tiny_esrgan.pth"), None).unwrap();
+        let img = picture(300, 220);
+        let whole = m.run(&img).unwrap();
+        let tiled = run_tiled(m.as_ref(), &img, 160, 40, &mut |_, _| true).unwrap();
+        let margin = 40 * 4;
+        let mut worst = 0.0f32;
+        let mut largest = 0.0f32;
+        for c in 0..3 {
+            for y in margin..whole.height - margin {
+                for x in margin..whole.width - margin {
+                    worst = worst.max((whole.get(c, x, y) - tiled.get(c, x, y)).abs());
+                    largest = largest.max(whole.get(c, x, y).abs());
+                }
+            }
+        }
+        assert!(
+            worst < 2e-3,
+            "max abs diff {worst} (largest value {largest})"
+        );
     }
 
     #[test]

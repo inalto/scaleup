@@ -29,8 +29,82 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: ModelsCmd,
     },
+    /// Find, install and import models from OpenModelDB
+    Hub {
+        #[command(subcommand)]
+        cmd: HubCmd,
+    },
     /// List the devices inference can run on
     Devices,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HubCmd {
+    /// Search the OpenModelDB catalogue (all models matching the filters when no text is given)
+    Search {
+        /// Words to look for in id, name, description, tags and authors
+        text: Option<String>,
+        /// Only models with this scale
+        #[arg(long)]
+        scale: Option<u32>,
+        /// Only models with this tag (repeat for several)
+        #[arg(long)]
+        tag: Vec<String>,
+        /// Only models of this architecture (for example esrgan, compact, span)
+        #[arg(long)]
+        arch: Option<String>,
+        /// Only models whose license allows commercial use
+        #[arg(long)]
+        commercial: bool,
+        /// Only models that are installed or can be installed on this machine
+        #[arg(long)]
+        runnable: bool,
+        /// Fetch the catalogue again even if the cached one is recent
+        #[arg(long)]
+        refresh: bool,
+        /// Rows to show
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Everything the catalogue knows about one model
+    Info { id: String },
+    /// Download a model, verify it and add it to the model list
+    Install {
+        id: String,
+        /// Use this resource of the model (index shown by `hub info`) instead of the automatic choice
+        #[arg(long)]
+        resource: Option<usize>,
+        /// Download the PyTorch file and convert it to ONNX with Python (spandrel, torch, onnx)
+        #[arg(long)]
+        convert: bool,
+    },
+    /// Add a model file downloaded by hand
+    Import { id: String, file: PathBuf },
+    /// Delete an installed model
+    Remove { id: String },
+    /// Suggest models for an image type and goal
+    Recommend {
+        /// photo, anime, cartoon, pixel-art, game-textures, text, cgi, ai-generated, faces or any
+        #[arg(long, default_value = "any")]
+        content: String,
+        /// upscale, restore, denoise, dejpeg, deblur or any
+        #[arg(long, default_value = "upscale")]
+        goal: String,
+        /// Only models with this scale
+        #[arg(long)]
+        scale: Option<u32>,
+        /// fastest, balanced or quality
+        #[arg(long, default_value = "balanced")]
+        speed: String,
+        /// Only models whose license allows commercial use
+        #[arg(long)]
+        commercial: bool,
+        /// How many models to suggest
+        #[arg(short = 'n', long = "count", default_value_t = 5)]
+        n: usize,
+    },
+    /// Fetch the OpenModelDB catalogue again
+    Refresh,
 }
 
 #[derive(Subcommand, Debug)]
@@ -45,6 +119,13 @@ pub enum ModelsCmd {
     Path { id: String },
     /// Copy a folder of ncnn .param/.bin pairs into the models folder and list them
     Import { dir: PathBuf },
+    /// Convert a PyTorch checkpoint (.pth or .safetensors) to ONNX with Python and list it
+    Convert {
+        file: PathBuf,
+        /// Folder for the ONNX file (default: the models folder)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Args, Debug, Clone)]

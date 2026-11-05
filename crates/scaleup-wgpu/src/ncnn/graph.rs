@@ -56,6 +56,39 @@ pub enum LayerKind {
     PixelShuffle {
         factor: u32,
     },
+    /// The inverse of `PixelShuffle`: each `factor`×`factor` block becomes `factor²` channels.
+    PixelUnshuffle {
+        factor: u32,
+    },
+    Sigmoid,
+    /// `x · sigmoid(x)`.
+    Silu,
+    /// `(x - mean[c]) · range`, one mean per channel.
+    Normalize {
+        mean: Vec<f32>,
+        range: f32,
+    },
+    /// `x · tanh(ln(1 + eˣ))`.
+    Mish,
+    /// Each pixel normalised over its channels, then `gamma[c] · x + beta[c]`.
+    LayerNormC {
+        eps: f32,
+        gamma: Vec<f32>,
+        beta: Vec<f32>,
+    },
+    /// Each of `groups` runs of consecutive channels normalised over the whole input, then
+    /// `gamma[c] · x + beta[c]`.
+    GroupNorm {
+        groups: u32,
+        eps: f32,
+        gamma: Vec<f32>,
+        beta: Vec<f32>,
+    },
+    /// Channels `from..to` of the input.
+    Slice {
+        from: u32,
+        to: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -97,21 +130,35 @@ pub fn load_graph(param_path: &Path) -> Result<Graph> {
     Ok(graph)
 }
 
-/// Output size / input size of the network.
-pub fn infer_scale(graph: &Graph) -> u32 {
-    let mut scale = vec![1u32; graph.blob_count];
+/// Output size / input size of the network, which must be a whole number. Sizes are tracked as
+/// fractions of the input: a pixel unshuffle divides them before later layers multiply them.
+pub fn infer_scale(graph: &Graph) -> Result<u32> {
+    let mut scale = vec![(1u64, 1u64); graph.blob_count];
     for layer in &graph.layers {
-        let input = layer.inputs.first().map_or(1, |&b| scale[b]);
-        let output = match layer.kind {
-            LayerKind::InterpNearest { scale } => input * scale,
-            LayerKind::PixelShuffle { factor } => input * factor,
-            _ => input,
+        let (num, den) = layer.inputs.first().map_or((1, 1), |&b| scale[b]);
+        let (num, den) = match layer.kind {
+            LayerKind::InterpNearest { scale: f } | LayerKind::PixelShuffle { factor: f } => {
+                (num * u64::from(f), den)
+            }
+            LayerKind::PixelUnshuffle { factor } => (num, den * u64::from(factor)),
+            _ => (num, den),
         };
+        let g = gcd(num, den);
         for &b in &layer.outputs {
-            scale[b] = output;
+            scale[b] = (num / g, den / g);
         }
     }
-    scale[graph.output_blob]
+    match scale[graph.output_blob] {
+        (num, 1) => u32::try_from(num)
+            .map_err(|_| ScaleUpError::Model(format!("the network scales by {num}, too much"))),
+        (num, den) => Err(ScaleUpError::Model(format!(
+            "the network scales by {num}/{den}, not a whole number"
+        ))),
+    }
+}
+
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 { a.max(1) } else { gcd(b, a % b) }
 }
 
 /// Channel count of every blob for an input with `input_channels` channels.
@@ -176,9 +223,55 @@ pub fn infer_channels(graph: &Graph, input_channels: u32) -> Result<Vec<u32>> {
                 }
                 first / r2
             }
-            LayerKind::Split | LayerKind::LeakyRelu { .. } | LayerKind::InterpNearest { .. } => {
+            LayerKind::PixelUnshuffle { factor } => first * factor * factor,
+            LayerKind::Normalize { mean, .. } => {
+                if mean.len() != first as usize {
+                    return Err(err(format!("{} means for {first} channels", mean.len())));
+                }
                 first
             }
+            LayerKind::LayerNormC { gamma, beta, .. } => {
+                if gamma.len() != first as usize || beta.len() != first as usize {
+                    return Err(err(format!(
+                        "{} scales and {} shifts for {first} channels",
+                        gamma.len(),
+                        beta.len()
+                    )));
+                }
+                first
+            }
+            LayerKind::GroupNorm {
+                groups,
+                gamma,
+                beta,
+                ..
+            } => {
+                if *groups == 0 || !first.is_multiple_of(*groups) {
+                    return Err(err(format!("{groups} groups over {first} channels")));
+                }
+                if gamma.len() != first as usize || beta.len() != first as usize {
+                    return Err(err(format!(
+                        "{} scales and {} shifts for {first} channels",
+                        gamma.len(),
+                        beta.len()
+                    )));
+                }
+                first
+            }
+            LayerKind::Slice { from, to } => {
+                if from >= to || *to > first {
+                    return Err(err(format!(
+                        "channels {from}..{to} of {first} do not exist"
+                    )));
+                }
+                to - from
+            }
+            LayerKind::Split
+            | LayerKind::LeakyRelu { .. }
+            | LayerKind::InterpNearest { .. }
+            | LayerKind::Sigmoid
+            | LayerKind::Silu
+            | LayerKind::Mish => first,
         };
         for &b in &layer.outputs {
             ch[b] = output;
@@ -215,7 +308,7 @@ mod tests {
             let graph = load_graph(&dir.join(format!("{name}.param")))
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(graph.layers.len(), layers, "{name}");
-            assert_eq!(infer_scale(&graph), 4, "{name}");
+            assert_eq!(infer_scale(&graph).unwrap(), 4, "{name}");
             let channels = infer_channels(&graph, 3).unwrap();
             assert_eq!(channels[graph.output_blob], 3, "{name}");
         }
@@ -281,6 +374,112 @@ mod tests {
             input_blob: 0,
             output_blob: 5,
         };
-        assert_eq!(infer_scale(&graph), 4);
+        assert_eq!(infer_scale(&graph).unwrap(), 4);
+    }
+
+    fn chain(kinds: Vec<LayerKind>) -> Graph {
+        let mut layers = vec![Layer {
+            name: "in".into(),
+            kind: LayerKind::Input,
+            inputs: vec![],
+            outputs: vec![0],
+        }];
+        for (i, kind) in kinds.into_iter().enumerate() {
+            layers.push(Layer {
+                name: format!("l{i}"),
+                kind,
+                inputs: vec![i],
+                outputs: vec![i + 1],
+            });
+        }
+        let n = layers.len();
+        Graph {
+            layers,
+            blob_count: n,
+            input_blob: 0,
+            output_blob: n - 1,
+        }
+    }
+
+    #[test]
+    fn normalize_needs_one_mean_per_channel() {
+        let ok = chain(vec![
+            LayerKind::Normalize {
+                mean: vec![0.5; 3],
+                range: 255.0,
+            },
+            LayerKind::Sigmoid,
+            LayerKind::Silu,
+        ]);
+        assert_eq!(infer_channels(&ok, 3).unwrap(), [3, 3, 3, 3]);
+        let bad = chain(vec![LayerKind::Normalize {
+            mean: vec![0.5; 2],
+            range: 255.0,
+        }]);
+        let err = infer_channels(&bad, 3).unwrap_err().to_string();
+        assert!(
+            err.contains("2 means for 3 channels") && err.contains("l0"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn norms_and_slice_check_their_channel_counts() {
+        let norm = |n: usize| LayerKind::LayerNormC {
+            eps: 1e-6,
+            gamma: vec![1.0; n],
+            beta: vec![0.0; n],
+        };
+        let group = |groups: u32, n: usize| LayerKind::GroupNorm {
+            groups,
+            eps: 1e-5,
+            gamma: vec![1.0; n],
+            beta: vec![0.0; n],
+        };
+        let ok = chain(vec![
+            LayerKind::PixelUnshuffle { factor: 2 },
+            norm(12),
+            group(4, 12),
+            LayerKind::Mish,
+            LayerKind::Slice { from: 2, to: 7 },
+        ]);
+        assert_eq!(infer_channels(&ok, 3).unwrap(), [3, 12, 12, 12, 12, 5]);
+        for (kind, needle) in [
+            (norm(2), "2 scales and 2 shifts for 3 channels"),
+            (group(2, 3), "2 groups over 3 channels"),
+            (group(0, 3), "0 groups over 3 channels"),
+            (group(3, 2), "2 scales and 2 shifts for 3 channels"),
+            (LayerKind::Slice { from: 1, to: 4 }, "channels 1..4 of 3"),
+            (LayerKind::Slice { from: 2, to: 2 }, "channels 2..2 of 3"),
+        ] {
+            let err = infer_channels(&chain(vec![kind]), 3)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(needle) && err.contains("l0"), "{err}");
+        }
+    }
+
+    #[test]
+    fn scale_through_pixel_unshuffle() {
+        // RealESRGAN_x2plus: unshuffle by 2, then a 4x network.
+        let x2 = chain(vec![
+            LayerKind::PixelUnshuffle { factor: 2 },
+            LayerKind::InterpNearest { scale: 2 },
+            LayerKind::InterpNearest { scale: 2 },
+        ]);
+        assert_eq!(infer_scale(&x2).unwrap(), 2);
+        assert_eq!(infer_channels(&x2, 3).unwrap(), [3, 12, 12, 12]);
+        let x1 = chain(vec![
+            LayerKind::PixelUnshuffle { factor: 4 },
+            LayerKind::InterpNearest { scale: 4 },
+        ]);
+        assert_eq!(infer_scale(&x1).unwrap(), 1);
+        // Half the input size is not an integer scale.
+        let half = chain(vec![
+            LayerKind::PixelUnshuffle { factor: 4 },
+            LayerKind::InterpNearest { scale: 2 },
+        ]);
+        let err = infer_scale(&half).unwrap_err().to_string();
+        assert!(err.contains("1/2"), "{err}");
     }
 }

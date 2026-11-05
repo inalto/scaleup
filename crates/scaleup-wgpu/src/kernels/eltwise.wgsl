@@ -1,5 +1,5 @@
 // mode 0: coeff_a * src + coeff_b * aux_a. mode 1: src * aux_a.
-// mode 2: src + coeff_a. mode 3: src * coeff_a.
+// mode 2: src + coeff_a. mode 3: src * coeff_a. mode 4: (src - aux_a[channel]) * coeff_a.
 struct Params {
     mode: u32, c_in: u32, c_out: u32, h: u32,
     w: u32, k: u32, act: u32, c0: u32,
@@ -20,6 +20,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         case 0u: { dst[i] = p.coeff_a * src[i] + p.coeff_b * aux_a[i]; }
         case 1u: { dst[i] = src[i] * aux_a[i]; }
         case 2u: { dst[i] = src[i] + p.coeff_a; }
+        case 4u: { dst[i] = (src[i] - aux_a[id.z]) * p.coeff_a; }
         default: { dst[i] = src[i] * p.coeff_a; }
     }
 }

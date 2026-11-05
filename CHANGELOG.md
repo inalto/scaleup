@@ -7,13 +7,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-05
+
+First published release.
+
 ### Added
 
+- OpenModelDB: `scaleup hub search | info | install | import | remove | recommend | refresh` and
+  the app's **Browse OpenModelDB…** window list the models of openmodeldb.info with their license
+  class and whether they run on this machine, download them (direct hosts and Google Drive; other
+  hosts through the browser, then import), check the sha256 and add them to the model list.
+  `hub recommend` and the window's **Recommend…** suggest models for a kind of image, a goal and a
+  speed.
+- PyTorch weights run natively on the `wgpu` backend, with no Python: `.pth` (zip and legacy
+  formats) and `.safetensors` files of the ESRGAN, ESRGAN+, Compact (SRVGGNet), SPAN and RealPLKSR
+  architectures, detected from the file. The `.pth` reader only builds tensors and never executes
+  code from the file.
+- Optional conversion of other architectures to ONNX with the user's own Python (spandrel, torch,
+  onnx): `scaleup models convert`, `scaleup hub install <id> --convert` and the app's **Convert**
+  button.
+- Each network asks for the tile overlap it needs.
 - CI on Linux, Windows and macOS (`cargo fmt`, `cargo clippy`, `cargo test`).
 - Release workflow: archives for Windows x64, Linux x64 and macOS arm64, plus `.deb`, `.msi` and `.dmg` installers.
 - Repository documentation: README, user guide, Upscayl compatibility notes, contribution files.
 
-## [0.1.0] - 2026-11-04
+## 0.1.0 - 2026-11-04
+
+Not published as a release; its content shipped in 0.2.0.
 
 ### Added
 
@@ -29,5 +49,5 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Model registry: embedded catalogue (`models/manifest.json`), sha256-verified cancellable
   downloads, bundled license texts, import of ncnn model folders.
 
-[Unreleased]: https://github.com/inalto/scaleup/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/inalto/scaleup/releases/tag/v0.1.0
+[Unreleased]: https://github.com/inalto/scaleup/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/inalto/scaleup/releases/tag/v0.2.0

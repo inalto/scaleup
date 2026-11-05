@@ -29,6 +29,36 @@ pub struct Settings {
     pub overwrite: bool,
     pub output_dir: Option<PathBuf>,
     pub show_nc_models: bool,
+    /// The filter toggles of the OpenModelDB window (its search text is not kept).
+    pub hub: HubFilters,
+}
+
+/// Filters of the "Browse OpenModelDB" window.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[serde(default)]
+pub struct HubFilters {
+    /// Any of these scales; every scale when empty.
+    pub scales: Vec<u32>,
+    /// Any of these content tags; every model when empty.
+    pub content: Vec<String>,
+    /// Only licenses that clearly allow commercial use. On by default, so NonCommercial and
+    /// Unknown licenses are never pre-selected.
+    pub commercial_only: bool,
+    /// Only models that are installed or run here without conversion.
+    pub runnable_only: bool,
+    pub arch: Option<String>,
+}
+
+impl Default for HubFilters {
+    fn default() -> Self {
+        Self {
+            scales: Vec::new(),
+            content: Vec::new(),
+            commercial_only: true,
+            runnable_only: true,
+            arch: None,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -47,6 +77,7 @@ impl Default for Settings {
             overwrite: false,
             output_dir: None,
             show_nc_models: false,
+            hub: HubFilters::default(),
         }
     }
 }
@@ -199,8 +230,42 @@ fn reduce(state: &mut AppState, ev: WorkerEvent) -> Option<Toast> {
             state.log.push(format!("downloaded {id}"));
             return Some(Toast::success(format!("Downloaded {id}")));
         }
-        // Pixels belong to the view, not the state.
-        WorkerEvent::Preview { .. } => {}
+        WorkerEvent::HubInstalled(m) => {
+            state.stopping = false;
+            state.status = Status::Idle;
+            state.log.push(format!(
+                "installed {} from OpenModelDB: {}",
+                m.id,
+                m.file.display()
+            ));
+            return Some(if m.verified {
+                Toast::success(format!("Installed {}", m.name))
+            } else {
+                state.log.push(format!(
+                    "{}: OpenModelDB lists no sha256, not verified",
+                    m.id
+                ));
+                Toast::error(format!(
+                    "Installed {}, but it could not be verified: OpenModelDB lists no sha256 for it",
+                    m.name
+                ))
+            });
+        }
+        // Nothing was running: the status stays as it was.
+        WorkerEvent::HubCatalogFailed(message) => {
+            state.log.push(message.clone());
+            return Some(Toast::error(message));
+        }
+        WorkerEvent::HubRemoved(id) => {
+            if state.settings.model_id == id {
+                state.settings.model_id = Settings::default().model_id;
+            }
+            state.log.push(format!("removed {id}"));
+            return Some(Toast::success(format!("Removed {id}")));
+        }
+        // Pixels and the catalogue belong to the views, not the state.
+        WorkerEvent::Preview { .. } | WorkerEvent::HubCatalog(_) | WorkerEvent::HubThumb { .. } => {
+        }
     }
     None
 }
@@ -360,6 +425,76 @@ mod tests {
         assert_eq!(toast.kind, ToastKind::Success);
     }
 
+    fn installed(verified: bool) -> scaleup_core::hub::InstalledModel {
+        scaleup_core::hub::InstalledModel {
+            id: "4x-Hub".into(),
+            name: "Hub model".into(),
+            arch: "span".into(),
+            scale: 4,
+            license: Some("MIT".into()),
+            format: "onnx".into(),
+            file: PathBuf::from("hub/4x-Hub/m.onnx"),
+            sha256: None,
+            verified,
+            source_url: String::new(),
+            installed_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn hub_installed_returns_to_idle_and_warns_when_unverified() {
+        let mut st = AppState {
+            status: Status::Downloading { done: 1, total: 2 },
+            stopping: true,
+            ..AppState::default()
+        };
+        let toast = apply_event(&mut st, WorkerEvent::HubInstalled(installed(true))).unwrap();
+        assert_eq!(st.status, Status::Idle);
+        assert!(!st.stopping);
+        assert_eq!(toast.kind, ToastKind::Success);
+        let toast = apply_event(&mut st, WorkerEvent::HubInstalled(installed(false))).unwrap();
+        assert_eq!(toast.kind, ToastKind::Error);
+        assert!(
+            toast.text.contains("could not be verified"),
+            "{}",
+            toast.text
+        );
+    }
+
+    #[test]
+    fn hub_removed_unselects_the_removed_model() {
+        let mut st = AppState::default();
+        st.settings.model_id = "4x-Hub".into();
+        let toast = apply_event(&mut st, WorkerEvent::HubRemoved("4x-Hub".into())).unwrap();
+        assert_eq!(toast.kind, ToastKind::Success);
+        assert_eq!(st.settings.model_id, Settings::default().model_id);
+        st.settings.model_id = "other".into();
+        apply_event(&mut st, WorkerEvent::HubRemoved("4x-Hub".into()));
+        assert_eq!(st.settings.model_id, "other");
+    }
+
+    #[test]
+    fn hub_catalogue_failure_toasts_without_touching_the_status() {
+        let mut st = AppState {
+            status: Status::Done(PathBuf::from("o.png")),
+            ..AppState::default()
+        };
+        let toast = apply_event(&mut st, WorkerEvent::HubCatalogFailed("offline".into())).unwrap();
+        assert_eq!(toast.kind, ToastKind::Error);
+        assert_eq!(st.status, Status::Done(PathBuf::from("o.png")));
+        assert_eq!(st.log, ["offline"]);
+    }
+
+    #[test]
+    fn hub_filters_default_to_commercial_and_runnable() {
+        let f = HubFilters::default();
+        assert!(f.commercial_only && f.runnable_only);
+        assert!(f.scales.is_empty() && f.content.is_empty() && f.arch.is_none());
+        let s: Settings = serde_json::from_str(r#"{"hub":{"scales":[4]}}"#).unwrap();
+        assert_eq!(s.hub.scales, [4]);
+        assert!(s.hub.commercial_only, "missing toggles keep their default");
+    }
+
     #[test]
     fn log_is_capped() {
         let mut st = AppState::default();
@@ -456,6 +591,13 @@ mod tests {
             overwrite: true,
             output_dir: Some(PathBuf::from("out")),
             show_nc_models: true,
+            hub: HubFilters {
+                scales: vec![2, 4],
+                content: vec!["anime".into()],
+                commercial_only: false,
+                runnable_only: false,
+                arch: Some("span".into()),
+            },
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);

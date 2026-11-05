@@ -9,6 +9,7 @@ use crate::paste;
 use crate::state::Mode;
 use crate::state::{AppState, Settings, Status, apply_event, mode_from_path};
 use crate::ui::compare::CompareView;
+use crate::ui::hub_dialog::{HubAction, HubDialog};
 use crate::ui::models_dialog::{DialogAction, ModelsDialog};
 use crate::ui::toast::{Toast, Toasts};
 use crate::ui::{sidebar, statusbar};
@@ -24,6 +25,7 @@ pub struct App {
     log_open: bool,
     compare: CompareView,
     models_dialog: ModelsDialog,
+    hub_dialog: HubDialog,
 }
 
 impl App {
@@ -47,6 +49,7 @@ impl App {
             log_open: false,
             compare: CompareView::default(),
             models_dialog: ModelsDialog::default(),
+            hub_dialog: HubDialog::default(),
         };
         if let Some(path) = initial {
             app.select(&path);
@@ -105,12 +108,64 @@ impl App {
     }
 
     fn handle_event(&mut self, ctx: &egui::Context, ev: WorkerEvent) {
-        if let WorkerEvent::Preview { which, image, size } = ev {
-            self.compare.set(ctx, which, image, size);
-            return;
+        match ev {
+            WorkerEvent::Preview { which, image, size } => {
+                self.compare.set(ctx, which, image, size);
+                return;
+            }
+            WorkerEvent::HubCatalog(cat) => {
+                self.hub_dialog.set_catalog(cat);
+                return;
+            }
+            WorkerEvent::HubThumb { id, img } => {
+                self.hub_dialog.set_thumbs(ctx, id, img);
+                return;
+            }
+            WorkerEvent::HubInstalled(ref m) => {
+                self.hub_dialog.on_installed(m.clone());
+                self.reload_registry();
+            }
+            WorkerEvent::HubRemoved(ref id) => {
+                self.hub_dialog.on_removed(id);
+                self.reload_registry();
+            }
+            WorkerEvent::HubCatalogFailed(_) => self.hub_dialog.on_catalog_failed(),
+            _ => {}
         }
         if let Some(toast) = apply_event(&mut self.state, ev) {
             self.toasts.push(toast);
+        }
+    }
+
+    /// The registry reads `installed.json` when it is built: build it again after an install or
+    /// a removal, so the model list shows the change.
+    fn reload_registry(&mut self) {
+        self.registry = Registry::with_dir(self.registry.models_dir().to_path_buf());
+    }
+
+    fn hub_action(&mut self, action: HubAction) {
+        let busy = |phase: &str| Status::Running {
+            file: 0,
+            files: 1,
+            percent: 0.0,
+            phase: phase.into(),
+        };
+        match action {
+            HubAction::Refresh { force } => self.send(UiMsg::HubRefresh { force }),
+            HubAction::Install(id) => {
+                self.state.status = Status::Downloading { done: 0, total: 0 };
+                self.send(UiMsg::HubInstall(id));
+            }
+            HubAction::Convert(id) => {
+                self.state.status = busy("Preparing the conversion");
+                self.send(UiMsg::HubConvert(id));
+            }
+            HubAction::Import { id, file } => {
+                self.state.status = busy("Checking the model file");
+                self.send(UiMsg::HubImport { id, file });
+            }
+            HubAction::Remove(id) => self.send(UiMsg::HubRemove(id)),
+            HubAction::Thumbs(id) => self.send(UiMsg::HubThumbs(id)),
         }
     }
 
@@ -211,6 +266,9 @@ impl eframe::App for App {
         if side.open_models {
             self.models_dialog.open = true;
         }
+        if side.open_hub {
+            self.hub_dialog.open_with(self.registry.models_dir());
+        }
         if side.start {
             self.start();
         }
@@ -244,6 +302,7 @@ impl eframe::App for App {
                 self.state.status = Status::Downloading { done: 0, total: 0 };
                 self.send(UiMsg::Download(id));
             }
+            Some(DialogAction::RemoveHub(id)) => self.send(UiMsg::HubRemove(id)),
             Some(DialogAction::Delete(id)) => {
                 if let Err(e) = self.registry.delete_local(&id) {
                     self.toasts
@@ -251,6 +310,12 @@ impl eframe::App for App {
                 }
             }
             None => {}
+        }
+        for action in self
+            .hub_dialog
+            .show(&ctx, &mut self.state.settings.hub, busy)
+        {
+            self.hub_action(action);
         }
 
         self.toasts.show(&ctx);

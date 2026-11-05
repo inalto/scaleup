@@ -7,7 +7,8 @@ use wgpu::util::DeviceExt;
 
 use crate::kernels::pack_weights;
 use crate::kernels::{
-    Buf, ConvOp, Kernels, Recorder, create_tensor_buffer, read_back, tensor_bytes,
+    Buf, ConvOp, GroupNormOp, Kernels, Recorder, Smooth, create_tensor_buffer, read_back,
+    tensor_bytes,
 };
 use crate::ncnn::{BinOp, Graph, LayerKind};
 
@@ -81,7 +82,25 @@ fn output_shape(
             }
             (c, h, w)
         }
-        LayerKind::LeakyRelu { .. } | LayerKind::PRelu { .. } => (c, h, w),
+        LayerKind::LeakyRelu { .. }
+        | LayerKind::PRelu { .. }
+        | LayerKind::Sigmoid
+        | LayerKind::Silu
+        | LayerKind::Mish
+        | LayerKind::Normalize { .. }
+        | LayerKind::LayerNormC { .. } => (c, h, w),
+        LayerKind::GroupNorm { groups, .. } => {
+            if *groups == 0 || !c.is_multiple_of(*groups) {
+                return Err(err("GroupNorm group count"));
+            }
+            (c, h, w)
+        }
+        LayerKind::Slice { from, to } => {
+            if from >= to || *to > c {
+                return Err(err("Slice channel range"));
+            }
+            (to - from, h, w)
+        }
         LayerKind::InterpNearest { scale } => (c, h * scale, w * scale),
         LayerKind::PixelShuffle { factor } => {
             let r2 = factor * factor;
@@ -89,6 +108,15 @@ fn output_shape(
                 return Err(err("PixelShuffle channel count"));
             }
             (c / r2, h * factor, w * factor)
+        }
+        LayerKind::PixelUnshuffle { factor } => {
+            let f = *factor;
+            if f == 0 || !h.is_multiple_of(f) || !w.is_multiple_of(f) {
+                return Err(err(&format!(
+                    "a {w}x{h} input to a pixel unshuffle must be a multiple of {f}"
+                )));
+            }
+            (c * f * f, h / f, w / f)
         }
         LayerKind::Input | LayerKind::Split => (c, h, w),
     })
@@ -266,9 +294,28 @@ impl Executor {
                         packed,
                     })
                 }
-                LayerKind::PRelu { slopes } => Some(LayerBuffers {
-                    a: upload(slopes),
-                    b: None,
+                LayerKind::PRelu { slopes: a } | LayerKind::Normalize { mean: a, .. } => {
+                    Some(LayerBuffers {
+                        a: upload(a),
+                        b: None,
+                        packed: false,
+                    })
+                }
+                LayerKind::LayerNormC { gamma, beta, .. } => Some(LayerBuffers {
+                    a: upload(gamma),
+                    b: Some(upload(beta)),
+                    packed: false,
+                }),
+                // `b` is the scratch space for the statistics: runs are serialised, so one per
+                // layer is enough.
+                LayerKind::GroupNorm {
+                    groups,
+                    gamma,
+                    beta,
+                    ..
+                } => Some(LayerBuffers {
+                    a: upload(&[gamma.as_slice(), beta.as_slice()].concat()),
+                    b: Some(create_tensor_buffer(&device, u64::from(*groups) * 8)),
                     packed: false,
                 }),
                 _ => None,
@@ -360,6 +407,32 @@ impl Executor {
             }
             LayerKind::InterpNearest { scale } => k.interp(rec, &input(0), &dst, *scale),
             LayerKind::PixelShuffle { factor } => k.pixel_shuffle(rec, &input(0), &dst, *factor),
+            LayerKind::PixelUnshuffle { factor } => {
+                k.pixel_unshuffle(rec, &input(0), &dst, *factor)
+            }
+            LayerKind::Sigmoid => k.smooth(rec, &input(0), &dst, Smooth::Sigmoid),
+            LayerKind::Silu => k.smooth(rec, &input(0), &dst, Smooth::Silu),
+            LayerKind::Normalize { range, .. } => {
+                let w = weights.expect("Normalize has means");
+                k.normalize(rec, &input(0), &dst, &w.a, *range);
+            }
+            LayerKind::Mish => k.smooth(rec, &input(0), &dst, Smooth::Mish),
+            LayerKind::LayerNormC { eps, .. } => {
+                let w = weights.expect("LayerNormC has scales");
+                let beta = w.b.as_ref().expect("LayerNormC has shifts");
+                k.layer_norm(rec, &input(0), &dst, &w.a, beta, *eps);
+            }
+            LayerKind::GroupNorm { groups, eps, .. } => {
+                let w = weights.expect("GroupNorm has scales");
+                let op = GroupNormOp {
+                    groups: *groups,
+                    eps: *eps,
+                    gamma_beta: &w.a,
+                    stats: w.b.as_ref().expect("GroupNorm has scratch space"),
+                };
+                k.group_norm(rec, &input(0), &dst, &op);
+            }
+            LayerKind::Slice { from, .. } => k.slice(rec, &input(0), &dst, *from),
             LayerKind::Input | LayerKind::Split => unreachable!("not planned as steps"),
         }
     }
@@ -529,10 +602,50 @@ mod tests {
                     &[15],
                 ),
                 layer("ps", LayerKind::PixelShuffle { factor: 2 }, &[15], &[16]),
+                layer(
+                    "norm",
+                    LayerKind::Normalize {
+                        mean: vec![0.1, 0.2, 0.3],
+                        range: 4.0,
+                    },
+                    &[16],
+                    &[17],
+                ),
+                layer("sig", LayerKind::Sigmoid, &[17], &[18]),
+                layer("silu", LayerKind::Silu, &[18], &[19]),
+                layer(
+                    "wide",
+                    conv_kind(rng, 3, 8, 5, Activation::None),
+                    &[19],
+                    &[20],
+                ),
+                layer(
+                    "ln",
+                    LayerKind::LayerNormC {
+                        eps: 1e-6,
+                        gamma: rng.vec(8),
+                        beta: rng.vec(8),
+                    },
+                    &[20],
+                    &[21],
+                ),
+                layer("mish", LayerKind::Mish, &[21], &[22]),
+                layer(
+                    "gn",
+                    LayerKind::GroupNorm {
+                        groups: 4,
+                        eps: 1e-5,
+                        gamma: rng.vec(8),
+                        beta: rng.vec(8),
+                    },
+                    &[22],
+                    &[23],
+                ),
+                layer("slice", LayerKind::Slice { from: 2, to: 5 }, &[23], &[24]),
             ],
-            blob_count: 17,
+            blob_count: 25,
             input_blob: 0,
-            output_blob: 16,
+            output_blob: 24,
         }
     }
 
@@ -594,6 +707,70 @@ mod tests {
         assert_eq!(p.steps.len(), 3);
         assert_eq!(p.blob_last_use[p.root[3]], usize::MAX);
         assert_slots_sound(&g, &p);
+    }
+
+    /// The first layers of a 2x Real-ESRGAN: unshuffle by 2, convolve, then a 4x network.
+    fn unshuffle_graph(rng: &mut Rng) -> Graph {
+        Graph {
+            layers: vec![
+                layer("in", LayerKind::Input, &[], &[0]),
+                layer(
+                    "unshuffle",
+                    LayerKind::PixelUnshuffle { factor: 2 },
+                    &[0],
+                    &[1],
+                ),
+                layer(
+                    "c",
+                    conv_kind(rng, 12, 8, 3, Activation::Leaky(0.2)),
+                    &[1],
+                    &[2],
+                ),
+                layer("up", LayerKind::InterpNearest { scale: 4 }, &[2], &[3]),
+                layer(
+                    "last",
+                    conv_kind(rng, 8, 3, 3, Activation::None),
+                    &[3],
+                    &[4],
+                ),
+            ],
+            blob_count: 5,
+            input_blob: 0,
+            output_blob: 4,
+        }
+    }
+
+    #[test]
+    fn plan_shapes_through_pixel_unshuffle() {
+        let mut rng = Rng(8);
+        let g = unshuffle_graph(&mut rng);
+        let p = plan(&g, 3, 10, 6).unwrap();
+        assert_eq!(
+            p.blob_shapes,
+            [(3, 10, 6), (12, 5, 3), (8, 5, 3), (8, 20, 12), (3, 20, 12)]
+        );
+        assert_slots_sound(&g, &p);
+    }
+
+    #[test]
+    fn input_not_a_multiple_of_the_unshuffle_is_an_error() {
+        let mut rng = Rng(9);
+        let g = unshuffle_graph(&mut rng);
+        for (h, w) in [(9, 6), (10, 7)] {
+            let err = plan(&g, 3, h, w).unwrap_err().to_string();
+            assert!(
+                err.contains("unshuffle") && err.contains("multiple of 2"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn executor_matches_cpu_ref_through_pixel_unshuffle() {
+        let mut rng = Rng(10);
+        let g = unshuffle_graph(&mut rng);
+        let input = rng.tensor(3, 14, 10);
+        assert_executor_matches(&g, &input);
     }
 
     #[test]

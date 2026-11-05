@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
+use scaleup_core::registry::SOURCE_HUB;
 use scaleup_core::{DeviceInfo, DeviceKind, ModelEntry};
 
 use crate::state::{AppState, Mode};
@@ -15,6 +16,7 @@ pub struct SidebarOutput {
     pub stop: bool,
     pub device_changed: bool,
     pub open_models: bool,
+    pub open_hub: bool,
 }
 
 /// Text for a path that must fit `max` characters: keeps both ends.
@@ -73,6 +75,23 @@ fn model_title(model_id: &str, entries: &[ModelEntry]) -> String {
     }
 }
 
+/// The model list in its three groups: free for any use, non-commercial (both built in or
+/// imported), and installed from OpenModelDB.
+fn groups(entries: &[ModelEntry]) -> [Vec<&ModelEntry>; 3] {
+    let mut out = [Vec::new(), Vec::new(), Vec::new()];
+    for e in entries {
+        let group = if e.source == SOURCE_HUB {
+            2
+        } else if e.commercial {
+            0
+        } else {
+            1
+        };
+        out[group].push(e);
+    }
+    out
+}
+
 fn model_picker(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) {
     let s = &mut st.settings;
     egui::ComboBox::from_id_salt("model")
@@ -81,8 +100,9 @@ fn model_picker(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) {
         .height(420.0)
         .show_ui(ui, |ui| {
             ui.set_min_width(330.0);
+            let [free, nc_models, hub] = groups(entries);
             ui.weak("Free for any use");
-            for e in entries.iter().filter(|e| e.commercial) {
+            for e in free {
                 model_row(ui, &mut s.model_id, e);
             }
             ui.separator();
@@ -90,12 +110,19 @@ fn model_picker(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) {
                 .open(Some(s.show_nc_models))
                 .show(ui, |ui| {
                     ui.weak("These licenses forbid commercial use of the results.");
-                    for e in entries.iter().filter(|e| !e.commercial) {
+                    for e in nc_models {
                         model_row(ui, &mut s.model_id, e);
                     }
                 });
             if nc.header_response.clicked() {
                 s.show_nc_models = !s.show_nc_models;
+            }
+            if !hub.is_empty() {
+                ui.separator();
+                ui.weak("From OpenModelDB");
+                for e in hub {
+                    model_row(ui, &mut s.model_id, e);
+                }
             }
         });
     ui.horizontal(|ui| {
@@ -296,6 +323,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) -> Sid
                     if ui.small_button("Manage…").clicked() {
                         out.open_models = true;
                     }
+                    if ui.small_button("Browse OpenModelDB…").clicked() {
+                        out.open_hub = true;
+                    }
                 });
                 model_picker(ui, st, entries);
                 ui.separator();
@@ -321,6 +351,42 @@ mod tests {
         };
         assert_eq!(gpu_value(&d(DeviceKind::Vulkan, 1)), "vk:1");
         assert_eq!(gpu_value(&d(DeviceKind::DirectMl, 0)), "0");
+    }
+
+    #[test]
+    fn hub_models_get_their_own_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("hub").join("h").join("m.onnx");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"x").unwrap();
+        let hub_model = |id: &str, license: &str| scaleup_core::hub::InstalledModel {
+            id: id.into(),
+            name: id.into(),
+            arch: "span".into(),
+            scale: 4,
+            license: Some(license.into()),
+            format: "onnx".into(),
+            file: file.clone(),
+            sha256: None,
+            verified: true,
+            source_url: String::new(),
+            installed_at: String::new(),
+        };
+        scaleup_core::hub::Installed {
+            models: vec![
+                hub_model("h-free", "MIT"),
+                hub_model("h-nc", "CC-BY-NC-4.0"),
+            ],
+        }
+        .save(dir.path())
+        .unwrap();
+        let reg = scaleup_core::Registry::with_dir(dir.path().to_path_buf());
+        let [free, nc, hub] = groups(reg.entries());
+        let ids = |g: &[&ModelEntry]| g.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&hub), ["h-free", "h-nc"]);
+        assert!(free.iter().chain(&nc).all(|e| e.source != SOURCE_HUB));
+        assert!(free.iter().all(|e| e.commercial) && nc.iter().all(|e| !e.commercial));
+        assert_eq!(free.len() + nc.len(), reg.entries().len() - 2);
     }
 
     #[test]

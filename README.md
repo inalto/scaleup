@@ -3,7 +3,9 @@
 ScaleUP is an AI image upscaler written in Rust: a command line (`scaleup`) and a desktop app
 (`scaleup-app`) that run Real-ESRGAN-family super-resolution models on the GPU through ONNX Runtime
 (CUDA, DirectML, CoreML) or through a pure-Rust `wgpu` backend (Vulkan, Metal, DX12) that executes
-ncnn `.param`/`.bin` models directly, with a CPU fallback. It is a rebuild inspired by
+ncnn `.param`/`.bin` models and PyTorch `.pth`/`.safetensors` weights directly, with a CPU fallback.
+It can browse and install the models of [OpenModelDB](https://openmodeldb.info). It is a rebuild
+inspired by
 [Upscayl](https://github.com/upscayl/upscayl): the command line accepts the same flags as
 `upscayl-bin`, so existing scripts keep working. Licensed under the AGPL-3.0-or-later.
 
@@ -51,9 +53,9 @@ option; [`docs/UPSCAYL_COMPAT.md`](docs/UPSCAYL_COMPAT.md) maps `upscayl-bin` fl
 ## GPU support
 
 ONNX Runtime execution providers are tried in order and the first one that initialises wins
-(CUDA → DirectML → CPU on Windows, CUDA → CPU on Linux, CoreML → CPU on macOS). ncnn models run on
-the `wgpu` backend instead. A GPU that fails to initialise is a warning, not an error: the run
-continues on the CPU.
+(CUDA → DirectML → CPU on Windows, CUDA → CPU on Linux, CoreML → CPU on macOS). ncnn and PyTorch
+models run on the `wgpu` backend instead ("ncnn models" in the table stands for both). A GPU that
+fails to initialise is a warning, not an error: the run continues on the CPU.
 
 | OS | NVIDIA | AMD | Intel | Apple |
 |---|---|---|---|---|
@@ -84,6 +86,18 @@ id, so check the license before using their output.
 
 Your own `.onnx` files work with `-n path/to/model.onnx`; folders of ncnn `.param`/`.bin` pairs
 (for example an existing Upscayl models folder) are added with `scaleup models import <dir>`.
+
+PyTorch weights (`.pth`, `.safetensors`) of the ESRGAN, ESRGAN+, Compact (SRVGGNet), SPAN and
+RealPLKSR architectures run as they are, with no Python and no conversion:
+`-n path/to/model.pth`. Other architectures need an ONNX file, or a conversion with your own
+Python.
+
+### OpenModelDB
+
+`scaleup hub search`, `hub info`, `hub install` and `hub recommend`, and **Browse OpenModelDB…** in
+the app, list the models of [OpenModelDB](https://openmodeldb.info), show each one's license and
+whether it runs on this machine, download it and check its sha256. See the
+[user guide](docs/USER_GUIDE.md#openmodeldb).
 
 ## Build from source
 

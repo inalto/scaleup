@@ -6,7 +6,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::backend::{
     Backend, DeviceInfo, DevicePreference, Model, OrtBackend, create_backend, cross_preference,
-    extra_backend, is_ncnn_model,
+    extra_backend, is_extra_backend_model,
 };
 use crate::image32::Image32;
 use crate::io::{OutputFormat, load_image, save_image};
@@ -101,8 +101,8 @@ impl Upscaler {
             .clone()
     }
 
-    /// The backend for the model file at `path`: ncnn files need the registered backend, and ONNX
-    /// files need ONNX Runtime whatever device was chosen.
+    /// The backend for the model file at `path`: ncnn and PyTorch files need the registered
+    /// backend, and ONNX files need ONNX Runtime whatever device was chosen.
     fn backend_for(&self, path: &Path) -> Result<&dyn Backend> {
         if self.backend.handles(path) {
             return Ok(self.backend.as_ref());
@@ -110,14 +110,14 @@ impl Upscaler {
         if let Some(b) = self.other_backend.get() {
             return Ok(b.as_ref());
         }
-        let created: Box<dyn Backend> = if is_ncnn_model(path) {
+        let created: Box<dyn Backend> = if is_extra_backend_model(path) {
             let extra = extra_backend().ok_or_else(|| {
                 ScaleUpError::Model(
-                    "ncnn models need the wgpu backend, absent from this build".into(),
+                    "ncnn and PyTorch models need the wgpu backend, absent from this build".into(),
                 )
             })?;
             (extra.create)(cross_preference(self.pref, true)).map_err(|e| {
-                ScaleUpError::Backend(format!("ncnn models need a GPU adapter: {e}"))
+                ScaleUpError::Backend(format!("ncnn and PyTorch models need a GPU adapter: {e}"))
             })?
         } else {
             Box::new(OrtBackend::new(cross_preference(self.pref, false))?)
@@ -310,6 +310,21 @@ mod tests {
             .expect("no ncnn backend is registered in this test binary");
         assert!(err.to_string().contains("ncnn"), "{err}");
     }
+
+    #[test]
+    fn pytorch_model_without_its_backend_is_a_clear_error() {
+        let d = tempfile::tempdir().unwrap();
+        let up = cpu_upscaler(d.path());
+        for name in ["m.pth", "m.safetensors"] {
+            let path = d.path().join(name);
+            std::fs::write(&path, b"not read").unwrap();
+            let err = up
+                .load(path.to_str().unwrap(), &mut |_, _| {})
+                .err()
+                .expect("no wgpu backend is registered in this test binary");
+            assert!(err.to_string().contains("wgpu backend"), "{name}: {err}");
+        }
+    }
     use crate::ScaleUpError;
     use crate::backend::DeviceKind;
     use image::{Rgba, RgbaImage};
@@ -407,6 +422,7 @@ mod tests {
             tags: vec![],
             notes: String::new(),
             format: "onnx".into(),
+            source: "catalogue".into(),
         };
         let registry = Registry::from_entries(vec![entry], dir.path().to_path_buf());
         std::fs::copy(fixture(), registry.local_path("span")).unwrap();
