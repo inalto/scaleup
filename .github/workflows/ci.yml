@@ -22,7 +22,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -32,7 +32,7 @@ jobs:
 
       # `ort` downloads the ONNX Runtime binaries at build time into the user cache dir.
       - name: Cache ONNX Runtime download
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/ort.pyke.io
