@@ -50,6 +50,9 @@ pub enum DevicePreference {
 pub struct ExtraBackend {
     pub create: fn(DevicePreference) -> Result<Box<dyn Backend>>,
     pub devices: fn() -> Vec<DeviceInfo>,
+    /// Architectures (lowercase OpenModelDB names) whose `.pth`/`.safetensors` files this backend
+    /// runs without conversion.
+    pub native_archs: fn() -> Vec<String>,
 }
 
 static EXTRA: OnceLock<ExtraBackend> = OnceLock::new();

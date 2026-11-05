@@ -407,6 +407,7 @@ mod tests {
             tags: vec![],
             notes: String::new(),
             format: "onnx".into(),
+            source: "catalogue".into(),
         };
         let registry = Registry::from_entries(vec![entry], dir.path().to_path_buf());
         std::fs::copy(fixture(), registry.local_path("span")).unwrap();

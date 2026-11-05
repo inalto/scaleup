@@ -868,6 +868,7 @@ mod tests {
             tags: vec![],
             notes: String::new(),
             format: "onnx".into(),
+            source: "catalogue".into(),
         };
         let reg = Registry::from_entries(vec![entry], d.path().join("models"));
         let h = spawn(reg, "cpu");

@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn license_lookup_has_every_manifest_id() {
-        let registry = Registry::with_dir(std::env::temp_dir());
+        let registry = Registry::with_dir(tempfile::tempdir().unwrap().path().to_path_buf());
         assert!(!registry.entries().is_empty());
         for e in registry.entries() {
             let text = license_text(&e.id).unwrap_or_else(|| panic!("no license for {}", e.id));

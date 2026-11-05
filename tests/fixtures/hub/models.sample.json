@@ -1,0 +1,2129 @@
+{
+  "16x-ESRGAN": {
+    "name": "16xESRGAN",
+    "author": "victorca25",
+    "license": "Apache-2.0",
+    "tags": [
+      "pretrained"
+    ],
+    "description": "Pretrained: RRDB_ESRGAN_x4.pth",
+    "date": "2019-07-06",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 16,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 67249159,
+        "sha256": "8701acac21c4c412a3e05242b389700c1248ff52314380793c045326f4c61dfb",
+        "urls": [
+          "https://objectstorage.us-phoenix-1.oraclecloud.com/n/ax6ygfvpvzka/b/open-modeldb-files/o/16x-ESRGAN.pth",
+          "https://mega.nz/#!btwEXAoI!nNxWI89OdQCEkcRoPEFwj6GoFN8uzZyZFaCn1wbhzKY"
+        ]
+      }
+    ],
+    "images": []
+  },
+  "16x-PSNR": {
+    "name": "16x PSNR Pretrained Model",
+    "author": "blueamulet",
+    "license": "Apache-2.0",
+    "tags": [
+      "pretrained"
+    ],
+    "description": "Pretrained: RRDB_PSNR_x4.pth\n\nThe original RRDB_PSNR_x4.pth model converted to 1x, 2x, 8x and 16x scales, intended to be used as pretrained models for new models at those scales. These are compatible with victor's 4xESRGAN.pth conversions",
+    "date": "2020-04-20",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 16,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 67254807,
+        "sha256": "c145d3d3f6a4c9d1270ce59ea8f68db23308d421e5a2affb8f7f8dcdcabbd96e",
+        "urls": [
+          "https://drive.google.com/open?id=1ldwajXL50uC7PCS63B4Wato6Dnk-svNL"
+        ]
+      }
+    ],
+    "images": []
+  },
+  "1x-AnimeUndeint-Compact": {
+    "name": "AnimeUndeint Compact",
+    "author": "zarxrax",
+    "license": "WTFPL",
+    "tags": [
+      "anime",
+      "cartoon",
+      "restoration"
+    ],
+    "description": "This model corrects jagged lines on animation that has been deinterlaced. It handles simple line doubling, line interpolation, and even Yadif-style artifacts. It can also handle sources that were resized after deinterlacing, for example resizing from ntsc to pal resolutions. If a source has been upscaled after deinterlacing, it will need to be downsized before applying this model.",
+    "date": "2022-06-05",
+    "architecture": "compact",
+    "size": [
+      "64nf",
+      "16nc"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 4795821,
+        "sha256": "f8b2b98c4e5dd3989b836414e2624e0795d74a8eba44e32cba6d18cce181140c",
+        "urls": [
+          "https://objectstorage.us-phoenix-1.oraclecloud.com/n/ax6ygfvpvzka/b/open-modeldb-files/o/1x-AnimeUndeint-Compact.pth",
+          "https://mega.nz/file/9INFwYLD#KlV11g5yDG6fWWdZDXhztnsqhuLSIUP7-Upq3szgMCQ"
+        ]
+      }
+    ],
+    "images": [
+      {
+        "type": "paired",
+        "LR": "https://imgsli.com/i/c9978a74-32ee-478b-b228-10744521fc21.jpg",
+        "SR": "https://imgsli.com/i/c90377d5-287d-4f1c-ab4c-96267bfaa04e.jpg",
+        "thumbnail": "/thumbs/small/4ebe33dbfe3f9a7a469e3e84.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://imgsli.com/i/a611b9a9-422f-44ed-882a-3ada8f478625.jpg",
+        "SR": "https://imgsli.com/i/83e9600a-a8ee-4f2b-96e7-f42dc7e5ab12.jpg",
+        "thumbnail": "/thumbs/small/b656510a10caf689b5277332.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://imgsli.com/i/be1717a7-d70b-4e52-b04c-4b2b04901b4d.jpg",
+        "SR": "https://imgsli.com/i/7c22ba75-01ca-407a-98b9-16e27ad6de55.jpg",
+        "thumbnail": "/thumbs/small/ac570be2a5feac79b892c3e9.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://imgsli.com/i/07f02f1c-f082-4d44-bd3b-6a6cbf79c48b.jpg",
+        "SR": "https://imgsli.com/i/12aa0959-36db-49a1-8a0c-e58f99226395.jpg",
+        "thumbnail": "/thumbs/small/baebcf8663f0af030df89110.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/870623a54e59f8948ad98465.jpg",
+      "SR": "/thumbs/425ab861ae301f5e2c65a17a.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-Anti-Aliasing": {
+    "name": "Anti Aliasing",
+    "author": "twittman",
+    "license": "CC-BY-NC-4.0",
+    "tags": [
+      "anti-aliasing"
+    ],
+    "description": "Purpose: Anti aliasing / Images with pixelated edges",
+    "date": "2019-06-03",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66662414,
+        "sha256": "7a4cb10276899d6d93ba35f174653a11ebdcea5c6ca93aee226c108d177f311f",
+        "urls": [
+          "https://objectstorage.us-phoenix-1.oraclecloud.com/n/ax6ygfvpvzka/b/open-modeldb-files/o/1x-Anti-Aliasing.pth"
+        ]
+      }
+    ],
+    "images": []
+  },
+  "1x-Archiver-AntiLines": {
+    "name": "Archiver AntiLines",
+    "author": "loganavter",
+    "license": "MIT",
+    "tags": [
+      "denoise",
+      "restoration",
+      "dehalo",
+      "cartoon"
+    ],
+    "description": "A specialized model from the Archivist suite, designed to remove linear artifacts. It excels at eliminating horizontal lines that other denoisers often mistake for part of the line art.\n\nThis model is optimized for input resolutions between 720p and 1080p. Using it on significantly different resolutions may produce suboptimal results.\n\nAll Archivist models are trained on a custom dataset generated by a physics-based degradation simulator. Recommended Workflow: Use Archivist to fix physical defects, then pass the result through DRUNet (low strength) to stabilize.",
+    "date": "2025-12-17",
+    "architecture": "esrgan",
+    "size": [
+      "48nf",
+      "16nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 1360537,
+        "sha256": "87140c5284bdecbf15e838d7f30dab5390e02504e47a939180076d6234a82226",
+        "urls": [
+          "https://github.com/Loganavter/Archivist-Project-Denoiser/releases/download/v1.0/1x-Archivist_AntiLines.pth"
+        ]
+      }
+    ],
+    "trainingIterations": 457000,
+    "trainingHRSize": 256,
+    "trainingOTF": true,
+    "dataset": "Custom dataset (~1800 images) of classic cel animation (1940s-1980s) processed with the Project Degrader physics-based pipeline.",
+    "datasetSize": 1800,
+    "images": [
+      {
+        "type": "paired",
+        "caption": "Test case: Removing horizontal film lines",
+        "LR": "https://imgsli.com/i/d9cdfc24-21c7-4889-926c-c037d453d581.jpg",
+        "SR": "https://imgsli.com/i/a4f15a21-6196-4e4b-ab88-53b1665b0db4.jpg",
+        "thumbnail": "/thumbs/small/cd6a290b350918d2ad8cc312.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/4deea4f5edbd6b2c81bb679b.jpg",
+      "SR": "/thumbs/c431d6ede679511dd5bdcc54.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-Archiver-Medium": {
+    "name": "Archiver Medium",
+    "author": "loganavter",
+    "license": "MIT",
+    "tags": [
+      "denoise",
+      "restoration",
+      "dehalo",
+      "cartoon"
+    ],
+    "description": "A general-purpose model from the Archivist suite, providing a balanced approach to removing common film grain and dirt while preserving the original drawing texture. It is the recommended starting point for most footage.\n\nThis model is optimized for input resolutions between 720p and 1080p. Using it on significantly different resolutions may produce suboptimal results.\n\nAll Archivist models are trained on a custom dataset generated by a physics-based degradation simulator. Recommended Workflow: Use Archivist to fix physical defects, then pass the result through DRUNet (low strength) to stabilize.",
+    "date": "2025-12-17",
+    "architecture": "esrgan",
+    "size": [
+      "48nf",
+      "16nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 1360537,
+        "sha256": "b94d1fac8873e6bc45cbe8174d0186217a0f2bd4a7a3a103535f6f01972a4b13",
+        "urls": [
+          "https://github.com/Loganavter/Archivist-Project-Denoiser/releases/download/v1.0/1x-Archivist_Medium.pth"
+        ]
+      }
+    ],
+    "trainingIterations": 478000,
+    "trainingHRSize": 256,
+    "trainingOTF": true,
+    "dataset": "Custom dataset (~1800 images) of classic cel animation (1940s-1980s) processed with the Project Degrader physics-based pipeline.",
+    "datasetSize": 1800,
+    "images": [
+      {
+        "type": "paired",
+        "caption": "Test case: Medium noise and grain",
+        "LR": "https://imgsli.com/i/f9c99bbc-6d87-48fb-9cdf-454115514860.jpg",
+        "SR": "https://imgsli.com/i/db120500-57d5-4421-a909-c2d31c009ad1.jpg",
+        "thumbnail": "/thumbs/small/128fe0b8abe541edcecf2704.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/0d48160e5c60ec085401cb50.jpg",
+      "SR": "/thumbs/6c328c546c88bc2b996eacbe.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-Archiver-RGB": {
+    "name": "Archiver RGB",
+    "author": "loganavter",
+    "license": "MIT",
+    "tags": [
+      "denoise",
+      "restoration",
+      "dehalo",
+      "cartoon"
+    ],
+    "description": "A specialized model from the Archivist suite, specifically tuned for tackling heavy chromatic (color) noise and severe color channel degradation, often seen in Metrocolor films. Note: its capabilities overlap with the Rough model, but it is better suited for color-based artifacts.\n\nThis model is optimized for input resolutions between 720p and 1080p. Using it on significantly different resolutions may produce suboptimal results.\n\nAll Archivist models are trained on a custom dataset generated by a physics-based degradation simulator. Recommended Workflow: Use Archivist to fix physical defects, then pass the result through DRUNet (low strength) to stabilize.",
+    "date": "2025-12-17",
+    "architecture": "esrgan",
+    "size": [
+      "48nf",
+      "16nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 2721289,
+        "sha256": "24b2d721cc042d1fb5849625e1e498ea53b6b4d2a7fcddc5d870bcbeb1200b97",
+        "urls": [
+          "https://github.com/Loganavter/Archivist-Project-Denoiser/releases/download/v1.0/1x-Archivist_RGB.pth"
+        ]
+      }
+    ],
+    "trainingIterations": 193000,
+    "trainingHRSize": 256,
+    "trainingOTF": true,
+    "dataset": "Custom dataset (~1800 images) of classic cel animation (1940s-1980s) processed with the Project Degrader physics-based pipeline.",
+    "datasetSize": 1800,
+    "images": [
+      {
+        "type": "paired",
+        "caption": "Test case: Heavy chromatic (color) noise",
+        "LR": "https://imgsli.com/i/681b8d22-cc4b-41e9-8c4a-b8a829c04533.jpg",
+        "SR": "https://imgsli.com/i/1ed4a803-cdcb-4e46-87c1-e5776a568389.jpg",
+        "thumbnail": "/thumbs/small/6a0322f64bfcf15493b5e5cd.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/21e7302fbe8f7df138244286.jpg",
+      "SR": "/thumbs/3809cae942448ef1e8004783.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-Archiver-Soft": {
+    "name": "Archiver Soft",
+    "author": "loganavter",
+    "license": "MIT",
+    "tags": [
+      "denoise",
+      "restoration",
+      "dehalo",
+      "cartoon"
+    ],
+    "description": "A light-touch restoration model from the Archivist suite, designed for high-quality sources. It focuses on gentle denoising while preserving the original film grain aesthetic. CAVEAT: In some scenarios, a standard DRUNet might yield subjectively better results. Always compare on your specific footage.\n\nThis model is optimized for input resolutions between 720p and 1080p. Using it on significantly different resolutions may produce suboptimal results.\n\nAll Archivist models are trained on a custom dataset generated by a physics-based degradation simulator. Recommended Workflow: Use Archivist to fix physical defects, then pass the result through DRUNet (low strength) to stabilize.",
+    "date": "2025-12-17",
+    "architecture": "esrgan",
+    "size": [
+      "48nf",
+      "16nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 2721289,
+        "sha256": "d02616fa398617e2b8ac67cedd5ba265b9ae52372799a75467a9e0d4dd4641f1",
+        "urls": [
+          "https://github.com/Loganavter/Archivist-Project-Denoiser/releases/download/v1.0/1x-Archivist_Soft.pth"
+        ]
+      }
+    ],
+    "trainingIterations": 453000,
+    "trainingHRSize": 256,
+    "trainingOTF": true,
+    "dataset": "Custom dataset (~1800 images) of classic cel animation (1940s-1980s) processed with the Project Degrader physics-based pipeline.",
+    "datasetSize": 1800,
+    "images": [
+      {
+        "type": "paired",
+        "caption": "Test case: Light noise and grain preservation",
+        "LR": "https://imgsli.com/i/f667ebba-4728-4514-bac6-ccb7e14c03b1.jpg",
+        "SR": "https://imgsli.com/i/3a42eb2f-f798-4916-b4b7-8eec3ae8d002.jpg",
+        "thumbnail": "/thumbs/small/6823c1991ab44c62742fcc90.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/ccff1485227418d67427caf1.jpg",
+      "SR": "/thumbs/c96a07c0cd51d4246fed06ab.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-ArtClarity": {
+    "name": "ArtClarity",
+    "author": "dinjerr",
+    "license": "WTFPL",
+    "tags": [
+      "deblur",
+      "denoise",
+      "pixel-art",
+      "restoration"
+    ],
+    "description": "Pretrained: 4xPSNR\n\nTexture retaining denoiser and sharpener for digital artwork\n\nSample images: https://1drv.ms/u/s!Aip-EMByJHY28xKFp93VIGydNsoN?e=vN2WYh",
+    "date": "2021-08-05",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66713677,
+        "sha256": "0eb0513fb93ca401b516315f88a983e757ed6beeba2c7c825dcd1e37f1c154e8",
+        "urls": [
+          "https://1drv.ms/u/s!Aip-EMByJHY28w0Zkd9fdANYH3j6?e=9zwxII"
+        ]
+      }
+    ],
+    "trainingHRSize": 128,
+    "trainingOTF": true,
+    "dataset": "ArtStation illustrations, then interpolated with some other 1x models",
+    "datasetSize": 800,
+    "pretrainedModelG": "1x-ESRGAN",
+    "images": []
+  },
+  "1x-BC1-smooth2": {
+    "name": "BC1 Smooth 2",
+    "author": "blueamulet",
+    "license": "CC-BY-NC-4.0",
+    "tags": [
+      "compression-removal",
+      "dds",
+      "restoration"
+    ],
+    "description": "A model to help remove compression artifacts in BC1-BC3/DXT1-DXT5 compressed images (these all have color encoded the same way)",
+    "date": "2019-09-05",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66658222,
+        "sha256": "c41c6fd52bd9d1e98ec9e9fe036b183d5df74b554df68a9ec99a8c7430556d4b",
+        "urls": [
+          "https://drive.google.com/open?id=1LHplsPRqhmjR28jGgRlEekeP_bvx3nUC"
+        ]
+      }
+    ],
+    "trainingIterations": 1000000,
+    "trainingBatchSize": 20,
+    "trainingHRSize": 32,
+    "datasetSize": 4767,
+    "images": []
+  },
+  "1x-BCGone-Detailed": {
+    "name": "BCGone Detailed",
+    "author": "mutin-choler",
+    "license": null,
+    "tags": [
+      "compression-removal",
+      "dds",
+      "restoration"
+    ],
+    "description": "",
+    "date": "2021-03-18",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66665765,
+        "sha256": "f433aaac96ecc55056c1cf029d7544514abe233377c4d4d6b627601c2ca006f3",
+        "urls": [
+          "https://drive.google.com/file/d/1XS0uBDDhIpZGROFeASlfQrrTuUKc8k9r/view?usp=drive_link",
+          "https://drive.google.com/drive/folders/1pnyPklpLPtMAHeNC5NVU1mV_Qh61wWnx?usp=sharing"
+        ]
+      }
+    ],
+    "trainingIterations": 115000,
+    "trainingEpochs": 341,
+    "trainingBatchSize": 4,
+    "trainingHRSize": 64,
+    "trainingOTF": false,
+    "dataset": "Realistic images",
+    "pretrainedModelG": "1x-ESRGAN",
+    "images": []
+  },
+  "1x-BCGone-DetailedV2-40-60": {
+    "name": "BCGone Detailed V2 40-60",
+    "author": "mutin-choler",
+    "license": "WTFPL",
+    "tags": [
+      "compression-removal",
+      "dds",
+      "restoration"
+    ],
+    "description": "",
+    "date": "2021-03-18",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66665765,
+        "sha256": "65d33aa536fd605f3f05cab27029f290bba57d41cbf6f5acc2d461fc5a83fac4",
+        "urls": [
+          "https://drive.google.com/file/d/1lubHE4zVjLlEKfnnDz5847WwsIF-wFGM/view?usp=drive_link",
+          "https://drive.google.com/drive/folders/1pnyPklpLPtMAHeNC5NVU1mV_Qh61wWnx?usp=sharing"
+        ]
+      }
+    ],
+    "trainingIterations": 115000,
+    "trainingEpochs": 341,
+    "trainingBatchSize": 4,
+    "trainingHRSize": 64,
+    "trainingOTF": false,
+    "dataset": "Realistic images",
+    "pretrainedModelG": "1x-ESRGAN",
+    "images": []
+  },
+  "1x-BCGone-Smooth": {
+    "name": "BCGone Smooth",
+    "author": "mutin-choler",
+    "license": "WTFPL",
+    "tags": [
+      "compression-removal",
+      "dds",
+      "restoration"
+    ],
+    "description": "Attempts to remove the damages done by BC1 compression.",
+    "date": "2020-08-02",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66665765,
+        "sha256": "095e69633e235350817065e6a72c733e38f2900f9271bc537844dd2b4bfe3f43",
+        "urls": [
+          "https://drive.google.com/file/d/1EYAoxC1tE2EhEgI4tiKujHUKjhq68gY-/view?usp=drive_link",
+          "https://drive.google.com/drive/u/1/folders/1pnyPklpLPtMAHeNC5NVU1mV_Qh61wWnx"
+        ]
+      }
+    ],
+    "trainingIterations": 110000,
+    "trainingEpochs": 311,
+    "trainingBatchSize": 4,
+    "trainingHRSize": 64,
+    "trainingOTF": false,
+    "dataset": "Images from DIV2K and random anime drawings",
+    "pretrainedModelG": "1x-ESRGAN",
+    "images": [
+      {
+        "type": "paired",
+        "LR": "https://imgsli.com/i/34bdb4fb-522b-4045-bd2a-1a936bec98c5.jpg",
+        "SR": "https://imgsli.com/i/a9428e7e-08f7-4a85-9638-8c532a4a9bc6.jpg",
+        "thumbnail": "/thumbs/small/93eee561aadf0260d9434442.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/efd16195d166ce633ca846ea.jpg",
+      "SR": "/thumbs/aed42cbb67fa5ddfc4666e53.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-BS-Colorizer": {
+    "name": "BS_Colorizer/Vapourizer",
+    "author": "blackscout",
+    "license": "GPL-3.0-only",
+    "tags": [
+      "colorization"
+    ],
+    "description": "B/W | 100% Desaturated images. It mostly results in Blue and Yellow images with slight hints of Green, Orange and Magenta. You are free to use this as a pretrain to achieve better results.",
+    "date": "2020-01-30",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66662414,
+        "sha256": "db6f922e8067c70b2b201ae753534bf5b4ab3fb40371846b9bb216e975e64c58",
+        "urls": [
+          "https://drive.google.com/file/d/1UgxnymTfLaVhY3aaDuBRnTZ9ehckKVKJ"
+        ]
+      }
+    ],
+    "trainingIterations": 22000,
+    "trainingBatchSize": 1,
+    "trainingHRSize": 128,
+    "dataset": "Wallpapers",
+    "pretrainedModelG": "1x-ESRGAN",
+    "images": []
+  },
+  "1x-BSChroma": {
+    "name": "BSChroma",
+    "author": "blackscout",
+    "license": "GPL-3.0-only",
+    "tags": [
+      "deblur",
+      "restoration"
+    ],
+    "description": "Category: Luminance/Chroma\n\nChromaSharpen - makes the colors slightly more vibrant with a sideeffect of possibly adding Chromatic Abberation to the image. I am not sure about the usage of this model on real case scenarios but anything blurry or with fuzzy colors could work",
+    "date": "2020-02-29",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66663810,
+        "sha256": "391f3e82803995d543d76386a268d7f99241cbaf5f3749e5b050b49202a4ad98",
+        "urls": [
+          "https://drive.google.com/file/d/12v_2OwrB_rr6_0tMshHaHgD_XWRNgIyF/view"
+        ]
+      }
+    ],
+    "trainingIterations": 30000,
+    "trainingEpochs": 3,
+    "trainingBatchSize": 15,
+    "trainingHRSize": 128,
+    "dataset": "Random Images, LRs were converted to Lab color, then had their a and b channel blurred with a gaussian function (random radius: 0.5 - 5.0).",
+    "datasetSize": 45045,
+    "images": []
+  },
+  "1x-BSLuma": {
+    "name": "BSLuma",
+    "author": "blackscout",
+    "license": "GPL-3.0-only",
+    "tags": [
+      "restoration"
+    ],
+    "description": "Category: Luminance/Chroma\nPurpose: Luma\n\nFix Luminance issues?? LumaSharpen ESRGAN Edition? - This model mostly does what \"Lumasharpen\" algorithms do. It may help fixing images with Luminance images issues? Like old DVD rips? I am not sure, didn't test.",
+    "date": "2020-02-28",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66663810,
+        "sha256": "3d4d1897d41c9e33cf77d744ce9fb873c4103110e52b71a25e97245f09d94230",
+        "urls": [
+          "https://drive.google.com/file/d/1FDb9H6GOmE3aRvZbx_-kTiCLS77WyjgL/view"
+        ]
+      }
+    ],
+    "trainingIterations": 8000,
+    "trainingEpochs": 3,
+    "trainingBatchSize": 12,
+    "trainingHRSize": 128,
+    "dataset": "Random Images, LRs were converted to Lab color, then had their L channel blurred with a gaussian function (rad avg: 1.5).",
+    "datasetSize": 45045,
+    "images": []
+  },
+  "1x-BW-Denoise": {
+    "name": "1x BW Denoise",
+    "author": "loganavter",
+    "license": "CC-BY-NC-SA-4.0",
+    "tags": [
+      "cartoon",
+      "denoise",
+      "restoration"
+    ],
+    "description": "A fast upscaler that is a replacement for standard methods of cleaning noise from the picture. Ideal for BDRemux 720p and 1080p, but only if the noise is monochrome or close to it. So far, attempts are underway to create a dataset that could eliminate color noise at the same speed.",
+    "date": "2024-08-16",
+    "architecture": "compact",
+    "size": [
+      "32nf",
+      "16nc"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 1235465,
+        "sha256": "0b55ffff419351736c3b824c23b1df01af2c0734aab308256bc75970f2e4e5be",
+        "urls": [
+          "https://mega.nz/file/tWEECawD#PG3_dUsHQWzSCexDpZlESaMpMpCOArobbgUTVyz8fos"
+        ]
+      }
+    ],
+    "trainingBatchSize": 4,
+    "trainingHRSize": 256,
+    "trainingOTF": false,
+    "dataset": "A custom dataset made up of various cartoons from MGM, DFE and DISNEY studios. LR is footage with real BDRemux noise. HR is the same frames, but cleaned by the plugin, and then run through the AniScale upscaler and compressed to the original resolution to increase the clarity of the final images.",
+    "images": [
+      {
+        "type": "paired",
+        "caption": "Chip an' Dale 1",
+        "LR": "https://imgsli.com/i/f40c891e-78e1-415a-a314-d283fe0a852a.jpg",
+        "SR": "https://imgsli.com/i/f28e7683-7460-4b72-b57d-4bfa4f3bab43.jpg",
+        "thumbnail": "/thumbs/small/b67fc2cb7fec6f7ded392892.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "The Inspector 1",
+        "LR": "https://imgsli.com/i/6d4ee331-06ad-4a56-9b40-7e68f2db5eb7.jpg",
+        "SR": "https://imgsli.com/i/fa7686f8-2211-4fe5-b215-626e167c3775.jpg",
+        "thumbnail": "/thumbs/small/db8a7b8d024cacbd38b39316.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "Chip an' Dale 2",
+        "LR": "https://imgsli.com/i/b0d0c639-2b12-44e5-9b16-cad841a36855.jpg",
+        "SR": "https://imgsli.com/i/78a40991-6cc2-495d-a1fa-ab78648a5080.jpg",
+        "thumbnail": "/thumbs/small/310ad2c2b4f779c1f382b68d.jpg"
+      }
+    ],
+    "Datasize": 2200,
+    "Training epochs": 51,
+    "Training iterations": 104000,
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/167a8ad198fedd859b4c4255.jpg",
+      "SR": "/thumbs/3f8000c84f17fa1b175733b6.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-BaldrickVHSFixV0-2": {
+    "name": "BaldrickVHSFix V0.2",
+    "author": "nimrodzorg",
+    "license": "CC-BY-NC-SA-4.0",
+    "tags": [
+      "video-frame"
+    ],
+    "description": "Category: VHS Tapes\nPurpose: VHS\n\nFixing minor VHS Chroma and Pattern Noise - NOTE: only works on deinterlaced sources",
+    "date": "2021-03-03",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66665765,
+        "sha256": "9c945b10ab0d45f8f53d2e18f9bfe1017dbc3c6e7233d657cb4845de81cd5ea1",
+        "urls": [
+          "https://objectstorage.us-phoenix-1.oraclecloud.com/n/ax6ygfvpvzka/b/open-modeldb-files/o/1x-BaldrickVHSFixV0-2.pth"
+        ]
+      }
+    ],
+    "trainingIterations": 180000,
+    "trainingBatchSize": 3,
+    "trainingHRSize": 64,
+    "trainingOTF": false,
+    "dataset": "Old vhs film recording for LR and cropped and downscaled Blu-ray rip of same film for HR",
+    "datasetSize": 663,
+    "pretrainedModelG": "1x-ESRGAN",
+    "images": []
+  },
+  "1x-Bandage-Smooth": {
+    "name": "Bandage Smooth",
+    "author": "mutin-choler",
+    "license": "WTFPL",
+    "tags": [
+      "debanding",
+      "restoration"
+    ],
+    "description": "Attempts to remove the damages done by color banding. For this model, I downscaled all of the HR images to make their pixel size closer to 1000x1000 using the Box filter and then downscaled them again by 50% using the Point filter. Afterwards, I applied 64-bit color banding to every image in the dataset.\n\nComparisons with other models: https://imgsli.com/NTA1NTk",
+    "date": "2021-04-16",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66665765,
+        "sha256": "79fe02644b8927c0a3bc0c73a62af496e56a1d438237d6de31438923242a4749",
+        "urls": [
+          "https://drive.google.com/file/d/1Y-dQcOjUnftaAuhTtUoHJktpgRJWg2yQ/view?usp=drive_link",
+          "https://drive.google.com/drive/folders/1WD2RqtER_jk0QkPFUySeXhDV2aAO8_nr?usp=sharing"
+        ]
+      }
+    ],
+    "trainingIterations": 105000,
+    "trainingEpochs": 765,
+    "trainingBatchSize": 4,
+    "trainingHRSize": 64,
+    "trainingOTF": false,
+    "dataset": "Random anime images",
+    "datasetSize": 550,
+    "pretrainedModelG": "1x-ESRGAN",
+    "images": [
+      {
+        "type": "paired",
+        "LR": "https://imgsli.com/i/4e7d08da-751b-43a2-9557-548fd43e08da.jpg",
+        "SR": "https://imgsli.com/i/ee76c2cb-8231-4b6f-a4ef-19fc6b4a9a48.jpg",
+        "thumbnail": "/thumbs/small/c8e8b5c4aa8db74e6a9a79f0.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/23201b9d9522a960f904b725.jpg",
+      "SR": "/thumbs/57169e3f16b75ac3ec2106cf.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-Bendel-Halftone": {
+    "name": "Bendel_Halftone",
+    "author": "bendel",
+    "license": "CC-BY-4.0",
+    "tags": [
+      "dehalftone",
+      "restoration"
+    ],
+    "description": "A model trained with the goal of preserving texture while removing halftones. I do plan on making improved versions down the line, as this one didn't come out as well as I'd like.",
+    "date": "2023-12-19",
+    "architecture": "swinir",
+    "size": [
+      "Small",
+      "s48",
+      "w8"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 23519723,
+        "sha256": "434375d4aa6cdaafd5bbe2255409543f6d93b95d6ae8e2fd7fe68ab09f8addd7",
+        "urls": [
+          "https://drive.google.com/file/d/1vR_tvWNi8jXhXdmgW5xvWsQp0pXN3ge-/view?usp=sharing"
+        ]
+      }
+    ],
+    "images": [
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/xAixOHF9.png",
+        "SR": "https://i.slow.pics/tEDB1v91.png",
+        "thumbnail": "/thumbs/small/c2e1ae0fd8b6f6b8303bf7d2.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/JC62GngC.png",
+        "SR": "https://i.slow.pics/L5D9sGVx.png",
+        "thumbnail": "/thumbs/small/925d4e2d38faeb0d232ba987.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/RVTjrWir.png",
+        "SR": "https://i.slow.pics/HJ0FVVYt.png",
+        "thumbnail": "/thumbs/small/8bb56583514da1b9012fc5f1.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/GMGat8TM.png",
+        "SR": "https://i.slow.pics/f5TakMWt.png",
+        "thumbnail": "/thumbs/small/e5c0f5320f6fa7e5c8392a4d.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/tG9ONLcv.png",
+        "SR": "https://i.slow.pics/U6tsO8z2.png",
+        "thumbnail": "/thumbs/small/1a14f6bcc5005a18d3731cc9.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/54026979d48699c739bd8c8e.jpg",
+      "SR": "/thumbs/9810af633c663e5b848fbef4.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-BroadcastToStudio-SPAN": {
+    "name": "BroadcastToStudio_SPAN",
+    "author": "kim2091",
+    "license": "CC-BY-NC-SA-4.0",
+    "tags": [
+      "cartoon",
+      "restoration"
+    ],
+    "description": "This is SaurusX's original description:\nImprovement of low-quality cartoons from broadcast sources. Will greatly increase the visual quality of bad broadcast tape sources of '80s and '90s cartoons (e.g. Garfield and Friends, Heathcliff, DuckTales, etc). Directly addresses chroma blur, dot crawl, and rainbowing. You're highly advised to take care of haloing beforehand in your favorite video editor as the model will not fix it and may make existing halos more noticeable.\n\n-------\n\nSadly this model has some intense artifacts. Thankfully the SPAN re-train reduced these a bit, but they're still problematic. This was just a quick test of SPAN's capabilities. This was trained only to ~66k iterations, compared to the 480k of the original.",
+    "date": "2023-12-14",
+    "architecture": "span",
+    "size": null,
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 8938330,
+        "sha256": "77e2656651cf3e2558a7dd8756b47013f5dc20dc24c310801aaabe96cc9ed6ab",
+        "urls": [
+          "https://mega.nz/folder/3JIHUbpT#bSsO0RK9MOzjA8dEbl1kbw"
+        ]
+      },
+      {
+        "platform": "onnx",
+        "type": "onnx",
+        "size": 827353,
+        "sha256": "3d2cc3524d693957b9ea309ee9f20801c53c67ff6ade503cc55f7cbed80ae758",
+        "urls": [
+          "https://mega.nz/folder/3JIHUbpT#bSsO0RK9MOzjA8dEbl1kbw"
+        ]
+      }
+    ],
+    "trainingIterations": 66000,
+    "trainingOTF": false,
+    "dataset": "SaurusX's BroadcastToStudio dataset",
+    "datasetSize": 10000,
+    "pretrainedModelG": "1x-span-anime-pretrain",
+    "images": [
+      {
+        "type": "standalone",
+        "caption": "1",
+        "url": "https://images2.imgbox.com/cf/bd/lq4EWYPp_o.png",
+        "thumbnail": "/thumbs/small/8b42fb3bf51f730e764c046e.jpg"
+      },
+      {
+        "type": "standalone",
+        "caption": "2",
+        "url": "https://images2.imgbox.com/ba/81/OepEK0UZ_o.png",
+        "thumbnail": "/thumbs/small/ab68bf920b3fd00313b24a9e.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "standalone",
+      "url": "/thumbs/d5ab7a8841cb834eb2e2a27d.jpg"
+    }
+  },
+  "1x-DeH264-realplksr": {
+    "name": "1xDeH264_realplksr",
+    "author": "helaman",
+    "license": "CC-BY-4.0",
+    "tags": [
+      "compression-removal",
+      "photo",
+      "restoration"
+    ],
+    "description": "[Link to Github Release](https://github.com/Phhofm/models/releases/tag/1xDeH264_realplksr)\n\n# 1xDeH264_realplksr  \nScale: 1  \nArchitecture: [RealPLKSR](https://github.com/muslll/neosr/?tab=readme-ov-file#supported-archs)  \nArchitecture Option: [realplksr](https://github.com/muslll/neosr/blob/master/neosr/archs/realplksr_arch.py)  \n\nAuthor: Philip Hofmann  \nLicense: CC-BY-0.4  \nPurpose: Restoration, H264  \nSubject: Photography  \nInput Type: Images  \nRelease Date: 08.08.2024  \n\nDataset: [nomosv2](https://github.com/muslll/neosr/?tab=readme-ov-file#-datasets)  \nDataset Size: 6000  \nOTF (on the fly augmentations): No  \nPretrained Model: [1xDeJPG_realplksr_otf](https://github.com/Phhofm/models/releases/tag/1xDeJPG_realplksr_otf)  \nIterations: 210'000  \nBatch Size: 8  \nPatch Size: 64  \n\nDescription:   \nA 1x de h264 model to remove h264 compression.  \n\nShowcase:  \n[Slowpics](https://slow.pics/c/71ulMz8P?canvas-mode=fit-height)  \n[Imgsli](https://imgsli.com/Mjg1NTQy)",
+    "date": "2024-08-08",
+    "architecture": "realplksr",
+    "size": null,
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 29559554,
+        "sha256": "92829754924fbcf944acf5d09e9cfd1cb3d1f2ee67a208a9921c1c0e4d74d6e7",
+        "urls": [
+          "https://github.com/Phhofm/models/releases/download/1xDeH264_realplksr/1xDeH264_realplksr.pth"
+        ]
+      },
+      {
+        "platform": "pytorch",
+        "type": "safetensors",
+        "size": 29486580,
+        "sha256": "91f054af6308e37b81c261ecf775a58be5fa1d37a816709db5d0fea6fceb24b8",
+        "urls": [
+          "https://github.com/Phhofm/models/releases/download/1xDeH264_realplksr/1xDeH264_realplksr.safetensors"
+        ]
+      },
+      {
+        "platform": "onnx",
+        "type": "onnx",
+        "size": 29874321,
+        "sha256": "0fc49973ded9372527685cdb966f7a214c46748e43e76671e649e06a2beee190",
+        "urls": [
+          "https://github.com/Phhofm/models/releases/download/1xDeH264_realplksr/1xDeH264_realplksr_fp32.onnx"
+        ]
+      }
+    ],
+    "trainingIterations": 210000,
+    "trainingBatchSize": 8,
+    "trainingHRSize": 64,
+    "trainingOTF": false,
+    "dataset": "Nomosv2",
+    "datasetSize": 6000,
+    "pretrainedModelG": "1x-DeJPG-realplksr-otf",
+    "images": [
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/W7XnAQyq.webp",
+        "SR": "https://i.slow.pics/oApzfWL5.webp",
+        "thumbnail": "/thumbs/small/61529f1233e113efa42e0c97.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/7I6VglYj.webp",
+        "SR": "https://i.slow.pics/nirdkNCy.webp",
+        "thumbnail": "/thumbs/small/a17f53145961e0d8cea8b20a.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/DStoOqpl.webp",
+        "SR": "https://i.slow.pics/hFYBKe4f.webp",
+        "thumbnail": "/thumbs/small/98351dddb0424f581d8b2928.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/p2gWcS3V.webp",
+        "SR": "https://i.slow.pics/UnK3wpJH.webp",
+        "thumbnail": "/thumbs/small/87ce03e5eaffeb59c7889131.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/28540c5eccb8dc9a82a8e0f6.jpg",
+      "SR": "/thumbs/f6c44867bed965db8da71cb3.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-Frankenfixer-SRFormerLight": {
+    "name": "Frankenfixer_SRFormerLight",
+    "author": "crustaceous-d",
+    "license": "CC-BY-SA-4.0",
+    "tags": [
+      "photo",
+      "restoration"
+    ],
+    "description": "A 1x model designed to reduce artifacts and restore detail to images upscaled by 4xFrankendata_FullDegradation_SRFormer. It could possibly work with other upscaling models too.",
+    "date": "2023-09-04",
+    "architecture": "srformer",
+    "size": [
+      "s64",
+      "w16"
+    ],
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 19308848,
+        "sha256": "82a521c238e645d7160fd4d9e89457452a9c2f9a0cbca11e1061ad582fe052a9",
+        "urls": [
+          "https://drive.google.com/file/d/1UJ0iyFn4IGNhPIgNgrQrBxYsdDloFc9I/view?usp=drive_link",
+          "https://drive.google.com/drive/folders/1ZAcnZAVkgBitHzzwpGWBREpfm9hPznQJ?usp=drive_link"
+        ]
+      }
+    ],
+    "trainingIterations": 190000,
+    "trainingEpochs": 28,
+    "trainingBatchSize": 12,
+    "trainingHRSize": 64,
+    "trainingOTF": false,
+    "dataset": "FrankendataV2 (Upscaled LR)",
+    "datasetSize": 78951,
+    "images": [
+      {
+        "type": "paired",
+        "LR": "https://images2.imgbox.com/e6/ea/sEFjFCY4_o.png",
+        "SR": "https://images2.imgbox.com/98/2d/1yUsMccr_o.png",
+        "thumbnail": "/thumbs/small/5aa61bb2937bbe7979696498.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/5c61dae76349c5dd2ffc5bdf.jpg",
+      "SR": "/thumbs/0c5f46ad033ec3ecc691b67d.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-MangaJPEGHQ": {
+    "name": "MangaJPEGHQ",
+    "author": "bunzero",
+    "license": "CC-BY-NC-SA-4.0",
+    "tags": [
+      "compression-removal",
+      "jpeg",
+      "manga",
+      "restoration"
+    ],
+    "description": "Remove JPEG artifacts from manga without destroying screentone and other details. For 80-50 JPEG Quality",
+    "date": "2021-06-17",
+    "architecture": "esrgan",
+    "size": [
+      "32nf",
+      "12nb"
+    ],
+    "scale": 1,
+    "inputChannels": 1,
+    "outputChannels": 1,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 20092251,
+        "sha256": "e2898bfba74083025a2bd2326b6c159031b882a890bd1cc30fd6910cda2ce4ee",
+        "urls": [
+          "https://objectstorage.us-phoenix-1.oraclecloud.com/n/ax6ygfvpvzka/b/open-modeldb-files/o/1x-MangaJPEGHQ.pth",
+          "https://mega.nz/folder/fAg21TRI#kBk0synXgNqTGaXiW6nSZA"
+        ]
+      }
+    ],
+    "trainingEpochs": 23,
+    "trainingBatchSize": 5,
+    "trainingHRSize": 64,
+    "dataset": "Expanded self curated custom manga dataset",
+    "images": []
+  },
+  "1x-NES-Composite-2-RGB": {
+    "name": "NES Composite to RGB",
+    "author": "pokepress",
+    "license": "MIT",
+    "tags": [
+      "debanding",
+      "denoise",
+      "game-screenshots",
+      "restoration",
+      "video-frame"
+    ],
+    "description": "Takes composite/RF/VHS NES footage and attempts to restore it to RGB quality. Assumes footage has been properly deinterlaced via field duplication from 240p to 480p/720p/etc. Note that:\n\n* All footage was captured in 240p/480p/720p NTSC.\n* RGB footage was captured via an AV Famicom with the RGB Blaster via the Retrotink 2x or GBS Control.\n* The model was trained exclusively on individual frames, so it can't fix things like dropouts.\n* The even and odd fields of NES composite tend to be a bit...different from each other, so there will be some jitter at 60fps.\n* I don't have access to an NES Toploader, so I wouldn't expect it to fix the jailbars very well.\n\nRevision History:\n\n* 1.5.0 (06/29/2025): Applied additional augmentations to reduce overfitting. Also added a small amount of 720p training data.\n* 1.0.0 (11/03/2024): Initial release.",
+    "date": "2025-06-29",
+    "architecture": "omnisr",
+    "size": null,
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 3223546,
+        "sha256": "353bcd2456ac85e4adc0c1e81c65d245b41dfec0adf14488de7abb9ac6da8e42",
+        "urls": [
+          "https://www.mediafire.com/file/077qptk82lkww92/NES_Composite_To_RGB_1_5_0.pth/file"
+        ]
+      }
+    ],
+    "trainingIterations": 540000,
+    "trainingHRSize": 128,
+    "trainingOTF": false,
+    "dataset": "Screenshots of NES games",
+    "datasetSize": 198,
+    "images": [
+      {
+        "type": "paired",
+        "caption": "Mike Tyson's Punch Out",
+        "LR": "https://imgsli.com/i/dfce5cbb-b577-4e3d-aa40-f7821066de06.jpg",
+        "SR": "https://imgsli.com/i/4574e581-e64f-45f3-8cac-ee235f92e0a4.jpg",
+        "thumbnail": "/thumbs/small/5c2e54b07b8818a0daff3c0d.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "Legacy of the Wizard (VHS)",
+        "LR": "https://imgsli.com/i/2e315c2e-a182-4dad-84a4-deb9810738d4.jpg",
+        "SR": "https://imgsli.com/i/8991355d-6f6c-44ed-9ab0-e24dab13f522.jpg",
+        "thumbnail": "/thumbs/small/35257e291cfcd667f7b573eb.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "Defender of the Crown (RF)",
+        "LR": "https://imgsli.com/i/49e3668a-9c6a-438f-8ca0-6e58d98d2bfa.jpg",
+        "SR": "https://imgsli.com/i/a73ee47a-adca-4249-8e54-cebf2a7e828a.jpg",
+        "thumbnail": "/thumbs/small/f40bac6f90c1035297eab69f.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "Ninja Gaiden (Game Center CX)",
+        "LR": "https://imgsli.com/i/d8930871-c0d2-487a-a94c-d1a93c5ea6b6.jpg",
+        "SR": "https://imgsli.com/i/24018d25-2483-497a-8575-67251d7dd161.jpg",
+        "thumbnail": "/thumbs/small/d54398dc075ed6ad60cb74b6.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "Mega Man II (The Wizard)",
+        "LR": "https://imgsli.com/i/3ecb313a-2652-44db-b10d-0d2f8e1f5c41.jpg",
+        "SR": "https://imgsli.com/i/7b34d757-ff72-4450-939d-785fe9d39dcf.jpg",
+        "thumbnail": "/thumbs/small/a8e8b7aa6e143b779f6e73a8.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/7a9d8281012133e173067d31.jpg",
+      "SR": "/thumbs/d925a321886d0c19663226e3.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-UnResizeOnly-RCAN": {
+    "name": "UnResizeOnly_RCAN",
+    "author": "kim2091",
+    "license": "CC-BY-NC-SA-4.0",
+    "tags": [
+      "anti-aliasing",
+      "restoration"
+    ],
+    "description": "Purpose: Artifact Removal\n\nA version of UnResize trained on RCAN, which is faster and provides better quality than ESRGAN\n\nThis model does **not remove compression or perform deblurring**, unlike the original UnResize models. __It **only** removes scaling artifacts.__\n\nI've attached the script I used to create the dataset (it utilizes imagemagick) and the config for [traiNNer-redux](https://github.com/the-database/traiNNer-redux)",
+    "date": "2025-01-06",
+    "architecture": "rcan",
+    "size": null,
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 31259352,
+        "sha256": "c3f3041a51347f64b0951e2a9e161aac27c3fd2a7287520821d871dcc075b8e5",
+        "urls": [
+          "https://github.com/Kim2091/Kim2091-Models/releases/download/1x-UnResizeOnly_RCAN/1x-UnResizeOnly_RCAN.pth"
+        ]
+      }
+    ],
+    "trainingIterations": 95000,
+    "trainingBatchSize": 8,
+    "dataset": "UltraSharpV2_Ethical, DigitalArtV3, ModernAnimation1080_v3, Kim2091's 8k Dataset V2",
+    "datasetSize": 13000,
+    "images": [
+      {
+        "type": "paired",
+        "LR": "https://imgsli.com/i/1cdd6669-3798-4359-b62d-0a18a38a810b.jpg",
+        "SR": "https://imgsli.com/i/aaa71ef9-e7c7-4af1-8aee-d653b903bd6f.jpg",
+        "thumbnail": "/thumbs/small/99b755b489d80d043fd543fb.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/3c36df6647557375e4b88bc5.jpg",
+      "SR": "/thumbs/243df4b3a7a9cf5eb99bb1cf.jpg",
+      "LRSize": {
+        "width": 344,
+        "height": 248
+      },
+      "SRSize": {
+        "width": 344,
+        "height": 248
+      }
+    }
+  },
+  "2x-DAT-2": {
+    "name": "DAT_2_X2",
+    "author": "zheng-chen",
+    "license": "Apache-2.0",
+    "tags": [
+      "pretrained",
+      "research"
+    ],
+    "description": "",
+    "date": "2023-07-16",
+    "architecture": "dat",
+    "size": [
+      "medium",
+      "s64|8x32",
+      "64nf",
+      "180dim",
+      "2.0ef",
+      "1conv"
+    ],
+    "scale": 2,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 139741569,
+        "sha256": "aea2c76996c2b3e7cb034380e07738608bd59cc34c667331df7269e4b670ac18",
+        "urls": [
+          "https://drive.google.com/drive/folders/1yV9LMhr2tYM_eHEIVY4Jw9X3bWGgorbD?usp=drive_link"
+        ]
+      }
+    ],
+    "images": []
+  },
+  "2x-FaithfulSPSR": {
+    "name": "FaithfulSPSR",
+    "author": "joey",
+    "license": "CC-BY-NC-SA-4.0",
+    "tags": [
+      "game-textures",
+      "pixel-art"
+    ],
+    "description": "Mainly just a test for SPSR. Seems to work better than the original 2xFaithful32_1316 that I used as a pretrained, even though it uses the same dataset.\n\nPretrained model: 2xFaithful32_1316",
+    "date": "2020-07-19",
+    "architecture": "spsr",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 2,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 99243366,
+        "sha256": "8bede3e92c38439f399d03ea887879d253f794d28b6179cf94af59be7d9eb5d8",
+        "urls": [
+          "https://drive.google.com/file/d/1Ful_AALrK-gxSwsTeMkzvwX5hh1ah8X8/view?usp=sharing"
+        ]
+      }
+    ],
+    "trainingIterations": 150000,
+    "trainingEpochs": 1441,
+    "trainingBatchSize": 30,
+    "trainingHRSize": 32,
+    "dataset": "The 1.13 and 1.16 versions of the Faithful32x Minecraft texture pack",
+    "datasetSize": 2928,
+    "images": []
+  },
+  "2x-MLP-StarSample-V1-0": {
+    "name": "StarSample V1.0",
+    "author": "derpy",
+    "license": "CC0-1.0",
+    "tags": [
+      "cartoon",
+      "compression-removal",
+      "general-upscaler",
+      "restoration"
+    ],
+    "description": "This is a model for the restoration of My Little Pony: Friendship is Magic, however it also works decently well on all similar art. \n\nIt was trained in 2x on ground truth 3840x2160 HRs and 1920x1080 LRs of varying compression, so it is able to upscale from 1080p to 2160p, where its detail retention is great, however it may create noticeable artifacting if looked at closely, like areas of randomly coloured pixels along edges. In 1x or 1.5x (2x upscaled and then downscaled back down) it performs extremely well, almost perfectly in fact, in correcting colours, removing compression, and crisping up lines - and this is the way the model is intended to be used (hence the acronym of its name being \"SS\", or \"supersampling\").\n\n**[Github Release](https://github.com/Derpiesaurus/models/releases/tag/v1.0)**   \n**Showcase:** https://slow.pics/s/1ixqCSjy",
+    "date": "2024-05-22",
+    "architecture": "compact",
+    "size": [
+      "64nf",
+      "16nc"
+    ],
+    "scale": 2,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 1215294,
+        "sha256": "106ef781b08e33bb794c59bdb2c7a528b4f4106f516235115949f2ac03f45ba2",
+        "urls": [
+          "https://github.com/Derpiesaurus/models/releases/download/v1.0/2x.StarSample.V1.0.pth"
+        ]
+      },
+      {
+        "platform": "pytorch",
+        "type": "safetensors",
+        "size": 1205456,
+        "sha256": "a83685aa15674a955ed2eec9cdffe2e1a591967f581d6c356a63f1cf4ae07a49",
+        "urls": [
+          "https://github.com/Derpiesaurus/models/releases/download/v1.0/2x.StarSample.V1.0.safetensors"
+        ]
+      },
+      {
+        "platform": "onnx",
+        "type": "onnx",
+        "size": 2412381,
+        "sha256": "b4e6caadbbc6305e31686378821b6ba02a6d9b92f3e8aa29995594f7676f018b",
+        "urls": [
+          "https://github.com/Derpiesaurus/models/releases/download/v1.0/2x.StarSample.V1.0.-.FP32.OPSET17.onnx"
+        ]
+      }
+    ],
+    "trainingIterations": 230000,
+    "trainingEpochs": 2058,
+    "trainingBatchSize": 28,
+    "trainingHRSize": 256,
+    "trainingOTF": false,
+    "dataset": "A mix of 4K GT show frames and background-only images.",
+    "datasetSize": 2567,
+    "pretrainedModelG": "2x-Compact-Pretrain",
+    "images": [
+      {
+        "type": "paired",
+        "caption": "1x Example 1",
+        "LR": "https://i.slow.pics/ybI7gjob.png",
+        "SR": "https://i.slow.pics/y3ZXMgNB.png",
+        "thumbnail": "/thumbs/small/1065b7dbaedfb13a4715dcce.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 2",
+        "LR": "https://i.slow.pics/yLqT8WfS.png",
+        "SR": "https://i.slow.pics/LvaT8PZH.png",
+        "thumbnail": "/thumbs/small/c40c0cc0280a4e649380ed41.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 3",
+        "LR": "https://i.slow.pics/nX12VuVR.png",
+        "SR": "https://i.slow.pics/94GEHzCS.png",
+        "thumbnail": "/thumbs/small/5f44e9f5c1d3caec7ba2b724.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 4",
+        "LR": "https://i.slow.pics/9n5Rkdrg.png",
+        "SR": "https://i.slow.pics/OxedRFur.png",
+        "thumbnail": "/thumbs/small/90af869642808cbd77ef3064.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 5",
+        "LR": "https://i.slow.pics/PeyCu2Qt.png",
+        "SR": "https://i.slow.pics/vim2aDTH.png",
+        "thumbnail": "/thumbs/small/f762624860ae2a4fc425524b.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 6",
+        "LR": "https://i.slow.pics/quoAHJZq.png",
+        "SR": "https://i.slow.pics/ByMKyWsc.png",
+        "thumbnail": "/thumbs/small/bc73fcbbd29fd555c212d646.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 7",
+        "LR": "https://i.slow.pics/p9BPSyR4.png",
+        "SR": "https://i.slow.pics/vYMqhFzg.png",
+        "thumbnail": "/thumbs/small/a0ba5902adc38e574b62b99d.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 8",
+        "LR": "https://i.slow.pics/75JM3CJm.png",
+        "SR": "https://i.slow.pics/2bJP6xEW.png",
+        "thumbnail": "/thumbs/small/3daa7e319e6eb458618e52f6.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 9",
+        "LR": "https://i.slow.pics/CIF0ulQP.png",
+        "SR": "https://i.slow.pics/uXkIKtxT.png",
+        "thumbnail": "/thumbs/small/46a3af26df02bea0617c465e.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/38da27a8dc4c063514840213.jpg",
+      "SR": "/thumbs/063faadac8d2fe188ae2d98a.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "2x-MangaScaleV3": {
+    "name": "MangaScaleV3",
+    "author": "bunzero",
+    "license": "CC-BY-NC-SA-4.0",
+    "tags": [
+      "manga"
+    ],
+    "description": "To upscale manga including halftones, instead of trying to smooth them out.\n\nPretrained model: MangaScaleV2(not released)",
+    "date": "2021-05-24",
+    "architecture": "esrgan+",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 2,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 67335278,
+        "sha256": "da2b113388bf199d69202b06d5c803d1dd85ce61955c7870f1106530a2ce142a",
+        "urls": [
+          "https://mega.nz/file/nR51EYYC#RcAKkxb8hAzvZAj4TLxnAukd9gbrYuUeyjUp2l1ffb8"
+        ]
+      }
+    ],
+    "dataset": "Self curated custom manga dataset",
+    "images": [
+      {
+        "type": "paired",
+        "LR": "https://imgsli.com/i/ec1411e8-24c1-464f-89af-57c2aadc76d9.jpg",
+        "SR": "https://imgsli.com/i/54b345f3-fcae-4c13-b630-b627efdfa97f.jpg",
+        "thumbnail": "/thumbs/small/9f31c7479100c241f31b794f.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/b0cf5ebaaa7353d0a7d8f738.jpg",
+      "SR": "/thumbs/c503d06e41ab25b1b0eb9cb9.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "2x-StarSample-V2-HQ": {
+    "name": "StarSample V2.0 HQ",
+    "author": "derpy",
+    "license": "CC-BY-NC-SA-4.0",
+    "tags": [
+      "cartoon",
+      "compression-removal",
+      "general-upscaler",
+      "restoration"
+    ],
+    "description": "This is a model for the restoration of My Little Pony: Friendship is Magic, however it also works decently well on similar art.\n\nV2.0 greatly improves upon V1.0's dataset in every way, taking models from (realistically) only being viable at 1x, to now being far more competent at 2x, more so for the models trained with heavier architectures in this release. \n\nImprovements come as a significantly better understanding of compressions, and partly architecturally/partly dataset improved handling of details and overall understanding of content, leading to less artifacting and \"AI smudging\". The dataset takes from a larger variety of sources, despite being smaller than V1.0 (when tiled V1.0 would be 71,876 pairs), due to being filtered for IQA scores and detail density. It also contains many thousands of image pairs manually created to cover areas where there wasn't sufficient information.\n\nThis release also includes \"NS\", or \"No Scale\" models, which are a better representation of my initial goal with StarSample, and (StarSample V2.0 NS) should provide great 1x restoration results with little apparent artifacting, even where the heavier 2x models can fail due to having to increase resolution.\n\n- 2x StarSample V2.0 HQ — _(HAT-L)_ — **THIS MODEL**\n- 2x StarSample V2.0 — _(ESRGAN)_\n- 2x StarSample V2.0 Lite — _(SPAN-S)_\n- 1x StarSample V2.0 NS — _(ESRGAN)_\n- 1x StarSample V2.0 Lite NS — _(SPAN-S)_\n\n[Github Release](https://github.com/Derpiesaurus/models/releases/tag/v2.0_HQ)",
+    "date": "2026-02-12",
+    "architecture": "hat",
+    "size": [
+      "64nf",
+      "180dim"
+    ],
+    "scale": 2,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "safetensors",
+        "size": 164708980,
+        "sha256": "77115df5bb80600a32a762e321e26f2a0114142d00ed060a7e88a5be269d5b05",
+        "urls": [
+          "https://github.com/Derpiesaurus/models/releases/download/v2.0_HQ/2x_StarSample_V2.0_HQ.safetensors"
+        ]
+      },
+      {
+        "platform": "onnx",
+        "type": "onnx",
+        "size": 318442478,
+        "sha256": "b10cb249b75d55ed6ad0800ef825e750940582a72e219a2b2b781789381615e3",
+        "urls": [
+          "https://github.com/Derpiesaurus/models/releases/download/v2.0_HQ/2x_StarSample_V2.0_HQ-fp32-opset17.onnx"
+        ]
+      }
+    ],
+    "trainingIterations": 235000,
+    "trainingEpochs": 17,
+    "trainingBatchSize": 4,
+    "trainingHRSize": 256,
+    "trainingOTF": false,
+    "dataset": "HR = 4K GT uncompressed MLP: FiM episode frames + relevant uncompressed HR pairs to LR datasets /// LR = 1080p MLP: FiM episode frames sourced from YouTube in 3 different bitrates + custom MLP: FiM focal blur dataset + custom MLP: FiM GIF compression dataset in 3 different compression levels + custom MLP: FiM difficult details and other edge cases dataset + custom artificially-degraded MLP: FiM background dataset",
+    "datasetSize": 53560,
+    "images": [
+      {
+        "type": "paired",
+        "caption": "1 — 2x Example",
+        "LR": "https://i.slow.pics/IKXCPxRV.webp",
+        "SR": "https://i.slow.pics/cHfd9R4G.webp"
+      },
+      {
+        "type": "paired",
+        "caption": "2 — 2x Example",
+        "LR": "https://i.slow.pics/rlNFQRvB.webp",
+        "SR": "https://i.slow.pics/h2Bn7JqX.webp"
+      },
+      {
+        "type": "paired",
+        "caption": "3 — 2x Example",
+        "LR": "https://i.slow.pics/dg1MZfbi.webp",
+        "SR": "https://i.slow.pics/W0FnFNHq.webp"
+      },
+      {
+        "type": "paired",
+        "caption": "4 — 2x Example",
+        "LR": "https://i.slow.pics/1UGqZyce.webp",
+        "SR": "https://i.slow.pics/egGU6NOO.webp"
+      },
+      {
+        "type": "paired",
+        "caption": "5 — 2x Example",
+        "LR": "https://i.slow.pics/18h3dSQA.webp",
+        "SR": "https://i.slow.pics/PGDlM6Zr.webp"
+      },
+      {
+        "type": "paired",
+        "caption": "6 — 2x Example",
+        "LR": "https://i.slow.pics/uVcHz2Qh.webp",
+        "SR": "https://i.slow.pics/ZyjAACpb.webp"
+      },
+      {
+        "type": "paired",
+        "caption": "7 — 2x Example",
+        "LR": "https://i.slow.pics/Agz0NTq2.webp",
+        "SR": "https://i.slow.pics/vYuzS96I.webp"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "https://i.slow.pics/IKXCPxRV.webp",
+      "SR": "https://i.slow.pics/cHfd9R4G.webp"
+    }
+  },
+  "2x-explodV1": {
+    "name": "explodV1",
+    "author": "hubert",
+    "license": "BSD-3-Clause",
+    "tags": [
+      "anime"
+    ],
+    "description": "Category: Pretrained SOFVSR Models\nPurpose: Animethemes\n\nI think one of sharpest models for anime. Sample video: https://cdn.discordapp.com/attachments/579685650824036387/1002663424695750686/output.mp4\n\nPlz don't steal without credits, k thx.",
+    "date": "2022-07-29",
+    "architecture": "cain-yuv",
+    "size": null,
+    "scale": 2,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 52981113,
+        "sha256": "db25c959fc962bda03089d8f317f2f3ca4dd8167241701f7de469ceb982f33cc",
+        "urls": [
+          "https://mega.nz/file/M49hFKrZ#oiJ27D52UL4vV2SCkKbiDS7PErBidGpseDX3D3FMpuQ"
+        ]
+      }
+    ],
+    "trainingIterations": 506951,
+    "trainingEpochs": 83,
+    "dataset": "Animethemes",
+    "images": []
+  },
+  "2x-sudo-shuffle-cugan-9-584-969": {
+    "name": "sudo_shuffle_cugan_9.584.969",
+    "author": "sudo",
+    "license": null,
+    "tags": [
+      "anime",
+      "cartoon",
+      "restoration"
+    ],
+    "description": "This is my attempt at making cugan more efficient and also training it with better loss functions than official training code. Took me months to train on a 4090. It is pure pain to train this network. Nobody will probably beat my iter record any time soon. I tried to balance speed/vram and quality. The image quality is very close to cugan architecture while having ultracompact speed. It usually looks way better than compact, but has different kinds of artefacts. If you have high contrast lines which are a few or one pixel or thin lines with movement, then the model will struggle a bit. That is quite rare though. Exported as onnx for mlrt or vsgan. https://github.com/styler00dollar/VSGAN-tensorrt-docker. I also included old l1 for pretrain purposes, but be warned, it is hard to train.",
+    "date": "2023-04-07",
+    "architecture": "cugan",
+    "size": null,
+    "scale": 2,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 5657003,
+        "sha256": "88a6d89f04eaf27a9f7b60937857768a6bc04fb360670bd9951ef533acab0616",
+        "urls": [
+          "https://e.pcloud.link/publink/show?code=kZYVTSZwycXga7RuRVu8O94iGrqxYCFvsOy#returl=https%3A//e.pcloud.link/publink/show%3Fcode%3DkZYVTSZwycXga7RuRVu8O94iGrqxYCFvsOy&page=login"
+        ]
+      }
+    ],
+    "trainingIterations": 9584969,
+    "trainingBatchSize": 95,
+    "trainingHRSize": 128,
+    "images": [
+      {
+        "type": "standalone",
+        "url": "https://images2.imgbox.com/fd/e4/Ut3OnlAp_o.png",
+        "thumbnail": "/thumbs/small/4b48b432aec6d803a8357522.jpg"
+      },
+      {
+        "type": "standalone",
+        "url": "https://images2.imgbox.com/aa/6b/wHptNkaS_o.png",
+        "thumbnail": "/thumbs/small/7a08818d43adc3ae5500e21a.jpg"
+      },
+      {
+        "type": "standalone",
+        "url": "https://images2.imgbox.com/a4/ba/7zVOjVvV_o.png",
+        "thumbnail": "/thumbs/small/1be43b8a942630c7baa429f0.jpg"
+      },
+      {
+        "type": "standalone",
+        "url": "https://images2.imgbox.com/cb/27/WXOrND8s_o.png",
+        "thumbnail": "/thumbs/small/059f45e75aaf82cfb1f3ebc7.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "standalone",
+      "url": "/thumbs/9f140b94483ff1de40415966.jpg"
+    }
+  },
+  "4x-003-ATD-SRx4-finetune": {
+    "name": "003_ATD_SRx4_finetune",
+    "author": "lehengzhang",
+    "license": "Apache-2.0",
+    "tags": [
+      "pretrained",
+      "research"
+    ],
+    "description": "Official 4x finetune pretrain from [ATD](https://github.com/LabShuHangGU/Adaptive-Token-Dictionary)\n\n# Adaptive Token Dictionary\n\nThis repository is an official implementation of the paper \"Transcending the Limit of Local Window: Advanced Super-Resolution Transformer with Adaptive Token Dictionary\", CVPR, 2024.\n\n[[Arxiv](https://arxiv.org/abs/2401.08209)] [[visual results](https://drive.google.com/drive/folders/1HwEbAGU6WEw9ZGbFdt__BOJo_5DKflEb?usp=sharing)] [[pretrained models](https://drive.google.com/drive/folders/1D3BvTS1xBcaU1mp50k3pBzUWb7qjRvmB?usp=sharing)]\n\nBy Leheng Zhang, Yawei Li, Xingyu Zhou, Xiaorui Zhao, and Shuhang Gu.\n\n> **Abstract:** Single Image Super-Resolution is a classic computer vision problem that involves estimating high-resolution (HR) images from low-resolution (LR) ones. Although deep neural networks (DNNs), especially Transformers for super-resolution, have seen significant advancements in recent years, challenges still remain, particularly in limited receptive field caused by window-based self-attention. To address these issues, we introduce a group of auxiliary **A**daptive **T**oken **D**ictionary to SR Transformer and establish an **ATD**-SR method. The introduced token dictionary could learn prior information from training data and adapt the learned prior to specific testing image through an adaptive refinement step. The refinement strategy could not only provide global information to all input tokens but also group image tokens into categories. Based on category partitions, we further propose a category-based self-attention mechanism designed to leverage distant but similar tokens for enhancing input features. The experimental results show that our method achieves the best performance on various single image super-resolution benchmarks.\n> \n> <img width=\"800\" src=\"figures/tdca-acmsa.png\"> \n> <img width=\"800\" src=\"figures/arch.png\"> \n> <br/><br/>\n> <img width=\"800\" src=\"figures/viscomp_076.png\">",
+    "date": "2024-03-05",
+    "architecture": "atd",
+    "size": null,
+    "scale": 4,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 163803535,
+        "sha256": "092bf6aa82f0ecb9f681a7da6a8e65e2c1280ae5b44f1608f60742d88547b833",
+        "urls": [
+          "https://drive.google.com/file/d/1J9kR9OyrOxtJ5Ygbr_W116BLBwnD4VNL/view?usp=drive_link"
+        ]
+      }
+    ],
+    "images": [
+      {
+        "type": "standalone",
+        "url": "https://raw.githubusercontent.com/LabShuHangGU/Adaptive-Token-Dictionary/main/figures/viscomp_076.png",
+        "thumbnail": "/thumbs/small/270c560be91f8dd20b2a5d3a.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "standalone",
+      "url": "/thumbs/bbdb8788136e7458dbca5d02.jpg"
+    }
+  },
+  "4x-DRCT-L": {
+    "name": "DRCT-L_X4",
+    "author": "ming053l",
+    "license": "MIT",
+    "tags": [
+      "pretrained",
+      "research"
+    ],
+    "description": "Official 4x drct-l Pretrain model, as released on their [DRCT Github Page](https://github.com/ming053l/DRCT?tab=readme-ov-file)",
+    "date": "2024-06-02",
+    "architecture": "drct",
+    "size": null,
+    "scale": 4,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 485570697,
+        "sha256": "a99044c0275699d1a296ae21b8f322fa8c65d7b9be2213ee2a3dcc280ab8d64b",
+        "urls": [
+          "https://drive.google.com/file/d/1bVxvA6QFbne2se0CQJ-jyHFy94UOi3h5/view?usp=drive_link"
+        ]
+      }
+    ],
+    "images": []
+  },
+  "4x-FireAlpha": {
+    "name": "FireAlpha",
+    "author": "blueamulet",
+    "license": "CC-BY-NC-4.0",
+    "tags": [
+      "game-textures",
+      "restoration"
+    ],
+    "description": "Category: Alphas\nPurpose: Alpha (4 channel)",
+    "date": "2019-11-12",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 4,
+    "inputChannels": 4,
+    "outputChannels": 4,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66959003,
+        "sha256": "53f77c587b782c4bfbdbcccc7d6cf9b26b11ba92b8cb58e9d017bed00faeb047",
+        "urls": [
+          "https://drive.google.com/open?id=192Mw2_yUwCgqt3tAJ2sRxZ8hYHe4CKrZ"
+        ]
+      }
+    ],
+    "trainingIterations": 1285000,
+    "trainingHRSize": 128,
+    "dataset": "Fire Emblem artwork with transparency",
+    "images": []
+  },
+  "4x-HFA2k-VCISR-GRLGAN-ep200": {
+    "name": "HFA2k VCISR GRLGAN ep200",
+    "author": "helaman",
+    "license": "CC-BY-4.0",
+    "tags": [
+      "anime",
+      "cartoon",
+      "compression-removal",
+      "restoration"
+    ],
+    "description": "Purpose: 4x anime upscaler handling video compression artifacts, trained for 200 epochs\n\n4x anime upscaler handling video compression artifacts since trained with otf degradations for \"mpeg2video\", \"libxvid\", \"libx264\", \"libx265\" with crf 20-32, mpeg bitrate 3800-5800 (together with the standard Real-ESRGAN otf pipeline). A faster arch using this otf degradation pipeline would be great for handling video compression artifacts. Since this one is a GRL model and therefore slow, [as noted by the dev](https://github.com/Kiteretsu77/VCISR-official/issues/3) maybe more for research purposes (or more for single images/screenshots). Trained using [VCISR](https://github.com/Kiteretsu77/VCISR-official) for 200 epochs.  \n\n\"This is epoch 200 and the start iteration is 85959 with learning rate 2.5e-05\"  \n\nSlow Pics examples:  \n[h264_crf28](https://slow.pics/c/fqOnxXep)  \n[ludvae1](https://slow.pics/c/OcukRy7d)  \n[ludvae2](https://slow.pics/c/FI33mX4F)",
+    "date": "2024-01-04",
+    "architecture": "grl",
+    "size": null,
+    "scale": 4,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 53125413,
+        "sha256": "28a7e4dc6acfefaa132abd43145226848ba91c1f14cfc0d448b18b2e0ebd36c5",
+        "urls": [
+          "https://drive.google.com/file/d/1h_btpw-rWh482iGZQQgtRkiEbKZibOdo/view?usp=sharing"
+        ]
+      }
+    ],
+    "trainingIterations": 85959,
+    "trainingEpochs": 200,
+    "trainingBatchSize": 6,
+    "trainingHRSize": 128,
+    "trainingOTF": true,
+    "dataset": "hfa2k",
+    "datasetSize": 2568,
+    "images": [
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/IV3P0o7h.png",
+        "SR": "https://i.slow.pics/MvlQBy9p.png",
+        "thumbnail": "/thumbs/small/bca19c51e54b9bb0b8e20cbb.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/ZTqKlXz1.png",
+        "SR": "https://i.slow.pics/sCbeV1B1.png",
+        "thumbnail": "/thumbs/small/48cade5b8649117644f29f66.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/SAnZ2Pna.png",
+        "SR": "https://i.slow.pics/qjILk4Bn.png",
+        "thumbnail": "/thumbs/small/9e35dd359405ee9221c8cc66.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/9d91d382fbfd9c54e48995d1.png",
+      "SR": "/thumbs/0edfb8ba2a4bd4c9895e714a.jpg",
+      "LRSize": {
+        "width": 92,
+        "height": 74
+      },
+      "SRSize": {
+        "width": 368,
+        "height": 296
+      }
+    }
+  },
+  "4x-NomosUni-rgt-multijpg": {
+    "name": "NomosUni rgt multijpg",
+    "author": "helaman",
+    "license": "CC-BY-4.0",
+    "tags": [
+      "compression-removal",
+      "jpeg",
+      "restoration"
+    ],
+    "description": "Purpose: 4x universal DoF preserving upscaler\n\n4x universal DoF preserving upscaler, pair trained with jpg degradation (down to 40) and multiscale (down_up, bicubic, bilinear, box, nearest, lanczos) in neosr with adamw, unet and pixel, perceptual, gan and color losses.\nSimiliar to the last model I released, with same dataset, this is a full RGT model in comparison.\n\nFP32 ONNX conversion is provided in the google drive folder for you to run it.\n\n6 Examples (To check JPG compression handling see Example Nr.4, to check Depth of Field handlin see Example Nr.1 & Nr.6):\n[Slowpics](https://slow.pics/s/iMuE3vE5)",
+    "date": "2024-02-20",
+    "architecture": "rgt",
+    "size": null,
+    "scale": 4,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 180365822,
+        "sha256": "f6731814c2e3ee38df4c6c23a8543b9faf7ec0505421a0b32f09882ca04021a5",
+        "urls": [
+          "https://drive.google.com/file/d/1WHe7hJRV5E2s5xP75VxC4glHEv16i0-L/view?usp=sharing"
+        ]
+      }
+    ],
+    "trainingIterations": 100000,
+    "trainingEpochs": 79,
+    "trainingBatchSize": 12,
+    "trainingHRSize": 128,
+    "trainingOTF": false,
+    "dataset": "nomosuni",
+    "datasetSize": 2989,
+    "pretrainedModelG": "4x-RGT",
+    "images": [
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/VB9XsvKN.png",
+        "SR": "https://i.slow.pics/vAvBlVOz.png",
+        "thumbnail": "/thumbs/small/8e420b4061a2298b7fdb3ecc.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/N6jBY5aa.png",
+        "SR": "https://i.slow.pics/5nKbF91u.png",
+        "thumbnail": "/thumbs/small/fc047f3edb7571a521e2c55a.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/IZQkx6ZU.png",
+        "SR": "https://i.slow.pics/qqgGoTnK.png",
+        "thumbnail": "/thumbs/small/5eacf62657e211483a36d3b4.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/0HMsUINV.png",
+        "SR": "https://i.slow.pics/1cGrhFhK.png",
+        "thumbnail": "/thumbs/small/2a573096abeebd7011eef671.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/74LozmEe.png",
+        "SR": "https://i.slow.pics/JQTK9hlr.png",
+        "thumbnail": "/thumbs/small/87df29eb2a27e9f1de619bd5.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/Y29iBd01.png",
+        "SR": "https://i.slow.pics/dSJJCrNS.png",
+        "thumbnail": "/thumbs/small/f4d38ce743e5f74d225980db.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/76b34706a3fd9858ec85d4d4.png",
+      "SR": "/thumbs/9a4a16cf9efe970c6c019f47.jpg",
+      "LRSize": {
+        "width": 92,
+        "height": 74
+      },
+      "SRSize": {
+        "width": 368,
+        "height": 296
+      }
+    }
+  },
+  "4x-Sol-Levante-NTSC2HD": {
+    "name": "Sol Levante NTSC2HD",
+    "author": "pheonix",
+    "license": "Unlicense",
+    "tags": [
+      "anime",
+      "cartoon"
+    ],
+    "description": "Purpose: Anime/Pretrained\n\nNTSC DVD-spec encode x4 scale super-resolution for Anime Drawing style content. The dataset has a LOT of data throughout almost every frame, so it had a lot of stuff to learn. The resulting DVD-spec encode also had some blocking at times so it also learned to fight off blocking.",
+    "date": "2020-04-08",
+    "architecture": "esrgan",
+    "size": [
+      "64nf",
+      "23nb"
+    ],
+    "scale": 4,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 66960011,
+        "sha256": "d52833b5067a352b5894598d46d45b39c0c832ae42b34fdb2ddc8cba61a16a89",
+        "urls": [
+          "https://drive.google.com/open?id=1H3F8OVBnK2cd5NjbCyc3tGwTZJBF1gk7"
+        ]
+      }
+    ],
+    "trainingIterations": 300000,
+    "trainingEpochs": 1522,
+    "trainingBatchSize": 32,
+    "trainingHRSize": 128,
+    "dataset": "```HR: http://download.opencontent.netflix.com.s3.amazonaws.com/SolLevante/hdr10/SolLevante_HDR10_r2020_ST2084_UHD_24fps_1000nit.mov downscaled to 2880x1920 (720*4x480*4)",
+    "datasetSize": 6309,
+    "pretrainedModelG": "4x-PSNR",
+    "images": []
+  },
+  "8x-classicalSR-DF2K-s64w8-SwinIR-M": {
+    "name": "SwinIR-M-x8 (classicalSR-DF2K-s64w8)",
+    "author": [
+      "jingyunliang"
+    ],
+    "license": "Apache-2.0",
+    "tags": [
+      "compression-removal",
+      "general-upscaler",
+      "jpeg",
+      "photo",
+      "research",
+      "restoration"
+    ],
+    "description": "[SwinIR: Image Restoration Using Swin Transformer](https://github.com/JingyunLiang/SwinIR)\n\n\nImage restoration is a long-standing low-level vision problem that aims to restore high-quality images from low-quality images (e.g., downscaled, noisy and compressed images). While state-of-the-art image restoration methods are based on convolutional neural networks, few attempts have been made with Transformers which show impressive performance on high-level vision tasks. In this paper, we propose a strong baseline model SwinIR for image restoration based on the Swin Transformer. SwinIR consists of three parts: shallow feature extraction, deep feature extraction and high-quality image reconstruction. In particular, the deep feature extraction module is composed of several residual Swin Transformer blocks (RSTB), each of which has several Swin Transformer layers together with a residual connection. We conduct experiments on three representative tasks: image super-resolution (including classical, lightweight and real-world image super-resolution), image denoising (including grayscale and color image denoising) and JPEG compression artifact reduction. Experimental results demonstrate that SwinIR outperforms state-of-the-art methods on different tasks by up to 0.14~0.45dB, while the total number of parameters can be reduced by up to 67%.",
+    "date": "2021-08-26",
+    "architecture": "swinir",
+    "size": [
+      "Medium",
+      "s64",
+      "w8"
+    ],
+    "scale": 8,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 68460535,
+        "sha256": "6b522c1ea5c21006ce3398797eb20b131ca0024cc6e7b8f3d5d29fad1310a49c",
+        "urls": [
+          "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/001_classicalSR_DF2K_s64w8_SwinIR-M_x8.pth"
+        ]
+      }
+    ],
+    "images": []
+  }
+}

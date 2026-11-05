@@ -137,6 +137,12 @@ pub fn run_upscale(
     rep.info(&format!("device: {}", upscaler.device().name));
 
     let in_catalogue = upscaler.registry().get(&args.model).is_some();
+    if !in_catalogue && !Path::new(&args.model).is_file() {
+        return Err(ScaleUpError::Model(format!(
+            "'{}' is neither a known model id nor an existing file; search OpenModelDB with `scaleup hub search`",
+            args.model
+        )));
+    }
     let model_id = if in_catalogue {
         args.model.clone()
     } else {

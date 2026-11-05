@@ -1,6 +1,7 @@
 //! Model catalogue (`models/manifest.json`, embedded) and verified model downloads.
 
 use crate::backend::is_ncnn_model;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -9,6 +10,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::hub::{Installed, classify_license, commercial_ok};
 use crate::pipeline::CancelToken;
 use crate::{Result, ScaleUpError};
 
@@ -18,7 +20,13 @@ fn default_format() -> String {
     "onnx".into()
 }
 
+fn default_source() -> String {
+    "catalogue".into()
+}
+
 const NCNN_FORMAT: &str = "ncnn";
+/// `ModelEntry::source` of a model installed from OpenModelDB.
+pub const SOURCE_HUB: &str = "openmodeldb";
 /// Models imported by the user, in the models folder, in manifest format.
 const LOCAL_OVERLAY: &str = "local.json";
 
@@ -51,18 +59,22 @@ pub struct ModelEntry {
     pub tags: Vec<String>,
     #[serde(default)]
     pub notes: String,
-    /// File format: `"onnx"`, or `"ncnn"` for `.param`/`.bin` pairs.
+    /// File format: `"onnx"`, `"ncnn"` for `.param`/`.bin` pairs, or `"pth"` / `"safetensors"`.
     #[serde(default = "default_format")]
     pub format: String,
+    /// Where the entry comes from: `"catalogue"` (built in or imported) or `"openmodeldb"`.
+    #[serde(default = "default_source")]
+    pub source: String,
 }
 
 impl ModelEntry {
     /// Tile overlap this architecture needs, when it has been measured. See `scaleup-wgpu/BENCH.md`.
     pub fn preferred_overlap(&self) -> Option<u32> {
-        match self.arch.as_str() {
-            "SPAN" => Some(16),
-            "SRVGGNetCompact" => Some(32),
-            "RRDBNet" => Some(64),
+        // Catalogue models name the PyTorch class, OpenModelDB models the architecture.
+        match self.arch.to_ascii_lowercase().as_str() {
+            "span" => Some(16),
+            "srvggnetcompact" | "compact" => Some(32),
+            "rrdbnet" | "esrgan" => Some(64),
             _ => None,
         }
     }
@@ -95,6 +107,8 @@ pub struct Registry {
     entries: Vec<ModelEntry>,
     models_dir: PathBuf,
     timeout: Duration,
+    /// File of each installed OpenModelDB model, by id.
+    hub_files: HashMap<String, PathBuf>,
 }
 
 /// Connect and first-response timeout for downloads.
@@ -124,7 +138,9 @@ impl Registry {
                 entries.push(local);
             }
         }
-        Self::from_entries(entries, dir)
+        let mut reg = Self::from_entries(entries, dir);
+        reg.add_hub_models();
+        reg
     }
 
     /// Arbitrary catalogue (tests, user manifests).
@@ -133,6 +149,38 @@ impl Registry {
             entries,
             models_dir,
             timeout: DEFAULT_TIMEOUT,
+            hub_files: HashMap::new(),
+        }
+    }
+
+    /// Lists the models of `<models_dir>/hub/installed.json`. A built-in or imported id wins over
+    /// a hub model of the same name.
+    fn add_hub_models(&mut self) {
+        for m in Installed::load(&self.models_dir).models {
+            if self.entries.iter().any(|e| e.id == m.id) {
+                continue;
+            }
+            let class = classify_license(m.license.as_deref());
+            self.entries.push(ModelEntry {
+                id: m.id.clone(),
+                name: m.name,
+                arch: m.arch,
+                scale: m.scale,
+                license: m.license.unwrap_or_else(|| "unknown".into()),
+                commercial: commercial_ok(class),
+                size_bytes: fs::metadata(&m.file).map_or(0, |md| md.len()),
+                url: m.source_url,
+                sha256: m.sha256.unwrap_or_default(),
+                tags: Vec::new(),
+                notes: if m.verified {
+                    "installed from OpenModelDB".into()
+                } else {
+                    "installed from OpenModelDB; the file could not be verified".into()
+                },
+                format: m.format,
+                source: SOURCE_HUB.into(),
+            });
+            self.hub_files.insert(m.id, m.file);
         }
     }
 
@@ -179,6 +227,7 @@ impl Registry {
                 tags: Vec::new(),
                 notes: format!("imported from {}", dir.display()),
                 format: NCNN_FORMAT.into(),
+                source: default_source(),
             };
             overlay.retain(|e| e.id != id);
             overlay.push(entry.clone());
@@ -216,8 +265,12 @@ impl Registry {
         self.entries.iter().find(|e| e.id == id)
     }
 
-    /// `<models_dir>/<id>.onnx`, or `<id>.param` for an ncnn model (its `.bin` sits next to it).
+    /// `<models_dir>/<id>.onnx`, or `<id>.param` for an ncnn model (its `.bin` sits next to it);
+    /// the installed file for an OpenModelDB model.
     pub fn local_path(&self, id: &str) -> PathBuf {
+        if let Some(file) = self.hub_files.get(id) {
+            return file.clone();
+        }
         let ext = match self.get(id) {
             Some(e) if e.format == NCNN_FORMAT => "param",
             _ => "onnx",
@@ -250,6 +303,12 @@ impl Registry {
         let path = self.local_path(id);
         if path.is_file() {
             return Ok(path);
+        }
+        if entry.source == SOURCE_HUB {
+            return Err(ScaleUpError::Model(format!(
+                "model '{id}' is installed from OpenModelDB but {} is missing; reinstall it with `scaleup hub install {id}`",
+                path.display()
+            )));
         }
         if entry.url.is_empty() {
             return Err(ScaleUpError::Download(format!(
@@ -497,6 +556,7 @@ mod tests {
             tags: vec![],
             notes: String::new(),
             format: "onnx".into(),
+            source: default_source(),
         }
     }
 
@@ -510,18 +570,134 @@ mod tests {
         assert_eq!(arch("SPAN").preferred_overlap(), Some(16));
         assert_eq!(arch("RRDBNet").preferred_overlap(), Some(64));
         assert_eq!(arch("ncnn").preferred_overlap(), None);
+        // OpenModelDB names.
+        assert_eq!(arch("esrgan").preferred_overlap(), Some(64));
+        assert_eq!(arch("compact").preferred_overlap(), Some(32));
+        assert_eq!(arch("span").preferred_overlap(), Some(16));
+        assert_eq!(arch("dat").preferred_overlap(), None);
+    }
+
+    fn installed_model(
+        id: &str,
+        file: PathBuf,
+        license: Option<&str>,
+    ) -> crate::hub::InstalledModel {
+        crate::hub::InstalledModel {
+            id: id.into(),
+            name: format!("{id} name"),
+            arch: "compact".into(),
+            scale: 2,
+            license: license.map(str::to_owned),
+            format: "onnx".into(),
+            file,
+            sha256: Some("ab".repeat(32)),
+            verified: true,
+            source_url: "https://github.com/a/b/m.onnx".into(),
+            installed_at: "2026-11-05T10:00:00Z".into(),
+        }
+    }
+
+    fn write_installed(dir: &Path, models: Vec<crate::hub::InstalledModel>) {
+        Installed { models }.save(dir).unwrap();
+    }
+
+    #[test]
+    fn hub_models_are_listed_and_resolve_without_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("hub").join("h-2x").join("weights.onnx");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"onnx").unwrap();
+        write_installed(
+            dir.path(),
+            vec![
+                installed_model("h-2x", file.clone(), Some("MIT")),
+                installed_model("h-nc", dir.path().join("gone.onnx"), Some("CC-BY-NC-4.0")),
+                installed_model("h-unk", dir.path().join("gone2.onnx"), None),
+            ],
+        );
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        let e = reg.get("h-2x").expect("listed");
+        assert_eq!(e.source, "openmodeldb");
+        assert_eq!(
+            (e.format.as_str(), e.scale, e.license.as_str()),
+            ("onnx", 2, "MIT")
+        );
+        assert!(e.commercial);
+        assert_eq!(e.preferred_overlap(), Some(32));
+        assert_eq!(reg.local_path("h-2x"), file);
+        assert!(reg.is_downloaded("h-2x"));
+        assert_eq!(reg.ensure("h-2x", &mut |_, _| {}).unwrap(), file);
+        let resolved = reg.resolve("h-2x").unwrap();
+        assert_eq!((resolved.path, resolved.scale), (file, Some(2)));
+        assert!(!reg.get("h-nc").unwrap().commercial);
+        let unk = reg.get("h-unk").unwrap();
+        assert_eq!((unk.license.as_str(), unk.commercial), ("unknown", false));
+        let empty = tempfile::tempdir().unwrap();
+        assert!(
+            Registry::with_dir(empty.path().to_path_buf())
+                .entries()
+                .iter()
+                .all(|e| e.source == "catalogue")
+        );
+    }
+
+    #[test]
+    fn hub_model_with_a_missing_file_asks_for_a_reinstall() {
+        let dir = tempfile::tempdir().unwrap();
+        write_installed(
+            dir.path(),
+            vec![installed_model(
+                "h-2x",
+                dir.path().join("gone.onnx"),
+                Some("MIT"),
+            )],
+        );
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        assert!(reg.get("h-2x").is_some());
+        assert!(!reg.is_downloaded("h-2x"));
+        let err = reg.resolve("h-2x").unwrap_err();
+        assert!(matches!(err, ScaleUpError::Model(_)), "{err:?}");
+        assert!(err.to_string().contains("reinstall"), "{err}");
+    }
+
+    #[test]
+    fn builtin_and_imported_ids_win_over_hub_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        write_pair(src.path(), "mine-2x");
+        let mut reg = Registry::with_dir(dir.path().to_path_buf());
+        reg.import_ncnn(src.path()).unwrap();
+        write_installed(
+            dir.path(),
+            vec![
+                installed_model(
+                    "realesr-general-x4v3",
+                    dir.path().join("a.onnx"),
+                    Some("MIT"),
+                ),
+                installed_model("mine-2x", dir.path().join("b.onnx"), Some("MIT")),
+            ],
+        );
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        for id in ["realesr-general-x4v3", "mine-2x"] {
+            assert_eq!(reg.entries().iter().filter(|e| e.id == id).count(), 1);
+            assert_eq!(reg.get(id).unwrap().source, "catalogue");
+        }
+        assert_eq!(reg.local_path("mine-2x"), dir.path().join("mine-2x.param"));
     }
 
     #[test]
     fn every_catalogue_model_names_its_overlap() {
-        for e in Registry::builtin().entries() {
+        let dir = tempfile::tempdir().unwrap();
+        for e in Registry::with_dir(dir.path().to_path_buf()).entries() {
             assert!(e.preferred_overlap().is_some(), "{}", e.id);
         }
     }
 
     #[test]
     fn manifest_parses_and_has_default_tag() {
-        let reg = Registry::builtin();
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
         assert_eq!(reg.entries().len(), 8);
         let defaults: Vec<_> = reg
             .entries()
