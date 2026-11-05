@@ -7,7 +7,8 @@ use scaleup_core::ScaleUpError;
 use scaleup_core::hub::{
     Ask, Capabilities, Catalog, Content, Filter, Goal, Host, Installed, InstalledModel,
     LicenseClass, ModelCard, Readiness, SpeedPref, UreqHttp, classify_license, classify_url,
-    commercial_ok, import_file, install, readiness, recommend,
+    commercial_ok, find_python, import_file, install, install_converted, readiness, recommend,
+    uninstall,
 };
 
 use crate::args::HubCmd;
@@ -62,9 +63,9 @@ fn ready_help(r: Readiness, id: &str) -> String {
         Readiness::ManualDownload => {
             format!("download a file in a browser, then run `scaleup hub import {id} <file>`")
         }
-        Readiness::NeedsConversion => {
-            "only a PyTorch file, which this machine cannot run yet".into()
-        }
+        Readiness::NeedsConversion => format!(
+            "only a PyTorch file, which this machine cannot run as is; convert it with `scaleup hub install {id} --convert` (needs Python)"
+        ),
         Readiness::Unsupported => "no file this machine can run, or not an RGB model".into(),
     }
 }
@@ -254,50 +255,53 @@ fn info(models_dir: &Path, id: &str) -> Result<(), ScaleUpError> {
     Ok(())
 }
 
-fn do_install(models_dir: &Path, id: &str, resource: Option<usize>) -> Result<(), ScaleUpError> {
+fn do_install(
+    models_dir: &Path,
+    id: &str,
+    resource: Option<usize>,
+    convert: bool,
+) -> Result<(), ScaleUpError> {
     let cat = load_catalog(models_dir, false)?;
     let mut card = find(&cat, id)?.clone();
     if let Some(index) = resource {
         card = only_resource(&card, index)?;
     }
     let mut last = u64::MAX;
-    let model = install(
-        &card,
-        models_dir,
-        &Capabilities::current(),
-        &UreqHttp,
-        &mut |done, total| {
-            if let Some(total) = total.filter(|t| *t > 0)
-                && done * 100 / total != last
-            {
-                last = done * 100 / total;
-                eprintln!("{last}%");
-            }
-        },
-    )?;
+    let mut progress = |done: u64, total: Option<u64>| {
+        if let Some(total) = total.filter(|t| *t > 0)
+            && done * 100 / total != last
+        {
+            last = done * 100 / total;
+            eprintln!("{last}%");
+        }
+    };
+    let model = if convert {
+        // Before downloading anything: without Python the file would be of no use.
+        let python = find_python()?;
+        install_converted(
+            &card,
+            models_dir,
+            &python,
+            &UreqHttp,
+            &mut progress,
+            &mut || eprintln!("converting with {}", python.path().display()),
+        )?
+    } else {
+        install(
+            &card,
+            models_dir,
+            &Capabilities::current(),
+            &UreqHttp,
+            &mut progress,
+        )?
+    };
     warn_if_unverified(&model);
     println!("{}", model.file.display());
     Ok(())
 }
 
 fn remove(models_dir: &Path, id: &str) -> Result<(), ScaleUpError> {
-    let mut installed = Installed::load(models_dir);
-    if installed.get(id).is_none() {
-        return Err(ScaleUpError::Model(format!(
-            "'{id}' is not an installed OpenModelDB model"
-        )));
-    }
-    if id.is_empty() || id.starts_with('.') || id.contains(['/', '\\']) {
-        return Err(ScaleUpError::Model(format!(
-            "refusing to delete the folder of '{id}': not a plain model id"
-        )));
-    }
-    match fs::remove_dir_all(models_dir.join("hub").join(id)) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-        _ => {}
-    }
-    installed.remove(id);
-    installed.save(models_dir)?;
+    uninstall(models_dir, id)?;
     println!("removed {id}");
     Ok(())
 }
@@ -385,7 +389,11 @@ pub fn run_hub(cmd: &HubCmd) -> Result<i32, ScaleUpError> {
             )?;
         }
         HubCmd::Info { id } => info(&dir, id)?,
-        HubCmd::Install { id, resource } => do_install(&dir, id, *resource)?,
+        HubCmd::Install {
+            id,
+            resource,
+            convert,
+        } => do_install(&dir, id, *resource, *convert)?,
         HubCmd::Import { id, file } => {
             let cat = load_catalog(&dir, false)?;
             let model = import_file(find(&cat, id)?, file, &dir)?;

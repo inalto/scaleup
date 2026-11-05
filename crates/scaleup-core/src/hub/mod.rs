@@ -1,6 +1,7 @@
 //! OpenModelDB hub: the model catalogue, its filters and search, and the record of installed models.
 
 pub mod catalog;
+pub mod convert;
 pub mod download;
 pub mod installed;
 pub mod license;
@@ -10,8 +11,13 @@ pub use catalog::{
     Capabilities, Catalog, Filter, ModelCard, Readiness, Resource, cache_is_fresh, readiness,
     speed_tier,
 };
+pub use convert::{
+    PIP_INSTALL, Python, check_checkpoint, convert_to_onnx, find_python, find_python_from,
+    install_converted,
+};
 pub use download::{
-    Host, Http, HttpResponse, UreqHttp, classify_url, import_file, install, pick_resource,
+    Host, Http, HttpResponse, UreqHttp, classify_url, expected_file_name, import_file, install,
+    pick_resource, uninstall,
 };
 pub use installed::{Installed, InstalledModel};
 pub use license::{LicenseClass, classify_license, commercial_ok};

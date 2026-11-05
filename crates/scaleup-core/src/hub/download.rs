@@ -115,7 +115,7 @@ fn is_id_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
 }
 
-/// `/file/d/<id>/…` or an `id=<id>` query parameter.
+/// `/file/d/<id>/â€¦` or an `id=<id>` query parameter.
 fn drive_file_id(url: &str) -> Option<String> {
     let rest = url.split_once("://")?.1;
     let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
@@ -197,7 +197,7 @@ fn manual_error(
 }
 
 /// Nothing but letters, digits, `.`, `_` and `-`, and no leading dot: the id names a folder.
-fn check_id(id: &str) -> Result<()> {
+pub(crate) fn check_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()
         && !id.starts_with('.')
         && id
@@ -266,7 +266,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The `filename` of a `Content-Disposition` header (`filename*=UTF-8''…` wins).
+/// The `filename` of a `Content-Disposition` header (`filename*=UTF-8''â€¦` wins).
 fn disposition_name(header: &str) -> Option<String> {
     let lower = header.to_ascii_lowercase();
     if let Some(at) = lower.find("filename*=") {
@@ -374,7 +374,7 @@ fn open(http: &dyn Http, url: &str, cookies: &[(String, String)]) -> Result<Open
     })
 }
 
-/// The value of `name="…"` inside one tag.
+/// The value of `name="â€¦"` inside one tag.
 fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let key = format!(" {name}=\"");
     let start = tag.find(&key)? + key.len();
@@ -568,7 +568,16 @@ pub fn install(
 ) -> Result<InstalledModel> {
     check_id(&card.id)?;
     let Some((resource, idx)) = pick_resource(card, caps) else {
+        let convertible = card.in_ch == 3
+            && card
+                .resources
+                .iter()
+                .any(|r| r.platform.as_deref() == Some("pytorch") && !r.urls.is_empty());
         return Err(match card.resources.iter().find(|r| !r.urls.is_empty()) {
+            Some(_) if convertible => ScaleUpError::Download(format!(
+                "no file of '{}' ({}) can run on this machine as is; its PyTorch file can be converted to ONNX with `scaleup hub install {} --convert` (needs Python)",
+                card.id, card.architecture, card.id
+            )),
             Some(_) => ScaleUpError::Download(format!(
                 "no file of '{}' ({}) can run on this machine",
                 card.id, card.architecture
@@ -587,6 +596,40 @@ pub fn install(
             }
         });
     };
+    let fetched = fetch(card, resource, idx, models_dir, http, progress)?;
+    register(
+        card,
+        models_dir,
+        fetched.file,
+        fetched.format,
+        fetched.sha256,
+        fetched.verified,
+        &fetched.url,
+    )
+}
+
+/// A downloaded file of a card, at its final name, not yet recorded in `installed.json`.
+pub(crate) struct Fetched {
+    pub file: PathBuf,
+    pub format: String,
+    /// SHA-256 of the file, lowercase hex.
+    pub sha256: String,
+    /// The hash matched the card's.
+    pub verified: bool,
+    pub url: String,
+}
+
+/// Downloads `card.resources[..]` `resource` from its URL `idx` into `<models_dir>/hub/<id>/` and
+/// checks its SHA-256 against the card. A mismatch, a web page or a short body leave nothing.
+pub(crate) fn fetch(
+    card: &ModelCard,
+    resource: &Resource,
+    idx: usize,
+    models_dir: &Path,
+    http: &dyn Http,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<Fetched> {
+    check_id(&card.id)?;
     let format = valid_format(&resource.kind)?;
     let url = resource.urls[idx].as_str();
     let sha = non_empty(&resource.sha256);
@@ -646,12 +689,45 @@ pub fn install(
         let _ = fs::remove_file(&part);
         return Err(e.into());
     }
-    register(card, models_dir, dest, format, actual, sha.is_some(), url)
+    Ok(Fetched {
+        file: dest,
+        format,
+        sha256: actual,
+        verified: sha.is_some(),
+        url: url.to_owned(),
+    })
+}
+
+/// The name a hand-downloaded file of `card` is expected to have: the URL's last segment when it
+/// names a model file, else `<id>.<kind>`.
+pub fn expected_file_name(url: &str, id: &str, kind: &str) -> String {
+    file_name(url, None, id, kind)
+}
+
+/// Deletes the folder of installed model `id` and its entry in `installed.json`.
+pub fn uninstall(models_dir: &Path, id: &str) -> Result<()> {
+    let mut installed = Installed::load(models_dir);
+    if installed.get(id).is_none() {
+        return Err(ScaleUpError::Model(format!(
+            "'{id}' is not an installed OpenModelDB model"
+        )));
+    }
+    check_id(id).map_err(|_| {
+        ScaleUpError::Model(format!(
+            "refusing to delete the folder of '{id}': not a plain model id"
+        ))
+    })?;
+    match fs::remove_dir_all(models_dir.join("hub").join(id)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
+    installed.remove(id);
+    installed.save(models_dir)
 }
 
 /// Records the file in `installed.json`, dropping the file of an earlier install of the same
 /// model when it had another name.
-fn register(
+pub(crate) fn register(
     card: &ModelCard,
     models_dir: &Path,
     file: PathBuf,
@@ -764,36 +840,35 @@ pub fn import_file(card: &ModelCard, file: &Path, models_dir: &Path) -> Result<I
     )
 }
 
+/// A scripted [`Http`] and card builders, shared by the tests of the hub modules.
 #[cfg(test)]
-mod tests {
-    use super::super::installed::Installed;
+pub(crate) mod testing {
     use super::*;
-    use crate::ScaleUpError;
     use sha2::{Digest, Sha256};
     use std::collections::VecDeque;
     use std::io::Cursor;
     use std::sync::Mutex;
 
-    fn sha(bytes: &[u8]) -> String {
+    pub(crate) fn sha(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
     }
 
-    type Request = (String, Vec<(String, String)>);
+    pub(crate) type Request = (String, Vec<(String, String)>);
 
     #[derive(Default)]
-    struct Fake {
+    pub(crate) struct Fake {
         responses: Mutex<VecDeque<HttpResponse>>,
         requests: Mutex<Vec<Request>>,
     }
 
     impl Fake {
-        fn with(responses: Vec<HttpResponse>) -> Fake {
+        pub(crate) fn with(responses: Vec<HttpResponse>) -> Fake {
             Fake {
                 responses: Mutex::new(responses.into()),
                 requests: Mutex::default(),
             }
         }
-        fn requests(&self) -> Vec<Request> {
+        pub(crate) fn requests(&self) -> Vec<Request> {
             self.requests.lock().unwrap().clone()
         }
     }
@@ -812,7 +887,7 @@ mod tests {
         }
     }
 
-    fn resp(body: &[u8], content_type: &str) -> HttpResponse {
+    pub(crate) fn resp(body: &[u8], content_type: &str) -> HttpResponse {
         HttpResponse {
             content_type: Some(content_type.into()),
             content_disposition: None,
@@ -822,7 +897,12 @@ mod tests {
         }
     }
 
-    fn resource(kind: &str, platform: &str, sha: Option<String>, urls: &[&str]) -> Resource {
+    pub(crate) fn resource(
+        kind: &str,
+        platform: &str,
+        sha: Option<String>,
+        urls: &[&str],
+    ) -> Resource {
         Resource {
             platform: Some(platform.into()),
             kind: kind.into(),
@@ -832,7 +912,7 @@ mod tests {
         }
     }
 
-    fn card(arch: &str, resources: Vec<Resource>) -> ModelCard {
+    pub(crate) fn card(arch: &str, resources: Vec<Resource>) -> ModelCard {
         ModelCard {
             id: "4x-Test".into(),
             name: "Test model".into(),
@@ -850,6 +930,14 @@ mod tests {
             thumbnail: None,
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::installed::Installed;
+    use super::testing::*;
+    use super::*;
+    use crate::ScaleUpError;
 
     fn onnx_caps() -> Capabilities {
         Capabilities {
@@ -1347,6 +1435,50 @@ mod tests {
         assert_eq!(byte_cap(None), 4 * 1024 * 1024 * 1024);
         assert_eq!(byte_cap(Some(1000)), 1100 + 1024 * 1024);
     }
+    #[test]
+    fn expected_file_name_follows_the_url_then_the_id() {
+        assert_eq!(
+            expected_file_name("https://mega.nz/file/x/My.pth", "id", "pth"),
+            "My.pth"
+        );
+        assert_eq!(
+            expected_file_name("https://mega.nz/file/abc#key", "id", "onnx"),
+            "id.onnx"
+        );
+    }
+
+    #[test]
+    fn uninstall_deletes_the_folder_and_the_entry() {
+        let c = card("span", vec![resource("onnx", "onnx", None, &[GH])]);
+        let dir = tempfile::tempdir().unwrap();
+        let http = Fake::with(vec![resp(b"w", "application/octet-stream")]);
+        install(&c, dir.path(), &onnx_caps(), &http, &mut |_, _| {}).unwrap();
+        uninstall(dir.path(), "4x-Test").unwrap();
+        assert!(!dir.path().join("hub").join("4x-Test").exists());
+        assert!(Installed::load(dir.path()).models.is_empty());
+        let err = uninstall(dir.path(), "4x-Test").unwrap_err();
+        assert!(err.to_string().contains("not an installed"), "{err}");
+    }
+
+    #[test]
+    fn pytorch_only_card_points_at_convert() {
+        let c = card("dat", vec![resource("pth", "pytorch", None, &[GH])]);
+        let dir = tempfile::tempdir().unwrap();
+        let err = install(
+            &c,
+            dir.path(),
+            &onnx_caps(),
+            &Fake::default(),
+            &mut |_, _| {},
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("`scaleup hub install 4x-Test --convert`"),
+            "{err}"
+        );
+    }
+
     #[test]
     fn rfc3339_known_dates() {
         assert_eq!(rfc3339_utc(0), "1970-01-01T00:00:00Z");

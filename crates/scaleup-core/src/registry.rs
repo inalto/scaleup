@@ -240,6 +240,61 @@ impl Registry {
         Ok(ids)
     }
 
+    /// Lists one ONNX file in the local overlay as model `<file stem>`, copying it to
+    /// `<models_dir>/<id>.onnx` unless it is already there. Like an ncnn import, its license is
+    /// unknown, so it is marked non-commercial; the scale comes from the name. Fails when the id
+    /// belongs to a catalogue or hub model; an earlier import of the same id is replaced.
+    pub fn import_onnx(&mut self, file: &Path) -> Result<String> {
+        let id = file
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ScaleUpError::Model(format!("{}: not a file name", file.display())))?;
+        if self.get(&id).is_some() && !self.is_imported(&id) {
+            return Err(ScaleUpError::InvalidOption(format!(
+                "'{id}' is already the id of another model; rename {} and try again",
+                file.display()
+            )));
+        }
+        fs::create_dir_all(&self.models_dir)?;
+        let dest = self.models_dir.join(format!("{id}.onnx"));
+        let same = matches!(
+            (fs::canonicalize(file), fs::canonicalize(&dest)),
+            (Ok(a), Ok(b)) if a == b
+        );
+        if !same {
+            fs::copy(file, &dest)?;
+        }
+        let entry = ModelEntry {
+            id: id.clone(),
+            name: id.clone(),
+            arch: "onnx".into(),
+            scale: scale_from_name(&id),
+            license: "unknown".into(),
+            commercial: false,
+            size_bytes: fs::metadata(&dest)?.len(),
+            url: String::new(),
+            sha256: String::new(),
+            tags: Vec::new(),
+            notes: format!("imported from {}", file.display()),
+            format: default_format(),
+            source: default_source(),
+        };
+        let mut overlay = read_overlay(&self.models_dir);
+        overlay.retain(|e| e.id != id);
+        overlay.push(entry.clone());
+        self.entries.retain(|e| e.id != id);
+        self.entries.push(entry);
+        let json = serde_json::json!({ "version": 1, "models": overlay });
+        fs::write(self.models_dir.join(LOCAL_OVERLAY), json.to_string())?;
+        Ok(id)
+    }
+
+    /// Whether `id` was imported by the user (listed in `<models_dir>/local.json`).
+    pub fn is_imported(&self, id: &str) -> bool {
+        read_overlay(&self.models_dir).iter().any(|e| e.id == id)
+    }
+
     /// Removes the local files of catalogue model `id`.
     pub fn delete_local(&self, id: &str) -> Result<()> {
         let path = self.local_path(id);
@@ -488,6 +543,53 @@ mod tests {
         assert_eq!(reg.entries().len(), count);
         let reg = Registry::with_dir(models.path().to_path_buf());
         assert_eq!(reg.entries().len(), count);
+    }
+
+    #[test]
+    fn import_onnx_lists_one_file_as_a_local_model() {
+        let src = tempfile::tempdir().unwrap();
+        let file = src.path().join("conv-2x.onnx");
+        std::fs::write(&file, b"onnx bytes").unwrap();
+        let models = tempfile::tempdir().unwrap();
+        let mut reg = Registry::with_dir(models.path().to_path_buf());
+        assert!(!reg.is_imported("conv-2x"));
+        assert_eq!(reg.import_onnx(&file).unwrap(), "conv-2x");
+        let reg = Registry::with_dir(models.path().to_path_buf());
+        assert!(reg.is_imported("conv-2x"));
+        assert!(!reg.is_imported("realesr-general-x4v3"));
+        let e = reg.get("conv-2x").expect("listed from the overlay");
+        assert_eq!(
+            (e.format.as_str(), e.scale, e.license.as_str(), e.commercial),
+            ("onnx", 2, "unknown", false)
+        );
+        assert_eq!(
+            reg.local_path("conv-2x"),
+            models.path().join("conv-2x.onnx")
+        );
+        assert_eq!(
+            std::fs::read(reg.local_path("conv-2x")).unwrap(),
+            b"onnx bytes"
+        );
+
+        // A file already in place is registered without a copy; importing again replaces.
+        let mut reg = Registry::with_dir(models.path().to_path_buf());
+        let count = reg.entries().len();
+        reg.import_onnx(&models.path().join("conv-2x.onnx"))
+            .unwrap();
+        assert_eq!(reg.entries().len(), count);
+        assert_eq!(
+            Registry::with_dir(models.path().to_path_buf())
+                .entries()
+                .len(),
+            count
+        );
+
+        // A catalogue id is not taken over.
+        let builtin = src.path().join("realesr-general-x4v3.onnx");
+        std::fs::write(&builtin, b"x").unwrap();
+        let err = reg.import_onnx(&builtin).unwrap_err();
+        assert!(matches!(err, ScaleUpError::InvalidOption(_)), "{err:?}");
+        assert!(!models.path().join("realesr-general-x4v3.onnx").exists());
     }
 
     #[test]

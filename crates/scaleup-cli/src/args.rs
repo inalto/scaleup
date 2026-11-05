@@ -74,6 +74,9 @@ pub enum HubCmd {
         /// Use this resource of the model (index shown by `hub info`) instead of the automatic choice
         #[arg(long)]
         resource: Option<usize>,
+        /// Download the PyTorch file and convert it to ONNX with Python (spandrel, torch, onnx)
+        #[arg(long)]
+        convert: bool,
     },
     /// Add a model file downloaded by hand
     Import { id: String, file: PathBuf },
@@ -116,6 +119,13 @@ pub enum ModelsCmd {
     Path { id: String },
     /// Copy a folder of ncnn .param/.bin pairs into the models folder and list them
     Import { dir: PathBuf },
+    /// Convert a PyTorch checkpoint (.pth or .safetensors) to ONNX with Python and list it
+    Convert {
+        file: PathBuf,
+        /// Folder for the ONNX file (default: the models folder)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
