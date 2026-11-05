@@ -348,8 +348,14 @@ pub enum Readiness {
     Unsupported,
 }
 
-/// Whether the architecture of `m` runs from its PyTorch file on this host.
+/// Whether the architecture of `m` runs from its PyTorch file on this host. Some DySample models
+/// are filed under plain `realplksr` (their own architecture is `realplksr-dysample`); the native
+/// builder cannot run their upsampler, so their id or name decides.
 pub(crate) fn is_native(m: &ModelCard, caps: &Capabilities) -> bool {
+    let dysample = |s: &str| s.to_ascii_lowercase().contains("dysample");
+    if m.architecture.eq_ignore_ascii_case("realplksr") && (dysample(&m.id) || dysample(&m.name)) {
+        return false;
+    }
     caps.native_archs
         .iter()
         .any(|a| a.eq_ignore_ascii_case(&m.architecture))
@@ -680,6 +686,41 @@ mod tests {
             installed_at: String::new(),
         });
         assert_eq!(readiness(&onnx_mega, &caps, &inst), Readiness::Installed);
+    }
+
+    #[test]
+    fn dysample_models_filed_under_realplksr_are_not_native() {
+        let caps = Capabilities {
+            onnx: true,
+            native_archs: vec!["realplksr".into()],
+        };
+        let none = Installed::default();
+        let gh_pth = r#"["https://github.com/a/b/releases/download/v1/m.pth"]"#;
+        let gh_onnx = r#"["https://github.com/a/b/releases/download/v1/m.onnx"]"#;
+        let pth = format!(
+            r#"{{"platform":"pytorch","type":"pth","size":1,"sha256":"00","urls":{gh_pth}}}"#
+        );
+        let onnx = format!(
+            r#"{{"platform":"onnx","type":"onnx","size":1,"sha256":"00","urls":{gh_onnx}}}"#
+        );
+
+        let plain = card_with("realplksr", 3, &format!("[{pth}]"));
+        assert!(is_native(&plain, &caps));
+        assert_eq!(readiness(&plain, &caps, &none), Readiness::Downloadable);
+
+        let mut by_id = card_with("RealPLKSR", 3, &format!("[{pth}]"));
+        by_id.id = "4x-Nomos2-realplksr-dysample".into();
+        assert!(!is_native(&by_id, &caps));
+        assert_eq!(readiness(&by_id, &caps, &none), Readiness::NeedsConversion);
+
+        let mut by_name = card_with("realplksr", 3, &format!("[{pth},{onnx}]"));
+        by_name.name = "4x mssim RealPLKSR DySample pretrain".into();
+        assert!(!is_native(&by_name, &caps));
+        assert_eq!(readiness(&by_name, &caps, &none), Readiness::Downloadable);
+        let runnable: Vec<_> = runnable_resources(&by_name, &caps)
+            .map(|r| r.platform.as_deref())
+            .collect();
+        assert_eq!(runnable, [Some("onnx")], "only the ONNX file runs");
     }
 
     #[test]
