@@ -16,6 +16,30 @@ use crate::{Result, ScaleUpError};
 
 const BUILTIN_MANIFEST: &str = include_str!("../../../models/manifest.json");
 
+/// Lowercase hexadecimal spelling of a digest, as written in manifests and `SHA256SUMS` files.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
+/// Sha256 of everything `reader` yields, in lowercase hexadecimal.
+pub(crate) fn sha256_of(reader: &mut impl Read) -> std::io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            return Ok(hex(&hasher.finalize()));
+        }
+        hasher.update(&buf[..n]);
+    }
+}
+
 fn default_format() -> String {
     "onnx".into()
 }
@@ -453,7 +477,7 @@ fn download_verified(
         progress(done, total);
     }
     out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
-    let actual = format!("{:x}", hasher.finalize());
+    let actual = crate::registry::hex(&hasher.finalize());
     if !actual.eq_ignore_ascii_case(expected_sha.trim()) {
         return Err(dl(&format!(
             "sha256 mismatch: expected {expected_sha}, got {actual}"
@@ -855,7 +879,7 @@ mod tests {
     fn download_verifies_sha() {
         const BODY: &[u8] = b"pretend this is an onnx model";
         let base = serve(BODY, 2);
-        let good_sha = format!("{:x}", Sha256::digest(BODY));
+        let good_sha = crate::registry::hex(&Sha256::digest(BODY));
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::from_entries(
             vec![
@@ -884,7 +908,7 @@ mod tests {
         const BODY: &[u8] = b"pretend this is an onnx model";
         let base = serve(BODY, 1);
         let dir = tempfile::tempdir().unwrap();
-        let sha = format!("{:x}", Sha256::digest(BODY));
+        let sha = crate::registry::hex(&Sha256::digest(BODY));
         let reg = Registry::from_entries(
             vec![entry("c", format!("{base}/c.onnx"), sha)],
             dir.path().to_path_buf(),
@@ -902,7 +926,7 @@ mod tests {
         const BODY: &[u8] = b"short";
         let base = serve_claiming(BODY, 1000, 1);
         let dir = tempfile::tempdir().unwrap();
-        let sha = format!("{:x}", Sha256::digest(BODY));
+        let sha = crate::registry::hex(&Sha256::digest(BODY));
         let reg = Registry::from_entries(
             vec![entry("t", format!("{base}/t.onnx"), sha)],
             dir.path().to_path_buf(),

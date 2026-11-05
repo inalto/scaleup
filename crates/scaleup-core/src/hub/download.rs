@@ -541,7 +541,7 @@ fn write_hashed(
         )));
     }
     out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::registry::hex(&hasher.finalize()))
 }
 
 /// Seconds since the epoch as `YYYY-MM-DDTHH:MM:SSZ` (proleptic Gregorian, UTC).
@@ -838,11 +838,9 @@ pub(crate) fn check_import(card: &ModelCard, file: &Path) -> Result<Checked> {
             file.display()
         ))
     })?;
-    let mut hasher = Sha256::new();
     let mut reader =
         File::open(file).map_err(|e| ScaleUpError::Download(format!("{}: {e}", file.display())))?;
-    std::io::copy(&mut reader, &mut hasher)?;
-    let actual = format!("{:x}", hasher.finalize());
+    let actual = crate::registry::sha256_of(&mut reader)?;
     let hash_matches =
         |r: &&Resource| non_empty(&r.sha256).is_some_and(|s| s.eq_ignore_ascii_case(&actual));
     let (resource, verified) = if let Some(r) = card.resources.iter().find(hash_matches) {
@@ -895,7 +893,7 @@ pub(crate) mod testing {
     use std::sync::Mutex;
 
     pub(crate) fn sha(bytes: &[u8]) -> String {
-        format!("{:x}", Sha256::digest(bytes))
+        crate::registry::hex(&Sha256::digest(bytes))
     }
 
     pub(crate) type Request = (String, Vec<(String, String)>);

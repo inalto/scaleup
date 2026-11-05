@@ -10,9 +10,8 @@ name = "scaleup_wgpu"
 
 [dependencies]
 scaleup-core = { path = "../scaleup-core" }
-
 wgpu = "30"
-pollster = "0.4"
+pollster = "1"
 bytemuck = { version = "1", features = ["derive"] }
 half = "2"
 tracing.workspace = true

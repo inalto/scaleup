@@ -705,7 +705,11 @@ pub fn read_back(
     rx.recv()
         .map_err(|e| ScaleUpError::Backend(e.to_string()))?
         .map_err(|e| ScaleUpError::Backend(format!("reading GPU results: {e}")))?;
-    let data = bytemuck::pod_collect_to_vec::<u8, f32>(&slice.get_mapped_range());
+    let view = slice
+        .get_mapped_range()
+        .map_err(|e| ScaleUpError::Backend(format!("reading GPU results: {e}")))?;
+    let data = bytemuck::pod_collect_to_vec::<u8, f32>(&view);
+    drop(view);
     staging.unmap();
     Ok(data)
 }

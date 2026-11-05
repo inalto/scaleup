@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use sha2::{Digest, Sha256};
-
 use super::catalog::{Capabilities, ModelCard, Resource, is_native};
 use super::download::{
     Checked, Fetched, Host, Http, check_id, check_import, classify_url, fetch,
@@ -231,9 +229,7 @@ pub fn convert_to_onnx(
 }
 
 fn file_sha256(path: &Path) -> Result<String> {
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut File::open(path)?, &mut hasher)?;
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::registry::sha256_of(&mut File::open(path)?)?)
 }
 
 fn pytorch_resources(card: &ModelCard) -> impl Iterator<Item = &Resource> {
