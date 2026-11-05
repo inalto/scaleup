@@ -942,6 +942,29 @@ mod tests {
                 .map(|(a, b)| (a - b).abs())
                 .fold(0.0f32, f32::max);
             assert!(worst < 1e-3, "{}: max abs diff {worst}", info.name);
+
+            // Mish far into both tails: a tanh computed through exp turns NaN on some compilers.
+            let mut tails = rng.tensor(1, 4, 8);
+            tails.data[..8].copy_from_slice(&[-1e4, -100.0, -20.0, 0.0, 20.0, 89.0, 100.0, 1e4]);
+            let ms = upload(&device, &queue, &tails);
+            let md = Buf {
+                buffer: create_tensor_buffer(&device, tensor_bytes(1, 4, 8)),
+                c: 1,
+                h: 4,
+                w: 8,
+            };
+            let mut rec = Recorder::new(&kernels, &device, &queue);
+            kernels.smooth(&mut rec, &ms, &md, Smooth::Mish);
+            rec.flush();
+            let got = read_back(&device, &queue, &md.buffer, tails.data.len()).unwrap();
+            for ((a, b), x) in got.iter().zip(&cpu_ref::mish(&tails).data).zip(&tails.data) {
+                assert!(
+                    (a - b).abs() <= 1e-4 * b.abs().max(1.0),
+                    "{} {:?}: mish({x}) = {a}, want {b}",
+                    info.name,
+                    info.backend
+                );
+            }
             println!(
                 "{} {:?}: ok, tiled {}",
                 info.name,

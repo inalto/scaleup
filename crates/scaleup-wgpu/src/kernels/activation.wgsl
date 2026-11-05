@@ -31,10 +31,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     if (p.mode == 4u) {
-        // ln(1 + exp(v)) is v to f32 precision from 20 up, where exp would overflow further on.
-        var softplus = v;
-        if (v < 20.0) { softplus = log(1.0 + exp(v)); }
-        dst[i] = v * tanh(softplus);
+        // ln(1 + exp(v)) is v to f32 precision from 20 up; exp only ever sees up to 20, so it
+        // cannot overflow even where a compiler evaluates both sides of the select. tanh is 1 in
+        // f32 from 20 up, and FXC (DX12) computes it through exp, which turns NaN for large inputs.
+        let softplus = select(log(1.0 + exp(min(v, 20.0))), v, v >= 20.0);
+        dst[i] = v * tanh(min(softplus, 20.0));
         return;
     }
     var slope = p.slope;
