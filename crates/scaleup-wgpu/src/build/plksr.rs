@@ -118,6 +118,7 @@ mod tests {
             ("tiny_realplksr_gn_ea", 7, true, false),
             ("tiny_realplksr_ln", 5, false, true),
             ("tiny_realplksr_ln_ea", 17, true, true),
+            ("tiny_realplksr_gn", 9, false, false),
         ] {
             let sd = StateDict::load(&fixture(&format!("{name}.pth"))).unwrap();
             let spec = detect(&sd).unwrap();

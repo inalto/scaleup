@@ -8,9 +8,9 @@
   and int64 tensors and non-tensor values, to check strides, offsets and dtype conversions.
 - tiny_span.pth: SPAN (feature_channels=4, x4, norm), saved before any forward pass, so its
   eval_conv tensors are stale, as in real checkpoints (eval mode recomputes them).
-- tiny_realplksr_{gn_ea,ln,ln_ea}.pth: RealPLKSR (dim=8, n_blocks=2, x2, split_ratio 0.25) with
+- tiny_realplksr_{gn_ea,ln,ln_ea,gn}.pth: RealPLKSR (dim=8, n_blocks=2, x2, split_ratio 0.25) with
   group norm and attention (kernel 7), layer norm without attention (kernel 5), layer norm and
-  attention (kernel 17). Every parameter is re-drawn, so no block is close to the identity.
+  attention (kernel 17), group norm without attention (kernel 9). Every parameter is re-drawn, so no block is close to the identity.
 - {name}_io.safetensors next to each of these: a seeded input (`input`, [3, 6, 7], 0..1) and the
   output (`output`) spandrel's module computes for it in eval mode.
 
@@ -122,6 +122,7 @@ def main() -> None:
     write_with_io(realplksr_model(3, 7, True, False), "tiny_realplksr_gn_ea", seed=4)
     write_with_io(realplksr_model(5, 5, False, True), "tiny_realplksr_ln", seed=6)
     write_with_io(realplksr_model(7, 17, True, True), "tiny_realplksr_ln_ea", seed=8)
+    write_with_io(realplksr_model(9, 9, False, False), "tiny_realplksr_gn", seed=10)
 
 
 if __name__ == "__main__":
