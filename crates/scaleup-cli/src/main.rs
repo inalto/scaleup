@@ -1,5 +1,6 @@
 mod args;
 mod devices;
+mod hub;
 mod models;
 mod report;
 mod upscale;
@@ -69,6 +70,7 @@ fn main() {
         None => unreachable!("a missing subcommand was resolved above"),
         Some(Cmd::Upscale(a)) => upscale::run_upscale(a, &rep, &cancel),
         Some(Cmd::Models { cmd }) => models::run_models(cmd, &cancel),
+        Some(Cmd::Hub { cmd }) => hub::run_hub(cmd),
         Some(Cmd::Devices) => devices::run_devices(),
     };
     match result {

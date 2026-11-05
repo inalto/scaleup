@@ -279,6 +279,18 @@ pub struct Capabilities {
     pub native_archs: Vec<String>,
 }
 
+impl Capabilities {
+    /// This process: ONNX is built in; native architectures come from the registered extra backend.
+    pub fn current() -> Self {
+        Self {
+            onnx: true,
+            native_archs: crate::backend::extra_backend()
+                .map(|b| (b.native_archs)())
+                .unwrap_or_default(),
+        }
+    }
+}
+
 /// Criteria for [`Catalog::filter`]; the default matches every model.
 #[derive(Default, Clone, Debug)]
 pub struct Filter {
@@ -446,6 +458,16 @@ mod tests {
                 "architecture":"{arch}","scale":2,"inputChannels":{in_ch},"outputChannels":3,
                 "resources":{resources}}}"#
         ))
+    }
+
+    #[test]
+    fn current_capabilities_have_onnx_and_the_native_list_of_the_backend() {
+        let caps = Capabilities::current();
+        assert!(caps.onnx);
+        match crate::backend::extra_backend() {
+            Some(b) => assert_eq!(caps.native_archs, (b.native_archs)()),
+            None => assert!(caps.native_archs.is_empty()),
+        }
     }
 
     #[test]

@@ -17,7 +17,7 @@
 //! | has preview images | +1 |
 //! | dated 2024 or later | +0.5 |
 //!
-//! Excluded: goal Restore with a scale other than 1; a scale different from the asked one; readiness
+//! Excluded: goal Restore with a scale other than 1, goal Upscale with scale 1; a scale different from the asked one; readiness
 //! Unsupported; NonCommercial or Unknown licence when `commercial_only`. Ties go to the newer model.
 
 use super::catalog::{Capabilities, Catalog, ModelCard, Readiness, readiness, speed_tier};
@@ -186,7 +186,9 @@ fn has_tag(card: &ModelCard, tag: &str) -> bool {
 
 /// Scores one model; `None` when the ask rules it out.
 fn score(card: &ModelCard, ask: &Ask) -> Option<Recommendation> {
-    if ask.goal == Goal::Restore && card.scale != 1 {
+    if (ask.goal == Goal::Restore && card.scale != 1)
+        || (ask.goal == Goal::Upscale && card.scale == 1)
+    {
         return None;
     }
     if ask.scale.is_some_and(|s| s != card.scale) {
@@ -359,6 +361,17 @@ mod tests {
         let got = recommend(&cat, &a, 100);
         assert!(!got.is_empty(), "the sample has 1x models");
         assert!(got.iter().all(|r| r.card.scale == 1));
+    }
+
+    #[test]
+    fn upscale_goal_excludes_1x() {
+        let cat = Catalog::parse(SAMPLE).unwrap();
+        let mut a = ask();
+        a.goal = Goal::Upscale;
+        a.caps.native_archs = vec!["esrgan".into(), "compact".into(), "span".into()];
+        let got = recommend(&cat, &a, 100);
+        assert!(!got.is_empty(), "the sample has upscalers");
+        assert!(got.iter().all(|r| r.card.scale > 1));
     }
 
     #[test]

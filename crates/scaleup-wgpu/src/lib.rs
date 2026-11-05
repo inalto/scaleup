@@ -27,6 +27,7 @@ pub fn register() {
                 .filter(|d| d.kind.is_gpu())
                 .collect()
         },
+        native_archs: Vec::new,
     });
 }
 

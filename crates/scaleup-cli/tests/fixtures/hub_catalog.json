@@ -1,0 +1,547 @@
+{
+  "1x-BroadcastToStudio-SPAN": {
+    "name": "BroadcastToStudio_SPAN",
+    "author": "kim2091",
+    "license": "CC-BY-NC-SA-4.0",
+    "tags": [
+      "cartoon",
+      "restoration"
+    ],
+    "description": "This is SaurusX's original description:\nImprovement of low-quality cartoons from broadcast sources. Will greatly increase the visual quality of bad broadcast tape sources of '80s and '90s cartoons (e.g. Garfield and Friends, Heathcliff, DuckTales, etc). Directly addresses chroma blur, dot crawl, and rainbowing. You're highly advised to take care of haloing beforehand in your favorite video editor as the model will not fix it and may make existing halos more noticeable.\n\n-------\n\nSadly this model has some intense artifacts. Thankfully the SPAN re-train reduced these a bit, but they're still problematic. This was just a quick test of SPAN's capabilities. This was trained only to ~66k iterations, compared to the 480k of the original.",
+    "date": "2023-12-14",
+    "architecture": "span",
+    "size": null,
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 8938330,
+        "sha256": "77e2656651cf3e2558a7dd8756b47013f5dc20dc24c310801aaabe96cc9ed6ab",
+        "urls": [
+          "https://mega.nz/folder/3JIHUbpT#bSsO0RK9MOzjA8dEbl1kbw"
+        ]
+      },
+      {
+        "platform": "onnx",
+        "type": "onnx",
+        "size": 827353,
+        "sha256": "3d2cc3524d693957b9ea309ee9f20801c53c67ff6ade503cc55f7cbed80ae758",
+        "urls": [
+          "https://mega.nz/folder/3JIHUbpT#bSsO0RK9MOzjA8dEbl1kbw"
+        ]
+      }
+    ],
+    "trainingIterations": 66000,
+    "trainingOTF": false,
+    "dataset": "SaurusX's BroadcastToStudio dataset",
+    "datasetSize": 10000,
+    "pretrainedModelG": "1x-span-anime-pretrain",
+    "images": [
+      {
+        "type": "standalone",
+        "caption": "1",
+        "url": "https://images2.imgbox.com/cf/bd/lq4EWYPp_o.png",
+        "thumbnail": "/thumbs/small/8b42fb3bf51f730e764c046e.jpg"
+      },
+      {
+        "type": "standalone",
+        "caption": "2",
+        "url": "https://images2.imgbox.com/ba/81/OepEK0UZ_o.png",
+        "thumbnail": "/thumbs/small/ab68bf920b3fd00313b24a9e.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "standalone",
+      "url": "/thumbs/d5ab7a8841cb834eb2e2a27d.jpg"
+    }
+  },
+  "1x-DeH264-realplksr": {
+    "name": "1xDeH264_realplksr",
+    "author": "helaman",
+    "license": "CC-BY-4.0",
+    "tags": [
+      "compression-removal",
+      "photo",
+      "restoration"
+    ],
+    "description": "[Link to Github Release](https://github.com/Phhofm/models/releases/tag/1xDeH264_realplksr)\n\n# 1xDeH264_realplksr  \nScale: 1  \nArchitecture: [RealPLKSR](https://github.com/muslll/neosr/?tab=readme-ov-file#supported-archs)  \nArchitecture Option: [realplksr](https://github.com/muslll/neosr/blob/master/neosr/archs/realplksr_arch.py)  \n\nAuthor: Philip Hofmann  \nLicense: CC-BY-0.4  \nPurpose: Restoration, H264  \nSubject: Photography  \nInput Type: Images  \nRelease Date: 08.08.2024  \n\nDataset: [nomosv2](https://github.com/muslll/neosr/?tab=readme-ov-file#-datasets)  \nDataset Size: 6000  \nOTF (on the fly augmentations): No  \nPretrained Model: [1xDeJPG_realplksr_otf](https://github.com/Phhofm/models/releases/tag/1xDeJPG_realplksr_otf)  \nIterations: 210'000  \nBatch Size: 8  \nPatch Size: 64  \n\nDescription:   \nA 1x de h264 model to remove h264 compression.  \n\nShowcase:  \n[Slowpics](https://slow.pics/c/71ulMz8P?canvas-mode=fit-height)  \n[Imgsli](https://imgsli.com/Mjg1NTQy)",
+    "date": "2024-08-08",
+    "architecture": "realplksr",
+    "size": null,
+    "scale": 1,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 29559554,
+        "sha256": "92829754924fbcf944acf5d09e9cfd1cb3d1f2ee67a208a9921c1c0e4d74d6e7",
+        "urls": [
+          "https://github.com/Phhofm/models/releases/download/1xDeH264_realplksr/1xDeH264_realplksr.pth"
+        ]
+      },
+      {
+        "platform": "pytorch",
+        "type": "safetensors",
+        "size": 29486580,
+        "sha256": "91f054af6308e37b81c261ecf775a58be5fa1d37a816709db5d0fea6fceb24b8",
+        "urls": [
+          "https://github.com/Phhofm/models/releases/download/1xDeH264_realplksr/1xDeH264_realplksr.safetensors"
+        ]
+      },
+      {
+        "platform": "onnx",
+        "type": "onnx",
+        "size": 29874321,
+        "sha256": "0fc49973ded9372527685cdb966f7a214c46748e43e76671e649e06a2beee190",
+        "urls": [
+          "https://github.com/Phhofm/models/releases/download/1xDeH264_realplksr/1xDeH264_realplksr_fp32.onnx"
+        ]
+      }
+    ],
+    "trainingIterations": 210000,
+    "trainingBatchSize": 8,
+    "trainingHRSize": 64,
+    "trainingOTF": false,
+    "dataset": "Nomosv2",
+    "datasetSize": 6000,
+    "pretrainedModelG": "1x-DeJPG-realplksr-otf",
+    "images": [
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/W7XnAQyq.webp",
+        "SR": "https://i.slow.pics/oApzfWL5.webp",
+        "thumbnail": "/thumbs/small/61529f1233e113efa42e0c97.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/7I6VglYj.webp",
+        "SR": "https://i.slow.pics/nirdkNCy.webp",
+        "thumbnail": "/thumbs/small/a17f53145961e0d8cea8b20a.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/DStoOqpl.webp",
+        "SR": "https://i.slow.pics/hFYBKe4f.webp",
+        "thumbnail": "/thumbs/small/98351dddb0424f581d8b2928.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/p2gWcS3V.webp",
+        "SR": "https://i.slow.pics/UnK3wpJH.webp",
+        "thumbnail": "/thumbs/small/87ce03e5eaffeb59c7889131.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/28540c5eccb8dc9a82a8e0f6.jpg",
+      "SR": "/thumbs/f6c44867bed965db8da71cb3.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "1x-MangaJPEGHQ": {
+    "name": "MangaJPEGHQ",
+    "author": "bunzero",
+    "license": "CC-BY-NC-SA-4.0",
+    "tags": [
+      "compression-removal",
+      "jpeg",
+      "manga",
+      "restoration"
+    ],
+    "description": "Remove JPEG artifacts from manga without destroying screentone and other details. For 80-50 JPEG Quality",
+    "date": "2021-06-17",
+    "architecture": "esrgan",
+    "size": [
+      "32nf",
+      "12nb"
+    ],
+    "scale": 1,
+    "inputChannels": 1,
+    "outputChannels": 1,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 20092251,
+        "sha256": "e2898bfba74083025a2bd2326b6c159031b882a890bd1cc30fd6910cda2ce4ee",
+        "urls": [
+          "https://objectstorage.us-phoenix-1.oraclecloud.com/n/ax6ygfvpvzka/b/open-modeldb-files/o/1x-MangaJPEGHQ.pth",
+          "https://mega.nz/folder/fAg21TRI#kBk0synXgNqTGaXiW6nSZA"
+        ]
+      }
+    ],
+    "trainingEpochs": 23,
+    "trainingBatchSize": 5,
+    "trainingHRSize": 64,
+    "dataset": "Expanded self curated custom manga dataset",
+    "images": []
+  },
+  "2x-MLP-StarSample-V1-0": {
+    "name": "StarSample V1.0",
+    "author": "derpy",
+    "license": "CC0-1.0",
+    "tags": [
+      "cartoon",
+      "compression-removal",
+      "general-upscaler",
+      "restoration"
+    ],
+    "description": "This is a model for the restoration of My Little Pony: Friendship is Magic, however it also works decently well on all similar art. \n\nIt was trained in 2x on ground truth 3840x2160 HRs and 1920x1080 LRs of varying compression, so it is able to upscale from 1080p to 2160p, where its detail retention is great, however it may create noticeable artifacting if looked at closely, like areas of randomly coloured pixels along edges. In 1x or 1.5x (2x upscaled and then downscaled back down) it performs extremely well, almost perfectly in fact, in correcting colours, removing compression, and crisping up lines - and this is the way the model is intended to be used (hence the acronym of its name being \"SS\", or \"supersampling\").\n\n**[Github Release](https://github.com/Derpiesaurus/models/releases/tag/v1.0)**   \n**Showcase:** https://slow.pics/s/1ixqCSjy",
+    "date": "2024-05-22",
+    "architecture": "compact",
+    "size": [
+      "64nf",
+      "16nc"
+    ],
+    "scale": 2,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 1215294,
+        "sha256": "106ef781b08e33bb794c59bdb2c7a528b4f4106f516235115949f2ac03f45ba2",
+        "urls": [
+          "https://github.com/Derpiesaurus/models/releases/download/v1.0/2x.StarSample.V1.0.pth"
+        ]
+      },
+      {
+        "platform": "pytorch",
+        "type": "safetensors",
+        "size": 1205456,
+        "sha256": "a83685aa15674a955ed2eec9cdffe2e1a591967f581d6c356a63f1cf4ae07a49",
+        "urls": [
+          "https://github.com/Derpiesaurus/models/releases/download/v1.0/2x.StarSample.V1.0.safetensors"
+        ]
+      },
+      {
+        "platform": "onnx",
+        "type": "onnx",
+        "size": 2412381,
+        "sha256": "b4e6caadbbc6305e31686378821b6ba02a6d9b92f3e8aa29995594f7676f018b",
+        "urls": [
+          "https://github.com/Derpiesaurus/models/releases/download/v1.0/2x.StarSample.V1.0.-.FP32.OPSET17.onnx"
+        ]
+      }
+    ],
+    "trainingIterations": 230000,
+    "trainingEpochs": 2058,
+    "trainingBatchSize": 28,
+    "trainingHRSize": 256,
+    "trainingOTF": false,
+    "dataset": "A mix of 4K GT show frames and background-only images.",
+    "datasetSize": 2567,
+    "pretrainedModelG": "2x-Compact-Pretrain",
+    "images": [
+      {
+        "type": "paired",
+        "caption": "1x Example 1",
+        "LR": "https://i.slow.pics/ybI7gjob.png",
+        "SR": "https://i.slow.pics/y3ZXMgNB.png",
+        "thumbnail": "/thumbs/small/1065b7dbaedfb13a4715dcce.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 2",
+        "LR": "https://i.slow.pics/yLqT8WfS.png",
+        "SR": "https://i.slow.pics/LvaT8PZH.png",
+        "thumbnail": "/thumbs/small/c40c0cc0280a4e649380ed41.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 3",
+        "LR": "https://i.slow.pics/nX12VuVR.png",
+        "SR": "https://i.slow.pics/94GEHzCS.png",
+        "thumbnail": "/thumbs/small/5f44e9f5c1d3caec7ba2b724.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 4",
+        "LR": "https://i.slow.pics/9n5Rkdrg.png",
+        "SR": "https://i.slow.pics/OxedRFur.png",
+        "thumbnail": "/thumbs/small/90af869642808cbd77ef3064.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 5",
+        "LR": "https://i.slow.pics/PeyCu2Qt.png",
+        "SR": "https://i.slow.pics/vim2aDTH.png",
+        "thumbnail": "/thumbs/small/f762624860ae2a4fc425524b.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 6",
+        "LR": "https://i.slow.pics/quoAHJZq.png",
+        "SR": "https://i.slow.pics/ByMKyWsc.png",
+        "thumbnail": "/thumbs/small/bc73fcbbd29fd555c212d646.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 7",
+        "LR": "https://i.slow.pics/p9BPSyR4.png",
+        "SR": "https://i.slow.pics/vYMqhFzg.png",
+        "thumbnail": "/thumbs/small/a0ba5902adc38e574b62b99d.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 8",
+        "LR": "https://i.slow.pics/75JM3CJm.png",
+        "SR": "https://i.slow.pics/2bJP6xEW.png",
+        "thumbnail": "/thumbs/small/3daa7e319e6eb458618e52f6.jpg"
+      },
+      {
+        "type": "paired",
+        "caption": "1x Example 9",
+        "LR": "https://i.slow.pics/CIF0ulQP.png",
+        "SR": "https://i.slow.pics/uXkIKtxT.png",
+        "thumbnail": "/thumbs/small/46a3af26df02bea0617c465e.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/38da27a8dc4c063514840213.jpg",
+      "SR": "/thumbs/063faadac8d2fe188ae2d98a.jpg",
+      "LRSize": {
+        "width": 366,
+        "height": 296
+      },
+      "SRSize": {
+        "width": 366,
+        "height": 296
+      }
+    }
+  },
+  "2x-StarSample-V2-HQ": {
+    "name": "StarSample V2.0 HQ",
+    "author": "derpy",
+    "license": "CC-BY-NC-SA-4.0",
+    "tags": [
+      "cartoon",
+      "compression-removal",
+      "general-upscaler",
+      "restoration"
+    ],
+    "description": "This is a model for the restoration of My Little Pony: Friendship is Magic, however it also works decently well on similar art.\n\nV2.0 greatly improves upon V1.0's dataset in every way, taking models from (realistically) only being viable at 1x, to now being far more competent at 2x, more so for the models trained with heavier architectures in this release. \n\nImprovements come as a significantly better understanding of compressions, and partly architecturally/partly dataset improved handling of details and overall understanding of content, leading to less artifacting and \"AI smudging\". The dataset takes from a larger variety of sources, despite being smaller than V1.0 (when tiled V1.0 would be 71,876 pairs), due to being filtered for IQA scores and detail density. It also contains many thousands of image pairs manually created to cover areas where there wasn't sufficient information.\n\nThis release also includes \"NS\", or \"No Scale\" models, which are a better representation of my initial goal with StarSample, and (StarSample V2.0 NS) should provide great 1x restoration results with little apparent artifacting, even where the heavier 2x models can fail due to having to increase resolution.\n\n- 2x StarSample V2.0 HQ — _(HAT-L)_ — **THIS MODEL**\n- 2x StarSample V2.0 — _(ESRGAN)_\n- 2x StarSample V2.0 Lite — _(SPAN-S)_\n- 1x StarSample V2.0 NS — _(ESRGAN)_\n- 1x StarSample V2.0 Lite NS — _(SPAN-S)_\n\n[Github Release](https://github.com/Derpiesaurus/models/releases/tag/v2.0_HQ)",
+    "date": "2026-02-12",
+    "architecture": "hat",
+    "size": [
+      "64nf",
+      "180dim"
+    ],
+    "scale": 2,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "safetensors",
+        "size": 164708980,
+        "sha256": "77115df5bb80600a32a762e321e26f2a0114142d00ed060a7e88a5be269d5b05",
+        "urls": [
+          "https://github.com/Derpiesaurus/models/releases/download/v2.0_HQ/2x_StarSample_V2.0_HQ.safetensors"
+        ]
+      },
+      {
+        "platform": "onnx",
+        "type": "onnx",
+        "size": 318442478,
+        "sha256": "b10cb249b75d55ed6ad0800ef825e750940582a72e219a2b2b781789381615e3",
+        "urls": [
+          "https://github.com/Derpiesaurus/models/releases/download/v2.0_HQ/2x_StarSample_V2.0_HQ-fp32-opset17.onnx"
+        ]
+      }
+    ],
+    "trainingIterations": 235000,
+    "trainingEpochs": 17,
+    "trainingBatchSize": 4,
+    "trainingHRSize": 256,
+    "trainingOTF": false,
+    "dataset": "HR = 4K GT uncompressed MLP: FiM episode frames + relevant uncompressed HR pairs to LR datasets /// LR = 1080p MLP: FiM episode frames sourced from YouTube in 3 different bitrates + custom MLP: FiM focal blur dataset + custom MLP: FiM GIF compression dataset in 3 different compression levels + custom MLP: FiM difficult details and other edge cases dataset + custom artificially-degraded MLP: FiM background dataset",
+    "datasetSize": 53560,
+    "images": [
+      {
+        "type": "paired",
+        "caption": "1 — 2x Example",
+        "LR": "https://i.slow.pics/IKXCPxRV.webp",
+        "SR": "https://i.slow.pics/cHfd9R4G.webp"
+      },
+      {
+        "type": "paired",
+        "caption": "2 — 2x Example",
+        "LR": "https://i.slow.pics/rlNFQRvB.webp",
+        "SR": "https://i.slow.pics/h2Bn7JqX.webp"
+      },
+      {
+        "type": "paired",
+        "caption": "3 — 2x Example",
+        "LR": "https://i.slow.pics/dg1MZfbi.webp",
+        "SR": "https://i.slow.pics/W0FnFNHq.webp"
+      },
+      {
+        "type": "paired",
+        "caption": "4 — 2x Example",
+        "LR": "https://i.slow.pics/1UGqZyce.webp",
+        "SR": "https://i.slow.pics/egGU6NOO.webp"
+      },
+      {
+        "type": "paired",
+        "caption": "5 — 2x Example",
+        "LR": "https://i.slow.pics/18h3dSQA.webp",
+        "SR": "https://i.slow.pics/PGDlM6Zr.webp"
+      },
+      {
+        "type": "paired",
+        "caption": "6 — 2x Example",
+        "LR": "https://i.slow.pics/uVcHz2Qh.webp",
+        "SR": "https://i.slow.pics/ZyjAACpb.webp"
+      },
+      {
+        "type": "paired",
+        "caption": "7 — 2x Example",
+        "LR": "https://i.slow.pics/Agz0NTq2.webp",
+        "SR": "https://i.slow.pics/vYuzS96I.webp"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "https://i.slow.pics/IKXCPxRV.webp",
+      "SR": "https://i.slow.pics/cHfd9R4G.webp"
+    }
+  },
+  "4x-DRCT-L": {
+    "name": "DRCT-L_X4",
+    "author": "ming053l",
+    "license": "MIT",
+    "tags": [
+      "pretrained",
+      "research"
+    ],
+    "description": "Official 4x drct-l Pretrain model, as released on their [DRCT Github Page](https://github.com/ming053l/DRCT?tab=readme-ov-file)",
+    "date": "2024-06-02",
+    "architecture": "drct",
+    "size": null,
+    "scale": 4,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 485570697,
+        "sha256": "a99044c0275699d1a296ae21b8f322fa8c65d7b9be2213ee2a3dcc280ab8d64b",
+        "urls": [
+          "https://drive.google.com/file/d/1bVxvA6QFbne2se0CQJ-jyHFy94UOi3h5/view?usp=drive_link"
+        ]
+      }
+    ],
+    "images": []
+  },
+  "4x-HFA2k-VCISR-GRLGAN-ep200": {
+    "name": "HFA2k VCISR GRLGAN ep200",
+    "author": "helaman",
+    "license": "CC-BY-4.0",
+    "tags": [
+      "anime",
+      "cartoon",
+      "compression-removal",
+      "restoration"
+    ],
+    "description": "Purpose: 4x anime upscaler handling video compression artifacts, trained for 200 epochs\n\n4x anime upscaler handling video compression artifacts since trained with otf degradations for \"mpeg2video\", \"libxvid\", \"libx264\", \"libx265\" with crf 20-32, mpeg bitrate 3800-5800 (together with the standard Real-ESRGAN otf pipeline). A faster arch using this otf degradation pipeline would be great for handling video compression artifacts. Since this one is a GRL model and therefore slow, [as noted by the dev](https://github.com/Kiteretsu77/VCISR-official/issues/3) maybe more for research purposes (or more for single images/screenshots). Trained using [VCISR](https://github.com/Kiteretsu77/VCISR-official) for 200 epochs.  \n\n\"This is epoch 200 and the start iteration is 85959 with learning rate 2.5e-05\"  \n\nSlow Pics examples:  \n[h264_crf28](https://slow.pics/c/fqOnxXep)  \n[ludvae1](https://slow.pics/c/OcukRy7d)  \n[ludvae2](https://slow.pics/c/FI33mX4F)",
+    "date": "2024-01-04",
+    "architecture": "grl",
+    "size": null,
+    "scale": 4,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "pytorch",
+        "type": "pth",
+        "size": 53125413,
+        "sha256": "28a7e4dc6acfefaa132abd43145226848ba91c1f14cfc0d448b18b2e0ebd36c5",
+        "urls": [
+          "https://drive.google.com/file/d/1h_btpw-rWh482iGZQQgtRkiEbKZibOdo/view?usp=sharing"
+        ]
+      }
+    ],
+    "trainingIterations": 85959,
+    "trainingEpochs": 200,
+    "trainingBatchSize": 6,
+    "trainingHRSize": 128,
+    "trainingOTF": true,
+    "dataset": "hfa2k",
+    "datasetSize": 2568,
+    "images": [
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/IV3P0o7h.png",
+        "SR": "https://i.slow.pics/MvlQBy9p.png",
+        "thumbnail": "/thumbs/small/bca19c51e54b9bb0b8e20cbb.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/ZTqKlXz1.png",
+        "SR": "https://i.slow.pics/sCbeV1B1.png",
+        "thumbnail": "/thumbs/small/48cade5b8649117644f29f66.jpg"
+      },
+      {
+        "type": "paired",
+        "LR": "https://i.slow.pics/SAnZ2Pna.png",
+        "SR": "https://i.slow.pics/qjILk4Bn.png",
+        "thumbnail": "/thumbs/small/9e35dd359405ee9221c8cc66.jpg"
+      }
+    ],
+    "thumbnail": {
+      "type": "paired",
+      "LR": "/thumbs/9d91d382fbfd9c54e48995d1.png",
+      "SR": "/thumbs/0edfb8ba2a4bd4c9895e714a.jpg",
+      "LRSize": {
+        "width": 92,
+        "height": 74
+      },
+      "SRSize": {
+        "width": 368,
+        "height": 296
+      }
+    }
+  },
+  "test-nearest2x": {
+    "name": "Test nearest 2x",
+    "author": "scaleup tests",
+    "license": "MIT",
+    "tags": [
+      "test"
+    ],
+    "description": "Synthetic card for the CLI tests: the nearest-neighbour fixture model.",
+    "date": "2026-01-01",
+    "architecture": "compact",
+    "scale": 2,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "onnx",
+        "type": "onnx",
+        "size": 267,
+        "sha256": "5ab9a633273dd61a59a49a289c33e15da8f3f4d8e0bb81d068b562e54964a0ff",
+        "urls": [
+          "https://mega.nz/file/test-nearest2x"
+        ]
+      }
+    ],
+    "images": []
+  }
+}

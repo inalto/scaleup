@@ -5,6 +5,7 @@
 ```
 scaleup upscale -i <file|dir> -o <file|dir> [options]     (or bare: scaleup -i .. -o ..)
 scaleup models list | info <id> | download <id> | path <id>
+scaleup hub search | info | install | import | remove | recommend | refresh
 scaleup devices
 scaleup --version
 ```
@@ -34,6 +35,25 @@ scaleup --version
 
 Folder mode skips files that are not images and reports `N done, M failed, K skipped`. A corrupt file is
 reported and does not stop the run; the exit code is non-zero only if every file failed.
+
+## OpenModelDB
+
+Browse [OpenModelDB](https://openmodeldb.info) and use its models like any other. The catalogue is cached for
+24 hours in `<models dir>/hub/`. Installed models appear in `scaleup models list` and work with `-n <id>`.
+
+| Command | Example |
+|---|---|
+| `hub search [text]` with `--scale`, `--tag`, `--arch`, `--commercial`, `--runnable`, `--refresh`, `--limit` | `scaleup hub search anime --scale 2 --commercial` |
+| `hub info <id>`: license in words, files, hosts, readiness | `scaleup hub info 2x-MLP-StarSample-V1-0` |
+| `hub install <id> [--resource N]` | `scaleup hub install 2x-MLP-StarSample-V1-0` |
+| `hub import <id> <file>`: a file downloaded by hand (checked against the catalogue's sha256) | `scaleup hub import 1x-DeH264-realplksr model.onnx` |
+| `hub remove <id>` | `scaleup hub remove 2x-MLP-StarSample-V1-0` |
+| `hub recommend` with `--content`, `--goal`, `--scale`, `--speed`, `--commercial`, `-n` | `scaleup hub recommend --content anime --speed fastest` |
+| `hub refresh`: fetch the catalogue again | `scaleup hub refresh` |
+
+The READY column is `installed`, `downloadable`, `manual` (the files are on a host you open in a browser; the
+error of `hub install` says which URL, file name and sha256, then use `hub import`), `needs-conversion` or
+`unsupported`. A file the catalogue lists without a sha256 installs with a warning.
 
 ## Exit codes
 
