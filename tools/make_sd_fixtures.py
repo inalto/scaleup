@@ -6,8 +6,15 @@
 - tiny_compact_legacy.pth: the same Compact state dict in the pre-1.6 (non-zip) format.
 - tiny_views.pth: tensors that are views (transposed, offset slice) of one storage, f16/bf16/f64
   and int64 tensors and non-tensor values, to check strides, offsets and dtype conversions.
+- tiny_span.pth: SPAN (feature_channels=4, x4, norm), saved before any forward pass, so its
+  eval_conv tensors are stale, as in real checkpoints (eval mode recomputes them).
+- tiny_realplksr_{gn_ea,ln,ln_ea}.pth: RealPLKSR (dim=8, n_blocks=2, x2, split_ratio 0.25) with
+  group norm and attention (kernel 7), layer norm without attention (kernel 5), layer norm and
+  attention (kernel 17). Every parameter is re-drawn, so no block is close to the identity.
+- {name}_io.safetensors next to each of these: a seeded input (`input`, [3, 6, 7], 0..1) and the
+  output (`output`) spandrel's module computes for it in eval mode.
 
-Key names come from spandrel's ESRGAN and Compact architectures.
+Key names come from spandrel's ESRGAN, Compact, SPAN and RealPLKSR architectures.
 Usage (from the workspace root): tools/.venv/Scripts/python.exe -I tools/make_sd_fixtures.py
 """
 
@@ -17,7 +24,10 @@ from pathlib import Path
 
 import torch
 from spandrel.architectures.Compact.__arch.SRVGG import SRVGGNetCompact
+from safetensors.torch import save_file
 from spandrel.architectures.ESRGAN.__arch.RRDB import RRDBNet
+from spandrel.architectures.PLKSR.__arch.RealPLKSR import RealPLKSR
+from spandrel.architectures.SPAN.__arch.span import SPAN
 
 OUT = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "sd"
 GROW = 4  # spandrel builds gc=32; 4 keeps the file small, shapes follow the same rule
@@ -37,6 +47,47 @@ def esrgan_state_dict() -> OrderedDict:
             shape = tuple(t.shape)
         sd[key] = torch.randn(shape) * 0.1
     return sd
+
+
+def write_with_io(model: torch.nn.Module, name: str, seed: int) -> None:
+    """Saves `model`'s state dict as `{name}.pth`, then runs the model in eval mode on a seeded
+    input and saves both as `{name}_io.safetensors`."""
+    torch.save({k: v.clone() for k, v in model.state_dict().items()}, OUT / f"{name}.pth")
+    torch.manual_seed(seed)
+    x = torch.rand(1, 3, 6, 7)
+    model.eval()
+    with torch.no_grad():
+        y = model(x)
+    io = {"input": x[0].contiguous(), "output": y[0].contiguous()}
+    save_file(io, OUT / f"{name}_io.safetensors")
+
+
+def span_model() -> SPAN:
+    torch.manual_seed(1)
+    model = SPAN(num_in_ch=3, num_out_ch=3, feature_channels=4, upscale=4)
+    # The input is scaled by 255: keep the output near 1 so an absolute tolerance means something.
+    with torch.no_grad():
+        model.upsampler[0].weight.mul_(0.05)
+        model.upsampler[0].bias.mul_(0.05)
+    return model
+
+
+def realplksr_model(seed: int, kernel: int, use_ea: bool, layer_norm: bool) -> RealPLKSR:
+    torch.manual_seed(seed)
+    model = RealPLKSR(
+        dim=8,
+        n_blocks=2,
+        upscaling_factor=2,
+        kernel_size=kernel,
+        split_ratio=0.25,
+        use_ea=use_ea,
+        layer_norm=layer_norm,
+    )
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            base = 1.0 if name.endswith("norm.weight") else 0.0
+            p.copy_(base + 0.2 * torch.randn_like(p))
+    return model
 
 
 def main() -> None:
@@ -66,6 +117,11 @@ def main() -> None:
         "meta": {"lr": 0.5, "flags": [True, None]},
     }
     torch.save(views, OUT / "tiny_views.pth")
+
+    write_with_io(span_model(), "tiny_span", seed=2)
+    write_with_io(realplksr_model(3, 7, True, False), "tiny_realplksr_gn_ea", seed=4)
+    write_with_io(realplksr_model(5, 5, False, True), "tiny_realplksr_ln", seed=6)
+    write_with_io(realplksr_model(7, 17, True, True), "tiny_realplksr_ln_ea", seed=8)
 
 
 if __name__ == "__main__":

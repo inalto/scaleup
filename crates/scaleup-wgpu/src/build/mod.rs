@@ -2,6 +2,8 @@
 
 mod compact;
 pub(crate) mod esrgan;
+mod plksr;
+mod span;
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -9,11 +11,12 @@ use std::collections::BTreeSet;
 use scaleup_core::{Result, ScaleUpError};
 
 use crate::arch::{ArchSpec, Tensors};
-use crate::ncnn::{Activation, Graph, Layer, LayerKind, infer_channels};
+use crate::kernels::Smooth;
+use crate::ncnn::{Activation, BinOp, Graph, Layer, LayerKind, infer_channels};
 use crate::statedict::{StateDict, TensorF32};
 
 /// The architectures [`build`] turns into a graph, as OpenModelDB names them.
-pub const NATIVE_ARCHS: [&str; 3] = ["esrgan", "esrgan+", "compact"];
+pub const NATIVE_ARCHS: [&str; 5] = ["esrgan", "esrgan+", "compact", "span", "realplksr"];
 
 /// The network `spec` describes, with the weights of `sd` copied into its layers. Every tensor of
 /// `sd` must be used: a leftover one means a variant this builder does not know.
@@ -28,10 +31,8 @@ pub fn build(spec: &ArchSpec, sd: &StateDict) -> Result<Graph> {
     match spec {
         ArchSpec::Esrgan { .. } => esrgan::build(spec, sd),
         ArchSpec::Compact { .. } => compact::build(spec, sd),
-        ArchSpec::Span { .. } | ArchSpec::RealPlksr { .. } => Err(ScaleUpError::Model(format!(
-            "{} models are not supported natively yet; use an ONNX export of the model",
-            spec.name()
-        ))),
+        ArchSpec::Span { .. } => span::build(spec, sd),
+        ArchSpec::RealPlksr { .. } => plksr::build(spec, sd),
     }
 }
 
@@ -89,7 +90,7 @@ impl<'w> Builder<'w> {
                 w.shape
             )));
         }
-        let (out, k) = (w.shape[0], w.shape[2]);
+        let (out, k) = (w.shape[0], w.shape[2] as u32);
         let biases = if bias {
             let key = format!("{prefix}.bias");
             let b = self.tensor(&key)?;
@@ -103,16 +104,128 @@ impl<'w> Builder<'w> {
         } else {
             Vec::new()
         };
+        self.conv_with(src, prefix, k, w.data.clone(), biases, act)
+    }
+
+    /// Convolution with computed `weights` (`[out][in][k][k]`, odd `k`) and `biases` (one per
+    /// output, or empty for none).
+    fn conv_with(
+        &mut self,
+        src: Blob,
+        name: &str,
+        k: u32,
+        weights: Vec<f32>,
+        biases: Vec<f32>,
+        act: Activation,
+    ) -> Result<Blob> {
+        let per_output = self.channels[src] as usize * (k as usize).pow(2);
+        let out = weights.len() / per_output.max(1);
+        let fits = k % 2 == 1
+            && out > 0
+            && out * per_output == weights.len()
+            && (biases.is_empty() || biases.len() == out);
+        if !fits {
+            return Err(ScaleUpError::Model(format!(
+                "{name}: {} weights and {} biases for {} inputs and {k}x{k} kernels",
+                weights.len(),
+                biases.len(),
+                self.channels[src]
+            )));
+        }
         let kind = LayerKind::Conv {
             out: out as u32,
-            k: k as u32,
-            pad: k as u32 / 2,
-            bias,
+            k,
+            pad: k / 2,
+            bias: !biases.is_empty(),
             act,
-            weights: w.data.clone(),
+            weights,
             biases,
         };
-        Ok(self.push(prefix, kind, &[src], out as u32))
+        Ok(self.push(name, kind, &[src], out as u32))
+    }
+
+    fn smooth(&mut self, name: &str, src: Blob, f: Smooth) -> Blob {
+        let kind = match f {
+            Smooth::Sigmoid => LayerKind::Sigmoid,
+            Smooth::Silu => LayerKind::Silu,
+            Smooth::Mish => LayerKind::Mish,
+        };
+        let c = self.channels[src];
+        self.push(name, kind, &[src], c)
+    }
+
+    fn add_scalar(&mut self, name: &str, src: Blob, value: f32) -> Blob {
+        let kind = LayerKind::BinaryOp {
+            op: BinOp::Add,
+            scalar: Some(value),
+        };
+        let c = self.channels[src];
+        self.push(name, kind, &[src], c)
+    }
+
+    /// Element-wise product.
+    fn mul(&mut self, name: &str, a: Blob, b: Blob) -> Result<Blob> {
+        let (ca, cb) = (self.channels[a], self.channels[b]);
+        if ca != cb {
+            return Err(ScaleUpError::Model(format!(
+                "{name} multiplies {ca} channels by {cb}"
+            )));
+        }
+        let kind = LayerKind::BinaryOp {
+            op: BinOp::Mul,
+            scalar: None,
+        };
+        Ok(self.push(name, kind, &[a, b], ca))
+    }
+
+    /// `{prefix}.weight` and `{prefix}.bias`, one value per channel of `src` each.
+    fn scale_and_shift(&self, src: Blob, prefix: &str) -> Result<(Vec<f32>, Vec<f32>)> {
+        let c = self.channels[src] as usize;
+        let read = |key: String| {
+            let t = self.tensor(&key)?;
+            if t.shape != [c] {
+                return Err(ScaleUpError::Model(format!(
+                    "{key} has shape {:?}, expected [{c}]",
+                    t.shape
+                )));
+            }
+            Ok(t.data.clone())
+        };
+        Ok((
+            read(format!("{prefix}.weight"))?,
+            read(format!("{prefix}.bias"))?,
+        ))
+    }
+
+    /// Layer norm over the channels of each pixel, with `{prefix}.weight` and `{prefix}.bias`.
+    fn layer_norm(&mut self, src: Blob, prefix: &str, eps: f32) -> Result<Blob> {
+        let (gamma, beta) = self.scale_and_shift(src, prefix)?;
+        let kind = LayerKind::LayerNormC { eps, gamma, beta };
+        let c = self.channels[src];
+        Ok(self.push(prefix, kind, &[src], c))
+    }
+
+    /// Group norm over `groups` groups, with `{prefix}.weight` and `{prefix}.bias`.
+    fn group_norm(&mut self, src: Blob, prefix: &str, groups: u32, eps: f32) -> Result<Blob> {
+        let (gamma, beta) = self.scale_and_shift(src, prefix)?;
+        let c = self.channels[src];
+        if !c.is_multiple_of(groups) {
+            return Err(ScaleUpError::Model(format!(
+                "{prefix}: {c} channels cannot be split into {groups} groups"
+            )));
+        }
+        let kind = LayerKind::GroupNorm {
+            groups,
+            eps,
+            gamma,
+            beta,
+        };
+        Ok(self.push(prefix, kind, &[src], c))
+    }
+
+    /// Channels `from..to` of `src`, which must exist.
+    fn slice(&mut self, name: &str, src: Blob, from: u32, to: u32) -> Blob {
+        self.push(name, LayerKind::Slice { from, to }, &[src], to - from)
     }
 
     /// PReLU with the slopes of `key`: one per channel, or one for all.
@@ -174,12 +287,13 @@ impl<'w> Builder<'w> {
     /// The graph ending at `output`, which must hold 3 channels.
     fn finish(self, output: Blob) -> Result<Graph> {
         let used = self.used.into_inner();
-        let unused: Vec<&str> = self
+        let mut unused: Vec<&str> = self
             .weights
             .names()
             .into_iter()
             .filter(|k| !used.contains(*k))
             .collect();
+        unused.extend(self.weights.unreachable());
         if !unused.is_empty() {
             return Err(ScaleUpError::Model(format!(
                 "unexpected tensors for this architecture: {}",
@@ -207,7 +321,10 @@ impl<'w> Builder<'w> {
 pub(crate) mod tests {
     use super::*;
     use crate::arch::detect;
-    use crate::kernels::test_gpu::Rng;
+    use crate::cpu_ref::Tensor;
+    use crate::exec::{Executor, plan};
+    use crate::kernels::test_gpu::{Rng, gpu};
+    use scaleup_core::Image32;
     use std::path::PathBuf;
 
     pub(crate) fn fixture(name: &str) -> PathBuf {
@@ -265,6 +382,37 @@ pub(crate) mod tests {
             .collect()
     }
 
+    /// `input` and `output` of a `*_io.safetensors` fixture, as tensors.
+    pub(crate) fn io(name: &str) -> (Tensor, Tensor) {
+        let sd = StateDict::load(&fixture(name)).unwrap();
+        let t = |k: &str| {
+            let t = sd.get(k).unwrap();
+            let [c, h, w] = t.shape[..] else {
+                panic!("{k}: {:?}", t.shape)
+            };
+            Tensor {
+                c: c as u32,
+                h: h as u32,
+                w: w as u32,
+                data: t.data.clone(),
+            }
+        };
+        (t("input"), t("output"))
+    }
+
+    /// The GPU's result for `graph` on `input`, or `None` without an adapter.
+    pub(crate) fn run_gpu(graph: &Graph, input: &Tensor) -> Option<Vec<f32>> {
+        let gpu = gpu()?;
+        let exec = Executor::new(gpu.device.clone(), gpu.queue.clone(), graph).unwrap();
+        let p = plan(graph, 3, input.h, input.w).unwrap();
+        let image = Image32 {
+            width: input.w,
+            height: input.h,
+            data: input.data.clone(),
+        };
+        Some(exec.run(graph, &p, &image).unwrap().data)
+    }
+
     pub(crate) fn assert_close(got: &[f32], want: &[f32], tol: f32) {
         assert_eq!(got.len(), want.len());
         let worst = got
@@ -279,35 +427,6 @@ pub(crate) mod tests {
     pub(crate) fn assert_close_rel(got: &[f32], want: &[f32], tol: f32) {
         let scale = want.iter().fold(1.0_f32, |m, v| m.max(v.abs()));
         assert_close(got, want, tol * scale);
-    }
-
-    #[test]
-    fn span_and_plksr_are_not_supported_yet() {
-        for spec in [
-            ArchSpec::Span {
-                in_ch: 3,
-                out_ch: 3,
-                feat: 48,
-                scale: 4,
-                norm: true,
-            },
-            ArchSpec::RealPlksr {
-                dim: 64,
-                n_blocks: 28,
-                scale: 4,
-                kernel: 17,
-                split_ratio: 0.25,
-                use_ea: true,
-                layer_norm: true,
-                dysample: false,
-            },
-        ] {
-            let err = build(&spec, &StateDict::default()).unwrap_err().to_string();
-            assert!(
-                err.contains(spec.name()) && err.contains("not supported natively yet"),
-                "{err}"
-            );
-        }
     }
 
     #[test]

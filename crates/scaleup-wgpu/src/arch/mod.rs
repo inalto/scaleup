@@ -162,6 +162,10 @@ fn report(missing: &[&str]) -> Option<String> {
 pub trait Tensors {
     fn tensor(&self, key: &str) -> Result<&TensorF32>;
     fn names(&self) -> Vec<&str>;
+    /// Keys of the underlying file that no name of this view reaches.
+    fn unreachable(&self) -> Vec<&str> {
+        Vec::new()
+    }
 }
 
 impl Tensors for StateDict {

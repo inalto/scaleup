@@ -15,7 +15,8 @@
 //! `HRconv|conv_hr→model.{3·max_up+2}`, `conv_last→model.{3·max_up+4}`.
 //!
 //! As in spandrel, `max_up` above is already `3n` (HRconv lands on `model.{max_up+2}`), keys the
-//! rename does not cover are dropped, and `nb` is the highest block index found plus one. Beyond
+//! rename does not cover are left out of detection, and `nb` is the highest block index found plus
+//! one; the builder still sees those keys ([`Tensors::unreachable`]) and rejects them. Beyond
 //! spandrel, `seq - 5` must be a multiple of 3 and the trunk convolution `model.1.sub.{nb}` must
 //! exist. `gc = model.1.sub.0.RDB1.conv1.0.weight.shape[0]` (spandrel hard-codes 32).
 
@@ -166,6 +167,20 @@ impl Tensors for OldArch<'_> {
         match &self.renamed {
             Some(names) => names.keys().map(String::as_str).collect(),
             None => self.sd.names(),
+        }
+    }
+
+    fn unreachable(&self) -> Vec<&str> {
+        match &self.renamed {
+            Some(names) => {
+                let reached: std::collections::BTreeSet<&str> = names.values().copied().collect();
+                self.sd
+                    .names()
+                    .into_iter()
+                    .filter(|k| !reached.contains(k))
+                    .collect()
+            }
+            None => Vec::new(),
         }
     }
 }

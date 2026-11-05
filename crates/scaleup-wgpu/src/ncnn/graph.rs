@@ -60,6 +60,35 @@ pub enum LayerKind {
     PixelUnshuffle {
         factor: u32,
     },
+    Sigmoid,
+    /// `x · sigmoid(x)`.
+    Silu,
+    /// `(x - mean[c]) · range`, one mean per channel.
+    Normalize {
+        mean: Vec<f32>,
+        range: f32,
+    },
+    /// `x · tanh(ln(1 + eˣ))`.
+    Mish,
+    /// Each pixel normalised over its channels, then `gamma[c] · x + beta[c]`.
+    LayerNormC {
+        eps: f32,
+        gamma: Vec<f32>,
+        beta: Vec<f32>,
+    },
+    /// Each of `groups` runs of consecutive channels normalised over the whole input, then
+    /// `gamma[c] · x + beta[c]`.
+    GroupNorm {
+        groups: u32,
+        eps: f32,
+        gamma: Vec<f32>,
+        beta: Vec<f32>,
+    },
+    /// Channels `from..to` of the input.
+    Slice {
+        from: u32,
+        to: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -195,9 +224,54 @@ pub fn infer_channels(graph: &Graph, input_channels: u32) -> Result<Vec<u32>> {
                 first / r2
             }
             LayerKind::PixelUnshuffle { factor } => first * factor * factor,
-            LayerKind::Split | LayerKind::LeakyRelu { .. } | LayerKind::InterpNearest { .. } => {
+            LayerKind::Normalize { mean, .. } => {
+                if mean.len() != first as usize {
+                    return Err(err(format!("{} means for {first} channels", mean.len())));
+                }
                 first
             }
+            LayerKind::LayerNormC { gamma, beta, .. } => {
+                if gamma.len() != first as usize || beta.len() != first as usize {
+                    return Err(err(format!(
+                        "{} scales and {} shifts for {first} channels",
+                        gamma.len(),
+                        beta.len()
+                    )));
+                }
+                first
+            }
+            LayerKind::GroupNorm {
+                groups,
+                gamma,
+                beta,
+                ..
+            } => {
+                if *groups == 0 || !first.is_multiple_of(*groups) {
+                    return Err(err(format!("{groups} groups over {first} channels")));
+                }
+                if gamma.len() != first as usize || beta.len() != first as usize {
+                    return Err(err(format!(
+                        "{} scales and {} shifts for {first} channels",
+                        gamma.len(),
+                        beta.len()
+                    )));
+                }
+                first
+            }
+            LayerKind::Slice { from, to } => {
+                if from >= to || *to > first {
+                    return Err(err(format!(
+                        "channels {from}..{to} of {first} do not exist"
+                    )));
+                }
+                to - from
+            }
+            LayerKind::Split
+            | LayerKind::LeakyRelu { .. }
+            | LayerKind::InterpNearest { .. }
+            | LayerKind::Sigmoid
+            | LayerKind::Silu
+            | LayerKind::Mish => first,
         };
         for &b in &layer.outputs {
             ch[b] = output;
@@ -324,6 +398,64 @@ mod tests {
             blob_count: n,
             input_blob: 0,
             output_blob: n - 1,
+        }
+    }
+
+    #[test]
+    fn normalize_needs_one_mean_per_channel() {
+        let ok = chain(vec![
+            LayerKind::Normalize {
+                mean: vec![0.5; 3],
+                range: 255.0,
+            },
+            LayerKind::Sigmoid,
+            LayerKind::Silu,
+        ]);
+        assert_eq!(infer_channels(&ok, 3).unwrap(), [3, 3, 3, 3]);
+        let bad = chain(vec![LayerKind::Normalize {
+            mean: vec![0.5; 2],
+            range: 255.0,
+        }]);
+        let err = infer_channels(&bad, 3).unwrap_err().to_string();
+        assert!(
+            err.contains("2 means for 3 channels") && err.contains("l0"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn norms_and_slice_check_their_channel_counts() {
+        let norm = |n: usize| LayerKind::LayerNormC {
+            eps: 1e-6,
+            gamma: vec![1.0; n],
+            beta: vec![0.0; n],
+        };
+        let group = |groups: u32, n: usize| LayerKind::GroupNorm {
+            groups,
+            eps: 1e-5,
+            gamma: vec![1.0; n],
+            beta: vec![0.0; n],
+        };
+        let ok = chain(vec![
+            LayerKind::PixelUnshuffle { factor: 2 },
+            norm(12),
+            group(4, 12),
+            LayerKind::Mish,
+            LayerKind::Slice { from: 2, to: 7 },
+        ]);
+        assert_eq!(infer_channels(&ok, 3).unwrap(), [3, 12, 12, 12, 12, 5]);
+        for (kind, needle) in [
+            (norm(2), "2 scales and 2 shifts for 3 channels"),
+            (group(2, 3), "2 groups over 3 channels"),
+            (group(0, 3), "0 groups over 3 channels"),
+            (group(3, 2), "2 scales and 2 shifts for 3 channels"),
+            (LayerKind::Slice { from: 1, to: 4 }, "channels 1..4 of 3"),
+            (LayerKind::Slice { from: 2, to: 2 }, "channels 2..2 of 3"),
+        ] {
+            let err = infer_channels(&chain(vec![kind]), 3)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(needle) && err.contains("l0"), "{err}");
         }
     }
 

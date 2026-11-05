@@ -214,6 +214,97 @@ pub fn pixel_unshuffle(src: &Tensor, r: u32) -> Tensor {
     dst
 }
 
+fn map(src: &Tensor, f: impl Fn(f64) -> f64) -> Tensor {
+    let mut dst = src.clone();
+    for v in &mut dst.data {
+        *v = f(f64::from(*v)) as f32;
+    }
+    dst
+}
+
+fn sigmoid64(x: f64) -> f64 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+pub fn sigmoid(src: &Tensor) -> Tensor {
+    map(src, sigmoid64)
+}
+
+pub fn silu(src: &Tensor) -> Tensor {
+    map(src, |x| x * sigmoid64(x))
+}
+
+/// `(x - mean[c]) · range`.
+pub fn normalize(src: &Tensor, mean: &[f32], range: f32) -> Tensor {
+    let mut dst = src.clone();
+    let plane = (src.h * src.w) as usize;
+    for (i, v) in dst.data.iter_mut().enumerate() {
+        *v = (*v - mean[i / plane]) * range;
+    }
+    dst
+}
+
+/// `x · tanh(ln(1 + eˣ))`.
+pub fn mish(src: &Tensor) -> Tensor {
+    map(src, |x| x * x.exp().ln_1p().tanh())
+}
+
+/// Each pixel normalised over its channels (biased variance), then `gamma[c] · x + beta[c]`.
+pub fn layer_norm_c(src: &Tensor, eps: f32, gamma: &[f32], beta: &[f32]) -> Tensor {
+    let mut dst = src.clone();
+    let plane = (src.h * src.w) as usize;
+    let n = f64::from(src.c);
+    for px in 0..plane {
+        let at = |c: usize| f64::from(src.data[c * plane + px]);
+        let mean = (0..src.c as usize).map(at).sum::<f64>() / n;
+        let var = (0..src.c as usize)
+            .map(|c| (at(c) - mean).powi(2))
+            .sum::<f64>()
+            / n;
+        let r = 1.0 / (var + f64::from(eps)).sqrt();
+        for c in 0..src.c as usize {
+            let v = f64::from(gamma[c]) * ((at(c) - mean) * r) + f64::from(beta[c]);
+            dst.data[c * plane + px] = v as f32;
+        }
+    }
+    dst
+}
+
+/// `groups` runs of consecutive channels, each normalised over all its values (biased variance),
+/// then `gamma[c] · x + beta[c]`.
+pub fn group_norm(src: &Tensor, groups: u32, eps: f32, gamma: &[f32], beta: &[f32]) -> Tensor {
+    let mut dst = src.clone();
+    let plane = (src.h * src.w) as usize;
+    let per_group = (src.c / groups) as usize;
+    let len = per_group * plane;
+    for (g, values) in dst.data.chunks_mut(len).enumerate() {
+        let n = len as f64;
+        let mean = values.iter().map(|&v| f64::from(v)).sum::<f64>() / n;
+        let var = values
+            .iter()
+            .map(|&v| (f64::from(v) - mean).powi(2))
+            .sum::<f64>()
+            / n;
+        let r = 1.0 / (var + f64::from(eps)).sqrt();
+        for (i, v) in values.iter_mut().enumerate() {
+            let c = g * per_group + i / plane;
+            *v = (f64::from(gamma[c]) * ((f64::from(*v) - mean) * r) + f64::from(beta[c])) as f32;
+        }
+    }
+    dst
+}
+
+/// Channels `from..to`.
+pub fn slice(src: &Tensor, from: u32, to: u32) -> Tensor {
+    let plane = (src.h * src.w) as usize;
+    Tensor {
+        c: to - from,
+        h: src.h,
+        w: src.w,
+        data: src.data[from as usize * plane..to as usize * plane].to_vec(),
+    }
+}
+
 /// Runs a whole graph on the CPU.
 pub fn run_graph(graph: &crate::ncnn::Graph, input: &Tensor) -> Tensor {
     use crate::ncnn::{BinOp, LayerKind};
@@ -249,6 +340,20 @@ pub fn run_graph(graph: &crate::ncnn::Graph, input: &Tensor) -> Tensor {
             LayerKind::InterpNearest { scale } => interp_nearest(first.unwrap(), *scale),
             LayerKind::PixelShuffle { factor } => pixel_shuffle(first.unwrap(), *factor),
             LayerKind::PixelUnshuffle { factor } => pixel_unshuffle(first.unwrap(), *factor),
+            LayerKind::Sigmoid => sigmoid(first.unwrap()),
+            LayerKind::Silu => silu(first.unwrap()),
+            LayerKind::Normalize { mean, range } => normalize(first.unwrap(), mean, *range),
+            LayerKind::Mish => mish(first.unwrap()),
+            LayerKind::LayerNormC { eps, gamma, beta } => {
+                layer_norm_c(first.unwrap(), *eps, gamma, beta)
+            }
+            LayerKind::GroupNorm {
+                groups,
+                eps,
+                gamma,
+                beta,
+            } => group_norm(first.unwrap(), *groups, *eps, gamma, beta),
+            LayerKind::Slice { from, to } => slice(first.unwrap(), *from, *to),
         };
         for &o in &layer.outputs {
             blobs[o] = Some(output.clone());
@@ -310,6 +415,57 @@ mod tests {
             data: (0..48).map(|i| i as f32).collect(),
         };
         assert_eq!(pixel_shuffle(&pixel_unshuffle(&src, 2), 2), src);
+    }
+
+    #[test]
+    fn smooth_activations_and_normalize() {
+        let src = Tensor {
+            c: 2,
+            h: 1,
+            w: 2,
+            data: vec![0.0, 2.0, -100.0, 1.0],
+        };
+        let s = sigmoid(&src).data;
+        assert_eq!(s[0], 0.5);
+        assert!((s[1] - 0.880_797_1).abs() < 1e-6 && (0.0..1e-40).contains(&s[2]));
+        let si = silu(&src).data;
+        assert!((si[1] - 1.761_594_2).abs() < 1e-6 && si[2].abs() < 1e-30);
+        let n = normalize(&src, &[0.5, 1.0], 10.0);
+        assert_eq!(n.data, [-5.0, 15.0, -1010.0, 0.0]);
+    }
+
+    #[test]
+    fn mish_norms_and_slice() {
+        let src = Tensor {
+            c: 2,
+            h: 1,
+            w: 2,
+            data: vec![1.0, 3.0, 3.0, -1.0],
+        };
+        let m = mish(&Tensor {
+            data: vec![0.0, 1.0, -200.0, 200.0],
+            ..src.clone()
+        })
+        .data;
+        assert_eq!((m[0], m[2], m[3]), (0.0, 0.0, 200.0));
+        assert!((m[1] - 0.865_098_4).abs() < 1e-6, "{}", m[1]);
+        // Pixel 0 holds (1, 3): mean 2, deviation 1. Pixel 1 holds (3, -1): mean 1, deviation 2.
+        let l = layer_norm_c(&src, 0.0, &[1.0, 2.0], &[0.5, 0.0]);
+        assert_eq!(l.data, [-0.5, 1.5, 2.0, -2.0]);
+        // One group over everything: mean 1.5, variance 2.75.
+        let g = group_norm(&src, 1, 0.0, &[1.0, 1.0], &[0.0, 1.0]).data;
+        let r = 1.0 / 2.75_f32.sqrt();
+        for (got, want) in g
+            .iter()
+            .zip([-0.5 * r, 1.5 * r, 1.5 * r + 1.0, -2.5 * r + 1.0])
+        {
+            assert!((got - want).abs() < 1e-6, "{g:?}");
+        }
+        // One group per channel: each plane is normalised alone.
+        let g = group_norm(&src, 2, 0.0, &[1.0, 1.0], &[0.0, 0.0]);
+        assert_eq!(g.data, [-1.0, 1.0, 1.0, -1.0]);
+        let s = slice(&src, 1, 2);
+        assert_eq!((s.c, s.h, s.w, s.data), (1, 1, 2, vec![3.0, -1.0]));
     }
 
     #[test]

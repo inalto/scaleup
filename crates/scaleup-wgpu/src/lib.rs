@@ -123,8 +123,17 @@ mod tests {
     /// ESRGAN+ is covered by `esrgan_plus_matches_rrdb_forward_pointwise`.
     #[test]
     fn native_archs_are_the_architectures_that_build() {
-        assert_eq!(native_archs(), ["esrgan", "esrgan+", "compact"]);
-        for fixture in ["tiny_esrgan.pth", "tiny_compact.pth"] {
+        assert_eq!(
+            native_archs(),
+            ["esrgan", "esrgan+", "compact", "span", "realplksr"]
+        );
+        for fixture in [
+            "tiny_esrgan.pth",
+            "tiny_compact.pth",
+            "tiny_span.pth",
+            "tiny_realplksr_gn_ea.pth",
+            "tiny_realplksr_ln.pth",
+        ] {
             let (graph, multiple) = load_graph(&repo("tests/fixtures/sd").join(fixture)).unwrap();
             assert_eq!(multiple, 1);
             let spec = arch::detect(
@@ -281,5 +290,14 @@ mod tests {
     #[ignore = "needs the real weights in models/cache and a GPU"]
     fn real_legacy_ultrasharp_matches_ort() {
         matches_ort("4x-UltraSharp.pth", "4x-UltraSharp.onnx");
+    }
+
+    #[test]
+    #[ignore = "needs the real weights in models/cache and a GPU"]
+    fn span_nomosuni_matches_ort() {
+        matches_ort(
+            "4xNomosUni_span_multijpg.safetensors",
+            "4xNomosUni_span_multijpg.onnx",
+        );
     }
 }

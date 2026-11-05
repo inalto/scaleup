@@ -298,6 +298,38 @@ pub(crate) mod tests {
     #[test]
     fn esrgan_new_arch_builds_the_same_graph() {
         let old = StateDict::load(&fixture("tiny_esrgan.pth")).unwrap();
+        let new = new_arch_of(&old);
+        assert!(new.has("body.1.rdb3.conv5.weight"));
+        let graph = |sd: &StateDict| build(&detect(sd).unwrap(), sd).unwrap();
+        assert_eq!(graph(&new), graph(&old));
+    }
+
+    /// Keys the new-to-old rename does not cover (an ESRGAN+ shortcut under new-arch names, a
+    /// stray tensor) are not silently dropped.
+    #[test]
+    fn esrgan_new_arch_stray_keys_are_an_error_naming_them() {
+        let mut new = new_arch_of(&StateDict::load(&fixture("tiny_esrgan.pth")).unwrap());
+        let stray = |shape: Vec<usize>| crate::statedict::TensorF32 {
+            data: vec![0.0; shape.iter().product()],
+            shape,
+        };
+        new.tensors
+            .insert("body.0.rdb1.conv1x1.weight".into(), stray(vec![4, 8, 1, 1]));
+        new.tensors.insert("ema_decay".into(), stray(vec![1]));
+        let spec = detect(&new).unwrap();
+        assert!(matches!(
+            spec,
+            crate::arch::ArchSpec::Esrgan { plus: false, .. }
+        ));
+        let err = build(&spec, &new).unwrap_err().to_string();
+        assert!(
+            err.contains("body.0.rdb1.conv1x1.weight") && err.contains("ema_decay"),
+            "{err}"
+        );
+    }
+
+    /// The tiny fixture under Real-ESRGAN's new-arch names.
+    fn new_arch_of(old: &StateDict) -> StateDict {
         let mut new = StateDict::default();
         for (key, t) in &old.tensors {
             let renamed = match key.as_str() {
@@ -318,9 +350,7 @@ pub(crate) mod tests {
             };
             new.tensors.insert(renamed, t.clone());
         }
-        assert!(new.has("body.1.rdb3.conv5.weight"));
-        let graph = |sd: &StateDict| build(&detect(sd).unwrap(), sd).unwrap();
-        assert_eq!(graph(&new), graph(&old));
+        new
     }
 
     #[test]
