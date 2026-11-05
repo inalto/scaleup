@@ -7,9 +7,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-11-05
+## [0.2.1] - 2026-11-05
 
-First published release.
+First published release: everything listed under 0.2.0 and 0.1.0 below, with updated dependencies.
+
+### Changed
+
+- Dependencies: `wgpu` 30, `ndarray` 0.17, `sha2` 0.11, `dirs` 7, `pollster` 1.
+
+### Fixed
+
+- The release workflow's check of the tag against the workspace version, which stopped the 0.2.0
+  release before it built anything.
+
+## 0.2.0 - 2026-11-05
+
+Tagged but not published as a release; its content shipped in 0.2.1.
 
 ### Added
 
@@ -49,5 +62,5 @@ Not published as a release; its content shipped in 0.2.0.
 - Model registry: embedded catalogue (`models/manifest.json`), sha256-verified cancellable
   downloads, bundled license texts, import of ncnn model folders.
 
-[Unreleased]: https://github.com/inalto/scaleup/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/inalto/scaleup/releases/tag/v0.2.0
+[Unreleased]: https://github.com/inalto/scaleup/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/inalto/scaleup/releases/tag/v0.2.1
