@@ -74,7 +74,7 @@ fn hub_search_limit_and_tags() {
         .args(["search", "--limit", "2"])
         .assert()
         .code(0)
-        .stderr(predicate::str::contains("showing 2 of 8"));
+        .stderr(predicate::str::contains("showing 2 of 10"));
     assert_eq!(out(a).lines().count(), 3);
     let text = out(hub(models.path())
         .args(["search", "--tag", "general-upscaler"])
@@ -128,9 +128,26 @@ fn hub_install_manual_host_exit_3_with_hint() {
         .assert()
         .code(3)
         .stderr(predicate::str::contains("https://mega.nz/"))
-        .stderr(predicate::str::contains("1x-BroadcastToStudio-SPAN"))
-        .stderr(predicate::str::contains("sha256"))
-        .stderr(predicate::str::contains("hub import"));
+        .stderr(predicate::str::contains(
+            "save the file as '1x-BroadcastToStudio-SPAN.onnx' (sha256 3d2cc3524d693957b9ea309ee9f20801c53c67ff6ade503cc55f7cbed80ae758)",
+        ))
+        .stderr(predicate::str::contains(
+            "`scaleup hub import 1x-BroadcastToStudio-SPAN <file>`",
+        ));
+    // No resources at all: no URL to open, but the file name and the way in are named.
+    hub(models.path())
+        .args(["install", "test-nofiles"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "lists no download for 'test-nofiles'",
+        ))
+        .stderr(predicate::str::contains(
+            "expected name 'test-nofiles.onnx'",
+        ))
+        .stderr(predicate::str::contains(
+            "`scaleup hub import test-nofiles <file>`",
+        ));
     hub(models.path())
         .args(["install", "2x-MLP-StarSample-V1-0", "--resource", "9"])
         .assert()
@@ -149,10 +166,13 @@ fn hub_import_then_upscale_resolves_id() {
         .arg(&file)
         .assert()
         .code(0));
-    assert!(
-        models.path().join("hub").join("test-nearest2x").is_dir(),
-        "{path}"
-    );
+    let installed = models
+        .path()
+        .join("hub")
+        .join("test-nearest2x")
+        .join("nearest2x.onnx");
+    assert_eq!(std::path::PathBuf::from(path.trim_end()), installed);
+    assert!(installed.is_file());
 
     assert!(models_list(models.path()).contains("test-nearest2x"));
     let search = out(hub(models.path())
@@ -264,5 +284,26 @@ fn hub_refresh_reports_the_catalogue_size() {
         .arg("refresh")
         .assert()
         .code(0)
-        .stdout(predicate::str::contains("8 models"));
+        .stdout(predicate::str::contains("10 models"));
+}
+
+#[test]
+fn hub_import_without_catalogue_hash_warns_and_is_unverified() {
+    let models = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let file = work.path().join("nearest2x.onnx");
+    std::fs::copy(fixture_model(), &file).unwrap();
+    hub(models.path())
+        .args(["import", "test-nohash"])
+        .arg(&file)
+        .assert()
+        .code(0)
+        .stderr(predicate::str::contains(
+            "warning: OpenModelDB lists no sha256",
+        ));
+    let json = std::fs::read_to_string(models.path().join("hub").join("installed.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let m = &v["models"][0];
+    assert_eq!(m["id"], "test-nohash");
+    assert_eq!(m["verified"], false);
 }

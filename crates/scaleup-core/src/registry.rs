@@ -632,8 +632,9 @@ mod tests {
         assert!(!reg.get("h-nc").unwrap().commercial);
         let unk = reg.get("h-unk").unwrap();
         assert_eq!((unk.license.as_str(), unk.commercial), ("unknown", false));
+        let empty = tempfile::tempdir().unwrap();
         assert!(
-            Registry::builtin()
+            Registry::with_dir(empty.path().to_path_buf())
                 .entries()
                 .iter()
                 .all(|e| e.source == "catalogue")
@@ -687,14 +688,16 @@ mod tests {
 
     #[test]
     fn every_catalogue_model_names_its_overlap() {
-        for e in Registry::builtin().entries() {
+        let dir = tempfile::tempdir().unwrap();
+        for e in Registry::with_dir(dir.path().to_path_buf()).entries() {
             assert!(e.preferred_overlap().is_some(), "{}", e.id);
         }
     }
 
     #[test]
     fn manifest_parses_and_has_default_tag() {
-        let reg = Registry::builtin();
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
         assert_eq!(reg.entries().len(), 8);
         let defaults: Vec<_> = reg
             .entries()

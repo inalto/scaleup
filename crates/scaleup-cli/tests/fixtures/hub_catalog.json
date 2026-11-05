@@ -543,5 +543,46 @@
       }
     ],
     "images": []
+  },
+  "test-nofiles": {
+    "name": "Test no files",
+    "author": "scaleup tests",
+    "license": "MIT",
+    "tags": [
+      "test"
+    ],
+    "description": "Synthetic card with no resources.",
+    "date": "2026-01-01",
+    "architecture": "compact",
+    "scale": 2,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [],
+    "images": []
+  },
+  "test-nohash": {
+    "name": "Test no hash",
+    "author": "scaleup tests",
+    "license": "MIT",
+    "tags": [
+      "test"
+    ],
+    "description": "Synthetic card whose file lists no sha256.",
+    "date": "2026-01-01",
+    "architecture": "compact",
+    "scale": 2,
+    "inputChannels": 3,
+    "outputChannels": 3,
+    "resources": [
+      {
+        "platform": "onnx",
+        "type": "onnx",
+        "size": 267,
+        "urls": [
+          "https://mega.nz/file/test-nohash"
+        ]
+      }
+    ],
+    "images": []
   }
 }
