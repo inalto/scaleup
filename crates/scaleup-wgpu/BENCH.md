@@ -77,6 +77,7 @@ Each row reports the worst of the three crops, with the median time. wgpu rows a
 - **Weights matter too.** `4x-UltraSharp` has the same architecture as `realesrgan-x4plus` and passes at 32. Catalogue models are chosen by architecture, so it runs at 64 and pays for the deeper network's need.
 - **Networks of the same shape behave alike on both engines.** `upscayl-lite-4x` tracks `realesr-general-x4v3`, `digital-art-4x` tracks `realesrgan-x4plus-anime`, and `upscayl-standard-4x` tracks `realesrgan-x4plus`.
 - **Synthetic images overstate RRDB.** A synthetic texture still differed by 0.076, about 19/255, on `digital-art-4x` at overlap 64. These photographs differ by at most 1/255.
+- **GroupNorm RealPLKSR fails at any overlap.** `4x-NomosWebPhoto-RealPLKSR` (`.pth`, wgpu, 1024×1024 photograph, overlap 64) against one tile: at tile 256 worst 41 near boundaries and 79 away from them, mean 0.71 and 0.70, line 2.38, flat 2.19, ≥ 1 6.8%; at tile 512 worst 38 and 44, mean 0.55 and 0.52, ≥ 1 8.7%. Each tile normalises with its own statistics: in PyTorch, on a 512×512 crop at tile 256, the tiled run differs by up to 47 with each tile's statistics and by at most 1 with the whole image's, so the overlap is enough and the norm is the cause. Only a tile covering the whole image (`-t`) is exact.
 - **Not covered.** No DAT model and no model at tile 512 was measured. `remacri-4x`, `ultramix-balanced-4x`, `high-fidelity-4x` and `ultrasharp-4x` (ncnn) were not run; they have 351 convolutions, so they ask for 64.
 
 ### Cost
