@@ -194,6 +194,26 @@ pub fn pixel_shuffle(src: &Tensor, r: u32) -> Tensor {
     dst
 }
 
+/// `out[c*r*r + dy*r + dx][y][x] = in[c][y*r+dy][x*r+dx]`, torch's layout; sides must be multiples
+/// of `r`.
+pub fn pixel_unshuffle(src: &Tensor, r: u32) -> Tensor {
+    assert!(src.h.is_multiple_of(r) && src.w.is_multiple_of(r));
+    let mut dst = Tensor::zeros(src.c * r * r, src.h / r, src.w / r);
+    for c in 0..src.c {
+        for y in 0..dst.h {
+            for x in 0..dst.w {
+                for dy in 0..r {
+                    for dx in 0..r {
+                        let v = src.get(c, y * r + dy, x * r + dx);
+                        dst.set(c * r * r + dy * r + dx, y, x, v);
+                    }
+                }
+            }
+        }
+    }
+    dst
+}
+
 /// Runs a whole graph on the CPU.
 pub fn run_graph(graph: &crate::ncnn::Graph, input: &Tensor) -> Tensor {
     use crate::ncnn::{BinOp, LayerKind};
@@ -228,6 +248,7 @@ pub fn run_graph(graph: &crate::ncnn::Graph, input: &Tensor) -> Tensor {
             LayerKind::PRelu { slopes } => prelu(first.unwrap(), slopes),
             LayerKind::InterpNearest { scale } => interp_nearest(first.unwrap(), *scale),
             LayerKind::PixelShuffle { factor } => pixel_shuffle(first.unwrap(), *factor),
+            LayerKind::PixelUnshuffle { factor } => pixel_unshuffle(first.unwrap(), *factor),
         };
         for &o in &layer.outputs {
             blobs[o] = Some(output.clone());
@@ -267,6 +288,28 @@ mod tests {
         let out = pixel_shuffle(&src, 2);
         assert_eq!((out.c, out.h, out.w), (1, 2, 2));
         assert_eq!(out.data, [1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn pixel_unshuffle_layout_matches_torch() {
+        // torch.pixel_unshuffle(arange(4).reshape(1, 1, 2, 2), 2) is [0, 1, 2, 3] over 4 channels.
+        let src = Tensor {
+            c: 1,
+            h: 2,
+            w: 2,
+            data: vec![0.0, 1.0, 2.0, 3.0],
+        };
+        let out = pixel_unshuffle(&src, 2);
+        assert_eq!((out.c, out.h, out.w), (4, 1, 1));
+        assert_eq!(out.data, [0.0, 1.0, 2.0, 3.0]);
+        // And it undoes pixel_shuffle.
+        let src = Tensor {
+            c: 2,
+            h: 4,
+            w: 6,
+            data: (0..48).map(|i| i as f32).collect(),
+        };
+        assert_eq!(pixel_shuffle(&pixel_unshuffle(&src, 2), 2), src);
     }
 
     #[test]

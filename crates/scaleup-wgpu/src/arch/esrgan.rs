@@ -19,11 +19,11 @@
 //! spandrel, `seq - 5` must be a multiple of 3 and the trunk convolution `model.1.sub.{nb}` must
 //! exist. `gc = model.1.sub.0.RDB1.conv1.0.weight.shape[0]` (spandrel hard-codes 32).
 
-use super::{ArchSpec, dim, missing_keys};
-use crate::statedict::StateDict;
+use super::{ArchSpec, Tensors, dim, missing_keys};
+use crate::statedict::{StateDict, TensorF32, seq_len_of};
 use regex::Regex;
 use scaleup_core::{Result, ScaleUpError};
-use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 const ALTERNATIVES: [&[&str]; 4] = [
     &["model.0.weight", "model.1.sub.0.RDB1.conv1.0.weight"],
@@ -55,7 +55,7 @@ pub(super) fn missing(sd: &StateDict) -> Option<String> {
 }
 
 pub(super) fn load(sd: &StateDict) -> Result<ArchSpec> {
-    let sd = to_old_arch(sd)?;
+    let sd = OldArch::new(sd)?;
     let in_nc = dim(&sd, "model.0.weight", 4, 1)?;
     let nf = dim(&sd, "model.0.weight", 4, 0)?;
     // model.0 conv, model.1 trunk, log2(scale) × (upsample, conv, LeakyReLU), HR conv,
@@ -82,7 +82,7 @@ pub(super) fn load(sd: &StateDict) -> Result<ArchSpec> {
         )));
     };
     let gc = dim(&sd, "model.1.sub.0.RDB1.conv1.0.weight", 4, 0)?;
-    let plus = sd.tensors.keys().any(|k| k.contains(".conv1x1."));
+    let plus = sd.names().iter().any(|k| k.contains(".conv1x1."));
     let shuffle_factor = if in_nc == 4 * out_nc {
         Some(2)
     } else if in_nc == 16 * out_nc {
@@ -111,14 +111,69 @@ pub(super) fn load(sd: &StateDict) -> Result<ArchSpec> {
 
 /// Renames the keys of a new-arch (Real-ESRGAN `conv_first`/`body`, BSRGAN `RRDB_trunk`) state
 /// dict to the old `model.N` layout, as spandrel's `_new_to_old_arch` does. An old-arch dict (no
-/// `conv_first.weight`) is returned as is.
+/// `conv_first.weight`) is returned as is. Copies every tensor: [`OldArch`] reads the same names
+/// without copying.
 pub fn esrgan_to_old_arch(sd: &StateDict) -> Result<StateDict> {
-    to_old_arch(sd).map(Cow::into_owned)
+    let old = OldArch::new(sd)?;
+    let mut tensors = BTreeMap::new();
+    for name in old.names() {
+        tensors.insert(name.to_string(), old.tensor(name)?.clone());
+    }
+    Ok(StateDict { tensors })
 }
 
-fn to_old_arch(sd: &StateDict) -> Result<Cow<'_, StateDict>> {
+/// The tensors of an ESRGAN state dict under their old-arch (`model.N`) names, read in place.
+pub struct OldArch<'a> {
+    sd: &'a StateDict,
+    /// Old-arch name to the key in `sd`; `None` when `sd` already uses old-arch names.
+    renamed: Option<BTreeMap<String, &'a str>>,
+}
+
+impl<'a> OldArch<'a> {
+    pub fn new(sd: &'a StateDict) -> Result<Self> {
+        Ok(Self {
+            sd,
+            renamed: old_arch_names(sd)?,
+        })
+    }
+
+    pub fn has(&self, key: &str) -> bool {
+        match &self.renamed {
+            Some(names) => names.contains_key(key),
+            None => self.sd.has(key),
+        }
+    }
+
+    pub fn seq_len(&self, prefix: &str) -> usize {
+        seq_len_of(self.names().into_iter(), prefix)
+    }
+}
+
+impl Tensors for OldArch<'_> {
+    fn tensor(&self, key: &str) -> Result<&TensorF32> {
+        match &self.renamed {
+            Some(names) => match names.get(key) {
+                Some(original) => self.sd.get(original),
+                None => Err(ScaleUpError::Model(format!(
+                    "state dict has no tensor {key} (old-arch name)"
+                ))),
+            },
+            None => self.sd.get(key),
+        }
+    }
+
+    fn names(&self) -> Vec<&str> {
+        match &self.renamed {
+            Some(names) => names.keys().map(String::as_str).collect(),
+            None => self.sd.names(),
+        }
+    }
+}
+
+/// Old-arch name to new-arch key, or `None` for an old-arch dict.
+fn old_arch_names(sd: &StateDict) -> Result<Option<BTreeMap<String, &str>>> {
     if !sd.has("conv_first.weight") {
-        return Ok(Cow::Borrowed(sd));
+        return Ok(None);
     }
     let rdb = [
         Regex::new(r"^RRDB_trunk\.(\d+)\.RDB(\d)\.conv(\d+)\.(weight|bias)$").unwrap(),
@@ -148,8 +203,8 @@ fn to_old_arch(sd: &StateDict) -> Result<Cow<'_, StateDict>> {
         .max()
         .unwrap_or(0);
 
-    let mut old = StateDict::default();
-    for (key, t) in &sd.tensors {
+    let mut old = BTreeMap::new();
+    for key in sd.tensors.keys() {
         let renamed = if let Some(c) = rdb.iter().find_map(|re| re.captures(key)) {
             Some(format!(
                 "model.1.sub.{}.RDB{}.conv{}.0.{}",
@@ -175,10 +230,10 @@ fn to_old_arch(sd: &StateDict) -> Result<Cow<'_, StateDict>> {
                 .map(|i| format!("model.{i}.{kind}"))
         };
         if let Some(name) = renamed {
-            old.tensors.insert(name, t.clone());
+            old.insert(name, key.as_str());
         }
     }
-    Ok(Cow::Owned(old))
+    Ok(Some(old))
 }
 
 #[cfg(test)]
@@ -331,6 +386,36 @@ mod tests {
         }
         // An old-arch dict comes back unchanged.
         assert_eq!(esrgan_to_old_arch(&old_arch(BASE)).unwrap(), old_arch(BASE));
+    }
+
+    #[test]
+    fn old_arch_view_reads_new_arch_tensors_in_place() {
+        let new = new_arch(BASE, false);
+        let view = OldArch::new(&new).unwrap();
+        for (old, original) in [
+            ("model.0.weight", "conv_first.weight"),
+            ("model.1.sub.23.bias", "conv_body.bias"),
+            (
+                "model.1.sub.4.RDB2.conv5.0.weight",
+                "body.4.rdb2.conv5.weight",
+            ),
+            ("model.6.weight", "conv_up2.weight"),
+            ("model.10.weight", "conv_last.weight"),
+        ] {
+            assert!(view.has(old), "{old}");
+            assert!(std::ptr::eq(
+                view.tensor(old).unwrap(),
+                new.get(original).unwrap()
+            ));
+        }
+        assert_eq!(view.seq_len("model"), 11);
+        assert!(!view.has("conv_first.weight"));
+        let err = view.tensor("model.9.weight").unwrap_err().to_string();
+        assert!(err.contains("model.9.weight"), "{err}");
+        // An old-arch dict is read under its own names.
+        let old = old_arch(BASE);
+        let view = OldArch::new(&old).unwrap();
+        assert_eq!(view.names(), old.names());
     }
 
     #[test]

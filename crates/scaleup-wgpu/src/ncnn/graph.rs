@@ -56,6 +56,10 @@ pub enum LayerKind {
     PixelShuffle {
         factor: u32,
     },
+    /// The inverse of `PixelShuffle`: each `factor`×`factor` block becomes `factor²` channels.
+    PixelUnshuffle {
+        factor: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -97,21 +101,35 @@ pub fn load_graph(param_path: &Path) -> Result<Graph> {
     Ok(graph)
 }
 
-/// Output size / input size of the network.
-pub fn infer_scale(graph: &Graph) -> u32 {
-    let mut scale = vec![1u32; graph.blob_count];
+/// Output size / input size of the network, which must be a whole number. Sizes are tracked as
+/// fractions of the input: a pixel unshuffle divides them before later layers multiply them.
+pub fn infer_scale(graph: &Graph) -> Result<u32> {
+    let mut scale = vec![(1u64, 1u64); graph.blob_count];
     for layer in &graph.layers {
-        let input = layer.inputs.first().map_or(1, |&b| scale[b]);
-        let output = match layer.kind {
-            LayerKind::InterpNearest { scale } => input * scale,
-            LayerKind::PixelShuffle { factor } => input * factor,
-            _ => input,
+        let (num, den) = layer.inputs.first().map_or((1, 1), |&b| scale[b]);
+        let (num, den) = match layer.kind {
+            LayerKind::InterpNearest { scale: f } | LayerKind::PixelShuffle { factor: f } => {
+                (num * u64::from(f), den)
+            }
+            LayerKind::PixelUnshuffle { factor } => (num, den * u64::from(factor)),
+            _ => (num, den),
         };
+        let g = gcd(num, den);
         for &b in &layer.outputs {
-            scale[b] = output;
+            scale[b] = (num / g, den / g);
         }
     }
-    scale[graph.output_blob]
+    match scale[graph.output_blob] {
+        (num, 1) => u32::try_from(num)
+            .map_err(|_| ScaleUpError::Model(format!("the network scales by {num}, too much"))),
+        (num, den) => Err(ScaleUpError::Model(format!(
+            "the network scales by {num}/{den}, not a whole number"
+        ))),
+    }
+}
+
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 { a.max(1) } else { gcd(b, a % b) }
 }
 
 /// Channel count of every blob for an input with `input_channels` channels.
@@ -176,6 +194,7 @@ pub fn infer_channels(graph: &Graph, input_channels: u32) -> Result<Vec<u32>> {
                 }
                 first / r2
             }
+            LayerKind::PixelUnshuffle { factor } => first * factor * factor,
             LayerKind::Split | LayerKind::LeakyRelu { .. } | LayerKind::InterpNearest { .. } => {
                 first
             }
@@ -215,7 +234,7 @@ mod tests {
             let graph = load_graph(&dir.join(format!("{name}.param")))
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(graph.layers.len(), layers, "{name}");
-            assert_eq!(infer_scale(&graph), 4, "{name}");
+            assert_eq!(infer_scale(&graph).unwrap(), 4, "{name}");
             let channels = infer_channels(&graph, 3).unwrap();
             assert_eq!(channels[graph.output_blob], 3, "{name}");
         }
@@ -281,6 +300,54 @@ mod tests {
             input_blob: 0,
             output_blob: 5,
         };
-        assert_eq!(infer_scale(&graph), 4);
+        assert_eq!(infer_scale(&graph).unwrap(), 4);
+    }
+
+    fn chain(kinds: Vec<LayerKind>) -> Graph {
+        let mut layers = vec![Layer {
+            name: "in".into(),
+            kind: LayerKind::Input,
+            inputs: vec![],
+            outputs: vec![0],
+        }];
+        for (i, kind) in kinds.into_iter().enumerate() {
+            layers.push(Layer {
+                name: format!("l{i}"),
+                kind,
+                inputs: vec![i],
+                outputs: vec![i + 1],
+            });
+        }
+        let n = layers.len();
+        Graph {
+            layers,
+            blob_count: n,
+            input_blob: 0,
+            output_blob: n - 1,
+        }
+    }
+
+    #[test]
+    fn scale_through_pixel_unshuffle() {
+        // RealESRGAN_x2plus: unshuffle by 2, then a 4x network.
+        let x2 = chain(vec![
+            LayerKind::PixelUnshuffle { factor: 2 },
+            LayerKind::InterpNearest { scale: 2 },
+            LayerKind::InterpNearest { scale: 2 },
+        ]);
+        assert_eq!(infer_scale(&x2).unwrap(), 2);
+        assert_eq!(infer_channels(&x2, 3).unwrap(), [3, 12, 12, 12]);
+        let x1 = chain(vec![
+            LayerKind::PixelUnshuffle { factor: 4 },
+            LayerKind::InterpNearest { scale: 4 },
+        ]);
+        assert_eq!(infer_scale(&x1).unwrap(), 1);
+        // Half the input size is not an integer scale.
+        let half = chain(vec![
+            LayerKind::PixelUnshuffle { factor: 4 },
+            LayerKind::InterpNearest { scale: 2 },
+        ]);
+        let err = infer_scale(&half).unwrap_err().to_string();
+        assert!(err.contains("1/2"), "{err}");
     }
 }

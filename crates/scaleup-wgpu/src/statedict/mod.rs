@@ -107,12 +107,7 @@ impl StateDict {
     /// Length of the sequence `<prefix>.0`, `<prefix>.1`, ...: the largest index N found in a
     /// key `<prefix>.N` or `<prefix>.N.<rest>`, plus one; 0 if there is none.
     pub fn seq_len(&self, prefix: &str) -> usize {
-        self.tensors
-            .keys()
-            .filter_map(|k| k.strip_prefix(prefix)?.strip_prefix('.'))
-            .filter_map(|rest| rest.split('.').next()?.parse::<usize>().ok())
-            .max()
-            .map_or(0, |n| n + 1)
+        seq_len_of(self.tensors.keys().map(String::as_str), prefix)
     }
 
     pub fn keys_matching(&self, re: &Regex) -> Vec<&str> {
@@ -122,6 +117,14 @@ impl StateDict {
             .map(String::as_str)
             .collect()
     }
+}
+
+/// [`StateDict::seq_len`] over any set of keys.
+pub fn seq_len_of<'k>(keys: impl Iterator<Item = &'k str>, prefix: &str) -> usize {
+    keys.filter_map(|k| k.strip_prefix(prefix)?.strip_prefix('.'))
+        .filter_map(|rest| rest.split('.').next()?.parse::<usize>().ok())
+        .max()
+        .map_or(0, |n| n + 1)
 }
 
 #[cfg(test)]

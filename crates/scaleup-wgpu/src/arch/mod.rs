@@ -7,9 +7,9 @@ mod esrgan;
 mod plksr;
 mod span;
 
-pub use esrgan::esrgan_to_old_arch;
+pub use esrgan::{OldArch, esrgan_to_old_arch};
 
-use crate::statedict::StateDict;
+use crate::statedict::{StateDict, TensorF32};
 use scaleup_core::{Result, ScaleUpError};
 
 /// A detected network. Fields are the network's own hyperparameters, as the builder needs them.
@@ -85,6 +85,29 @@ impl ArchSpec {
         }
     }
 
+    /// Channels of the image the model takes: before the pixel unshuffle, for ESRGAN.
+    pub fn input_channels(&self) -> u32 {
+        match *self {
+            ArchSpec::Esrgan {
+                in_nc,
+                shuffle_factor,
+                ..
+            } => in_nc / shuffle_factor.map_or(1, |f| f * f),
+            ArchSpec::Compact { in_nc, .. } => in_nc,
+            ArchSpec::Span { in_ch, .. } => in_ch,
+            ArchSpec::RealPlksr { .. } => 3,
+        }
+    }
+
+    /// Channels of the image the model returns.
+    pub fn output_channels(&self) -> u32 {
+        match *self {
+            ArchSpec::Esrgan { out_nc, .. } | ArchSpec::Compact { out_nc, .. } => out_nc,
+            ArchSpec::Span { out_ch, .. } => out_ch,
+            ArchSpec::RealPlksr { .. } => 3,
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             ArchSpec::Esrgan { .. } => "ESRGAN",
@@ -135,9 +158,25 @@ fn report(missing: &[&str]) -> Option<String> {
     (!missing.is_empty()).then(|| format!("missing {}", missing.join(", ")))
 }
 
+/// Named weight tensors: a state dict, or a view of one under other names.
+pub trait Tensors {
+    fn tensor(&self, key: &str) -> Result<&TensorF32>;
+    fn names(&self) -> Vec<&str>;
+}
+
+impl Tensors for StateDict {
+    fn tensor(&self, key: &str) -> Result<&TensorF32> {
+        self.get(key)
+    }
+
+    fn names(&self) -> Vec<&str> {
+        self.tensors.keys().map(String::as_str).collect()
+    }
+}
+
 /// The shape of `key`, which must have `rank` dimensions.
-fn shape<'a>(sd: &'a StateDict, key: &str, rank: usize) -> Result<&'a [usize]> {
-    let shape = &sd.get(key)?.shape;
+fn shape<'a>(sd: &'a impl Tensors, key: &str, rank: usize) -> Result<&'a [usize]> {
+    let shape = &sd.tensor(key)?.shape;
     if shape.len() != rank {
         return Err(ScaleUpError::Model(format!(
             "{key} has shape {shape:?}, expected {rank} dimensions"
@@ -147,7 +186,7 @@ fn shape<'a>(sd: &'a StateDict, key: &str, rank: usize) -> Result<&'a [usize]> {
 }
 
 /// Dimension `axis` of `key` (of rank `rank`), non-zero.
-fn dim(sd: &StateDict, key: &str, rank: usize, axis: usize) -> Result<u32> {
+fn dim(sd: &impl Tensors, key: &str, rank: usize, axis: usize) -> Result<u32> {
     let shape = shape(sd, key, rank)?;
     match u32::try_from(shape[axis]) {
         Ok(n) if n > 0 => Ok(n),
@@ -258,6 +297,32 @@ pub(crate) mod tests {
             ),
             ("Compact", 2, 1)
         );
+        assert_eq!(
+            (compact.input_channels(), compact.output_channels()),
+            (3, 3)
+        );
+        let x2 = ArchSpec::Esrgan {
+            in_nc: 12,
+            out_nc: 3,
+            nf: 64,
+            nb: 23,
+            gc: 32,
+            scale: 4,
+            plus: false,
+            shuffle_factor: Some(2),
+        };
+        assert_eq!((x2.input_channels(), x2.output_channels()), (3, 3));
+        let gray = ArchSpec::Esrgan {
+            in_nc: 1,
+            out_nc: 1,
+            nf: 64,
+            nb: 23,
+            gc: 32,
+            scale: 4,
+            plus: false,
+            shuffle_factor: None,
+        };
+        assert_eq!((gray.input_channels(), gray.output_channels()), (1, 1));
     }
 
     /// Detects every checkpoint downloaded by `tools/fetch_sources.py` (not part of CI). The

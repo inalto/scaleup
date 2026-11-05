@@ -169,6 +169,7 @@ pub struct Kernels {
     eltwise: wgpu::ComputePipeline,
     interp: wgpu::ComputePipeline,
     shuffle: wgpu::ComputePipeline,
+    unshuffle: wgpu::ComputePipeline,
     /// The shared-memory convolution, on devices with the workgroup storage for it.
     tiled: Option<wgpu::ComputePipeline>,
     /// Bound where a kernel does not use an auxiliary buffer.
@@ -242,6 +243,7 @@ impl Kernels {
             eltwise: pipeline("eltwise", include_str!("eltwise.wgsl")),
             interp: pipeline("interp", include_str!("interp_nearest.wgsl")),
             shuffle: pipeline("shuffle", include_str!("pixel_shuffle.wgsl")),
+            unshuffle: pipeline("unshuffle", include_str!("pixel_unshuffle.wgsl")),
             tiled: use_tiled(limits)
                 .then(|| {
                     // Shader compilers differ between drivers. The direct kernel gives the same
@@ -506,6 +508,20 @@ impl Kernels {
             ..Params::default()
         };
         self.per_pixel(rec, &self.shuffle, &bg, &params, dst);
+    }
+
+    /// `dst` sides are `src` sides divided by `r`.
+    pub fn pixel_unshuffle(&self, rec: &mut Recorder<'_>, src: &Buf, dst: &Buf, r: u32) {
+        let bg = self.bind(rec, &src.buffer, &dst.buffer, None, None);
+        let params = Params {
+            h: dst.h,
+            w: dst.w,
+            factor: r,
+            y0: src.h,
+            y1: src.w,
+            ..Params::default()
+        };
+        self.per_pixel(rec, &self.unshuffle, &bg, &params, dst);
     }
 
     /// Channel concatenation is a sequence of copies in planar layout.
@@ -1007,6 +1023,21 @@ mod tests {
         g.kernels.pixel_shuffle(&mut rec, &s, &d, 4);
         rec.flush();
         assert_matches(g, &d, &cpu_ref::pixel_shuffle(&a, 4));
+    }
+
+    #[test]
+    fn pixel_unshuffle_matches_ref() {
+        let Some(g) = gpu() else { return };
+        let mut rng = Rng(52);
+        for (r, c, h, w) in [(2, 3, 10, 14), (4, 3, 8, 12), (2, 5, 2, 18)] {
+            let a = rng.tensor(c, h, w);
+            let s = upload(&g.device, &g.queue, &a);
+            let d = empty(g, c * r * r, h / r, w / r);
+            let mut rec = Recorder::new(&g.kernels, &g.device, &g.queue);
+            g.kernels.pixel_unshuffle(&mut rec, &s, &d, r);
+            rec.flush();
+            assert_matches(g, &d, &cpu_ref::pixel_unshuffle(&a, r));
+        }
     }
 
     #[test]

@@ -90,6 +90,15 @@ fn output_shape(
             }
             (c / r2, h * factor, w * factor)
         }
+        LayerKind::PixelUnshuffle { factor } => {
+            let f = *factor;
+            if f == 0 || !h.is_multiple_of(f) || !w.is_multiple_of(f) {
+                return Err(err(&format!(
+                    "a {w}x{h} input to a pixel unshuffle must be a multiple of {f}"
+                )));
+            }
+            (c * f * f, h / f, w / f)
+        }
         LayerKind::Input | LayerKind::Split => (c, h, w),
     })
 }
@@ -360,6 +369,9 @@ impl Executor {
             }
             LayerKind::InterpNearest { scale } => k.interp(rec, &input(0), &dst, *scale),
             LayerKind::PixelShuffle { factor } => k.pixel_shuffle(rec, &input(0), &dst, *factor),
+            LayerKind::PixelUnshuffle { factor } => {
+                k.pixel_unshuffle(rec, &input(0), &dst, *factor)
+            }
             LayerKind::Input | LayerKind::Split => unreachable!("not planned as steps"),
         }
     }
@@ -594,6 +606,70 @@ mod tests {
         assert_eq!(p.steps.len(), 3);
         assert_eq!(p.blob_last_use[p.root[3]], usize::MAX);
         assert_slots_sound(&g, &p);
+    }
+
+    /// The first layers of a 2x Real-ESRGAN: unshuffle by 2, convolve, then a 4x network.
+    fn unshuffle_graph(rng: &mut Rng) -> Graph {
+        Graph {
+            layers: vec![
+                layer("in", LayerKind::Input, &[], &[0]),
+                layer(
+                    "unshuffle",
+                    LayerKind::PixelUnshuffle { factor: 2 },
+                    &[0],
+                    &[1],
+                ),
+                layer(
+                    "c",
+                    conv_kind(rng, 12, 8, 3, Activation::Leaky(0.2)),
+                    &[1],
+                    &[2],
+                ),
+                layer("up", LayerKind::InterpNearest { scale: 4 }, &[2], &[3]),
+                layer(
+                    "last",
+                    conv_kind(rng, 8, 3, 3, Activation::None),
+                    &[3],
+                    &[4],
+                ),
+            ],
+            blob_count: 5,
+            input_blob: 0,
+            output_blob: 4,
+        }
+    }
+
+    #[test]
+    fn plan_shapes_through_pixel_unshuffle() {
+        let mut rng = Rng(8);
+        let g = unshuffle_graph(&mut rng);
+        let p = plan(&g, 3, 10, 6).unwrap();
+        assert_eq!(
+            p.blob_shapes,
+            [(3, 10, 6), (12, 5, 3), (8, 5, 3), (8, 20, 12), (3, 20, 12)]
+        );
+        assert_slots_sound(&g, &p);
+    }
+
+    #[test]
+    fn input_not_a_multiple_of_the_unshuffle_is_an_error() {
+        let mut rng = Rng(9);
+        let g = unshuffle_graph(&mut rng);
+        for (h, w) in [(9, 6), (10, 7)] {
+            let err = plan(&g, 3, h, w).unwrap_err().to_string();
+            assert!(
+                err.contains("unshuffle") && err.contains("multiple of 2"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn executor_matches_cpu_ref_through_pixel_unshuffle() {
+        let mut rng = Rng(10);
+        let g = unshuffle_graph(&mut rng);
+        let input = rng.tensor(3, 14, 10);
+        assert_executor_matches(&g, &input);
     }
 
     #[test]
