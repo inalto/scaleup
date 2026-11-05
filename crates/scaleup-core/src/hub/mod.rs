@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod download;
 pub mod installed;
 pub mod license;
+pub mod recommend;
 
 pub use catalog::{
     Capabilities, Catalog, Filter, ModelCard, Readiness, Resource, cache_is_fresh, readiness,
@@ -14,3 +15,4 @@ pub use download::{
 };
 pub use installed::{Installed, InstalledModel};
 pub use license::{LicenseClass, classify_license, commercial_ok};
+pub use recommend::{Ask, Content, Goal, Recommendation, SpeedPref, recommend};
