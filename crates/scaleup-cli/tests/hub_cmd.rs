@@ -128,8 +128,9 @@ fn hub_install_manual_host_exit_3_with_hint() {
         .assert()
         .code(3)
         .stderr(predicate::str::contains("https://mega.nz/"))
+        // SPAN runs natively, so the PyTorch file is preferred to the card's ONNX one.
         .stderr(predicate::str::contains(
-            "save the file as '1x-BroadcastToStudio-SPAN.onnx' (sha256 3d2cc3524d693957b9ea309ee9f20801c53c67ff6ade503cc55f7cbed80ae758)",
+            "save the file as '1x-BroadcastToStudio-SPAN.pth' (sha256 77e2656651cf3e2558a7dd8756b47013f5dc20dc24c310801aaabe96cc9ed6ab)",
         ))
         .stderr(predicate::str::contains(
             "`scaleup hub import 1x-BroadcastToStudio-SPAN <file>`",

@@ -16,7 +16,7 @@ The ONNX Runtime rows use the same architecture with different weights, so they 
 ## Reading the numbers
 
 - **Inference only**, without model load and PNG writing, wgpu takes 3.8 s for standard at tile 256 and 1.0 s for lite at tile 512. Most of the lite run's 8.2 s is PNG encoding, which every ScaleUP backend shares.
-- **`RealESRGAN_x4plus.pth` run natively** on `odd_1001x733.png` at the CLI's default tile takes 182 s through the CLI, against 39 s for its ONNX export on DirectML (outputs 86.6 dB apart).
+- **`RealESRGAN_x4plus.pth` run natively** on `odd_1001x733.png`, whole CLI run at the default tile, release build: 180.0 s, against 180.8 s for the ncnn file of the same network (`upscayl-standard-4x.param`) and 37.3 s for its ONNX export on DirectML (outputs 86.6 dB apart). Reading PyTorch weights costs nothing over the ncnn path; the gap to DirectML is the executor's.
 - **`upscayl-bin.exe` fails at tile 512 with the standard model.** After 369 s it reports success and writes an entirely black image. wgpu and DirectML both complete that tile correctly on this card.
 
 ## Shared-memory convolution
