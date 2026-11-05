@@ -99,6 +99,9 @@ impl ModelEntry {
             "span" => Some(16),
             "srvggnetcompact" | "compact" => Some(32),
             "rrdbnet" | "esrgan" => Some(64),
+            // Not measured: 17x17 kernels give a receptive radius above 100 pixels, and the wgpu
+            // backend asks for 64 from the graph of such a model.
+            "realplksr" => Some(64),
             _ => None,
         }
     }
@@ -701,6 +704,9 @@ mod tests {
         assert_eq!(arch("compact").preferred_overlap(), Some(32));
         assert_eq!(arch("span").preferred_overlap(), Some(16));
         assert_eq!(arch("dat").preferred_overlap(), None);
+        // From the receptive radius of its 17x17 kernels, as the wgpu graph gives it.
+        assert_eq!(arch("realplksr").preferred_overlap(), Some(64));
+        assert_eq!(arch("RealPLKSR").preferred_overlap(), Some(64));
     }
 
     fn installed_model(

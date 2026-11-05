@@ -25,6 +25,26 @@ fn largest_side(graph: &Graph, max_buffer: u64) -> Result<u32> {
     Ok(fits)
 }
 
+/// The overlap `graph` needs, from its receptive radius: the sum of every convolution's `k / 2`
+/// (one pixel per 3x3, eight per 17x17), mapped onto the steps measured in `BENCH.md` for
+/// networks of 3x3 convolutions (34 → 32, 96 → 48, 351 → 64). 64 is the most any measured
+/// network needed, so deeper ones get 64 too.
+fn overlap_for(graph: &Graph) -> u32 {
+    let radius: u32 = graph
+        .layers
+        .iter()
+        .map(|l| match l.kind {
+            LayerKind::Conv { k, .. } => k / 2,
+            _ => 0,
+        })
+        .sum();
+    match radius {
+        0..=40 => 32,
+        41..=100 => 48,
+        _ => 64,
+    }
+}
+
 /// A network (from an ncnn file or a state dict) ready to run on one device.
 pub struct GraphModel {
     graph: Graph,
@@ -80,19 +100,9 @@ impl Model for GraphModel {
         Some(self.max_side)
     }
 
-    /// By depth, from the seams measured in `BENCH.md`: the file does not name its architecture.
+    /// From the receptive radius, see [`overlap_for`]: the file does not name its architecture.
     fn preferred_overlap(&self) -> u32 {
-        let convs = self
-            .graph
-            .layers
-            .iter()
-            .filter(|l| matches!(l.kind, LayerKind::Conv { .. }))
-            .count();
-        match convs {
-            0..=40 => 32,
-            41..=100 => 48,
-            _ => 64,
-        }
+        overlap_for(&self.graph)
     }
 
     fn run(&self, tile: &Image32) -> Result<Image32> {
@@ -148,6 +158,52 @@ mod tests {
             let m = b.load_model(&p, None).unwrap();
             assert_eq!(m.preferred_overlap(), want, "{name}");
         }
+    }
+
+    /// `n` convolutions of size `k` in a chain, with no weights (only the shape counts here).
+    fn conv_chain(n: usize, k: u32) -> crate::ncnn::Graph {
+        use crate::ncnn::{Activation, Graph, Layer, LayerKind};
+        let conv = |i: usize| Layer {
+            name: format!("conv{i}"),
+            kind: LayerKind::Conv {
+                out: 3,
+                k,
+                pad: k / 2,
+                bias: false,
+                act: Activation::None,
+                weights: Vec::new(),
+                biases: Vec::new(),
+            },
+            inputs: vec![i],
+            outputs: vec![i + 1],
+        };
+        let input = Layer {
+            name: "in".into(),
+            kind: LayerKind::Input,
+            inputs: Vec::new(),
+            outputs: vec![0],
+        };
+        Graph {
+            layers: std::iter::once(input).chain((0..n).map(conv)).collect(),
+            blob_count: n + 1,
+            input_blob: 0,
+            output_blob: n,
+        }
+    }
+
+    #[test]
+    fn overlap_follows_the_receptive_radius() {
+        use super::overlap_for;
+        // 3x3 convolutions: one pixel each, the steps measured in BENCH.md by depth.
+        assert_eq!(overlap_for(&conv_chain(34, 3)), 32);
+        assert_eq!(overlap_for(&conv_chain(96, 3)), 48);
+        assert_eq!(overlap_for(&conv_chain(351, 3)), 64);
+        // 1x1 convolutions see nothing around the pixel.
+        assert_eq!(overlap_for(&conv_chain(200, 1)), 32);
+        // Few but large: thirteen 17x17 convolutions reach 104 pixels, as deep as 351 3x3 ones.
+        assert_eq!(overlap_for(&conv_chain(13, 17)), 64);
+        assert_eq!(overlap_for(&conv_chain(4, 17)), 32);
+        assert_eq!(overlap_for(&conv_chain(6, 17)), 48);
     }
 
     #[test]
