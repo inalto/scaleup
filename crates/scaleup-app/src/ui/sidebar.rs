@@ -426,7 +426,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) -> Sideba
 
     egui::Panel::bottom("sidebar_actions")
         .show_separator_line(false)
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             ui.add_space(8.0);
             let size = egui::vec2(ui.available_width(), 40.0);
             if running {
@@ -459,7 +459,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) -> Sideba
             ui.add_space(8.0);
         });
 
-    egui::CentralPanel::default().show_inside(ui, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_enabled_ui(!running, |ui| {
                 ui.horizontal(|ui| {

@@ -473,9 +473,9 @@ impl HubDialog {
                     .resizable(true)
                     .default_size(360.0)
                     .min_size(280.0)
-                    .show_inside(ui, |ui| self.details(ui, &cat, busy, &mut actions));
+                    .show(ui, |ui| self.details(ui, &cat, busy, &mut actions));
                 egui::CentralPanel::default()
-                    .show_inside(ui, |ui| self.list(ui, &cat, busy, &mut actions));
+                    .show(ui, |ui| self.list(ui, &cat, busy, &mut actions));
             });
         self.open = open;
         self.recommend_window(ctx, filters);

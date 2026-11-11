@@ -230,7 +230,7 @@ impl eframe::App for App {
         self.drain_events(&ctx);
         self.handle_shortcuts(&ctx);
 
-        let dropped = ctx.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.clone()));
+        let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
         if let Some(path) = dropped {
             self.select(&path);
         }
@@ -239,7 +239,7 @@ impl eframe::App for App {
         }
 
         let mut open_folder = false;
-        egui::Panel::bottom("status").show_inside(ui, |ui| {
+        egui::Panel::bottom("status").show(ui, |ui| {
             ui.add_space(4.0);
             open_folder = statusbar::show(ui, &self.state, &mut self.log_open);
             ui.add_space(4.0);
@@ -252,7 +252,7 @@ impl eframe::App for App {
             egui::Panel::bottom("log")
                 .resizable(true)
                 .default_size(140.0)
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .stick_to_bottom(true)
                         .auto_shrink(false)
@@ -267,7 +267,7 @@ impl eframe::App for App {
         let side = egui::Panel::left("sidebar")
             .exact_size(300.0)
             .resizable(false)
-            .show_inside(ui, |ui| sidebar::show(ui, &mut self.state, &self.registry))
+            .show(ui, |ui| sidebar::show(ui, &mut self.state, &self.registry))
             .inner;
         if let Some(p) = side.picked {
             self.select(&p);
@@ -289,7 +289,7 @@ impl eframe::App for App {
             self.send(UiMsg::Stop);
         }
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             if self.compare.is_empty() {
                 ui.centered_and_justified(|ui| {
                     match &self.state.mode {

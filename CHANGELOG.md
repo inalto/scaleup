@@ -23,6 +23,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `scaleup-core` API: `Upscaler::run_file` now takes `Option<&dyn Model>` (`None` extends without
   upscaling) and an `Option<&dyn Inpainter>`; `FileJob` gained an `extend` field and no longer
   implements `Eq`; the new `Upscaler::load_inpainter` takes a `CancelToken` that stops its download.
+- Dependencies: `eframe`/`egui` 0.37, `rfd` 0.18. Building from source now needs Rust 1.95.
 
 ## [0.2.1] - 2026-11-05
 
