@@ -25,7 +25,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+          # Pinned: a binary built on a newer Ubuntu needs its newer glibc and will not start
+          # on older distributions.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04 }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
           # x86_64-apple-darwin is left out: ort 2.0.0-rc.15 has no prebuilt ONNX Runtime for it.
           - { target: aarch64-apple-darwin, os: macos-latest }
