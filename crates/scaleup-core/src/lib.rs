@@ -6,6 +6,7 @@
 
 pub mod backend;
 pub mod error;
+pub mod extend;
 pub mod facade;
 pub mod hub;
 pub mod image32;
@@ -21,6 +22,7 @@ pub use backend::{
     list_devices, register_extra_backend,
 };
 pub use error::{Result, ScaleUpError};
+pub use extend::{ExtendOptions, Fill, MarginSpec, Margins, pad_canvas};
 pub use facade::{FileJob, Upscaler};
 pub use image32::Image32;
 pub use io::{OutputFormat, load_image, save_image};
