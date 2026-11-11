@@ -272,3 +272,45 @@ fn models_list_hides_inpainters_unless_asked() {
         .stdout(predicate::str::contains("lama-512"))
         .stdout(predicate::str::contains("realesrgan-x4plus"));
 }
+
+#[test]
+fn ctrlc_during_inpainter_download_exits_4_and_leaves_no_file() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        if let Ok((mut s, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\nabcdef");
+            let _ = s.flush();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    });
+    let (dir, input, out) = setup();
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        format!(
+            r#"{{"version":1,"models":[{{"id":"slow-fill","name":"Slow","arch":"lama","scale":1,
+            "license":"MIT","commercial":true,"size_bytes":100000,"kind":"inpaint",
+            "url":"http://127.0.0.1:{port}/slow.onnx","sha256":"{}","tags":[],"notes":""}}]}}"#,
+            "00".repeat(32)
+        ),
+    )
+    .unwrap();
+    let models = dir.path().join("models");
+    extend(&input, &out)
+        .env("SCALEUP_TEST_MANIFEST", &manifest)
+        .env("SCALEUP_TEST_CANCEL_AFTER_MS", "300")
+        .arg("-m")
+        .arg(&models)
+        .args(["--extend", "2", "--extend-model", "slow-fill"])
+        .assert()
+        .code(4);
+    assert!(!out.exists());
+    let leftovers: Vec<_> = std::fs::read_dir(&models)
+        .map(|d| d.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}

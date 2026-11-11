@@ -111,7 +111,7 @@ tiles from zero. With `--json` every line is an object:
 
 ```
 {"event":"progress","percent":12.34}
-{"event":"phase","phase":"saving"}            (verbose, or resizing; "extending" when the canvas grows)
+{"event":"phase","phase":"saving"}            (verbose, or resizing; the "extending" phase only with -v)
 {"event":"file","index":1,"total":3,"path":"..."}
 {"event":"done","path":"..."}
 {"event":"error","message":"..."}

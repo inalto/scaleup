@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use scaleup_core::io::is_supported_input;
 use scaleup_core::{
-    CancelToken, ExtendOptions, FileJob, Fill, Inpainter, Model, OutputFormat, ScaleUpError,
-    UpscaleOptions, Upscaler,
+    CancelToken, ExtendOptions, FileJob, Fill, Inpainter, Model, ModelKind, OutputFormat,
+    ScaleUpError, UpscaleOptions, Upscaler,
 };
 
 use crate::args::{CanvasArgs, CommonArgs, ExtendArgs, UpscaleArgs, UpscaleOpts, parse_gpu};
@@ -241,8 +241,17 @@ fn run(
     let mut inpainter = None;
     if extend.as_ref().is_some_and(|e| e.fill == Fill::Ai) {
         let id = canvas.model();
-        if upscaler.registry().get(id).is_some() && !upscaler.registry().is_downloaded(id) {
+        // Like the upscale model: download first so that Ctrl-C can stop it. An upscaling id is left
+        // to `load_inpainter`, which refuses it without downloading.
+        let downloadable = upscaler
+            .registry()
+            .get(id)
+            .is_some_and(|e| e.kind == ModelKind::Inpaint);
+        if downloadable && !upscaler.registry().is_downloaded(id) {
             rep.info(&format!("downloading model {id}"));
+            upscaler
+                .registry()
+                .ensure_cancellable(id, &mut download_progress(rep), cancel)?;
         }
         inpainter = Some(upscaler.load_inpainter(id, &mut download_progress(rep))?);
         rep.info(&format!("inpainting model: {id}"));
