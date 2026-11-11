@@ -211,7 +211,7 @@ def probe():
     hole[:, 256:] = True
 
     def mean(o, sl):
-        return np.round(o[:, sl].reshape(-1, 3).mean(0), 1).tolist()
+        return np.round(o[:, sl].reshape(-1, 3).astype(np.float64).mean(0), 1).tolist()
 
     print("== MI-GAN polarity / channel order (known half red, hole half green garbage)")
     s = make_session("migan", "cpu")
@@ -231,7 +231,7 @@ def probe():
     print("migan hole-content sensitivity (max abs diff of outputs):", int(np.abs(oa.astype(int) - ob.astype(int)).max()))
     m1 = np.where(hole, 0, 1).astype(np.uint8)[None, None]
     o1 = s.run(None, {"image": np.ascontiguousarray(a.transpose(2, 0, 1)[None]), "mask": m1})[0]
-    print("migan mask 1 instead of 255, mean over hole:", np.round(o1[0].transpose(1, 2, 0)[:, 256:].reshape(-1, 3).mean(0), 1).tolist())
+    print("migan mask 1 instead of 255, mean over hole:", np.round(o1[0].transpose(1, 2, 0)[:, 256:].reshape(-1, 3).astype(np.float64).mean(0), 1).tolist())
     # natural image: is BGR vs RGB feeding distinguishable?
     nat = load_images()["chelsea_cat"][:W, :W]
     nat = np.asarray(Image.fromarray(nat).resize((W, W)))
@@ -284,6 +284,21 @@ def probe():
                 errs[order].append(float(np.abs(o[:, 256:] - gi[:, 256:].astype(np.float32)).mean()))
         print(f"{mname} ground-truth channel order (mean abs error vs original on hidden half, 4 photos): "
               f"fed RGB {np.mean(errs['RGB']):.1f}  fed BGR {np.mean(errs['BGR']):.1f}")
+
+    print("== accepted spatial sizes")
+    sm = make_session("migan", "cpu")
+    for hh, ww in ((512, 512), (256, 384), (500, 500), (1024, 1024)):
+        try:
+            r = sm.run(None, {"image": np.zeros((1, 3, hh, ww), np.uint8), "mask": np.full((1, 1, hh, ww), 255, np.uint8)})[0]
+            print("migan", hh, ww, "ok", r.shape)
+        except Exception as e:
+            print("migan", hh, ww, "FAIL", str(e)[:100])
+    sl = make_session("lama_fp32", "cpu")
+    try:
+        sl.run(None, {"image": np.zeros((1, 3, 256, 256), np.float32), "mask": np.zeros((1, 1, 256, 256), np.float32)})
+        print("lama 256x256 ok")
+    except Exception as e:
+        print("lama 256x256 REJECTED", str(e).splitlines()[0][:100])
 
 
 # --------------------------------------------------------------------------- timing

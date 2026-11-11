@@ -33,9 +33,9 @@ Signatures read with onnxruntime (`tools/outpaint_spike.py probe`):
 | Input `image` | `image`, uint8, `[batch_size, 3, height, width]` | `image`, float32, `[batch, 3, 512, 512]` |
 | Input `mask` | `mask`, uint8, `[batch_size, 1, height, width]` | `mask`, float32, `[batch, 1, 512, 512]` |
 | Output | `result`, uint8, `[N, 3, H, W]` | `output`, float32, `[batch, 3, 512, 512]` |
-| Spatial size | dynamic; 256x384, 500x500, 512x512 and 1024x1024 all ran. Use 512x512. | fixed 512x512 only; a 256x256 input is rejected (INVALID_ARGUMENT) |
+| Spatial size | dynamic; 256x384, 500x500, 512x512 and 1024x1024 all ran (re-run, logged in `probe_fix1.txt`). Use 512x512. | fixed 512x512 only; a 256x256 input is rejected (INVALID_ARGUMENT) |
 | Input value range | 0..255 | 0..1 |
-| Output value range | 0..255 (uint8, no scaling) | 0..255 float (saw 0.0..255.5); clip to 0..255 and round |
+| Output value range | 0..255 (uint8, no scaling) | 0..255 float (observed range 0.0 to 255.0); clip to 0..255 and round |
 | Channel order | RGB in, RGB out | RGB in, RGB out |
 | Mask polarity | **255 = known pixel, 0 = hole** | **1.0 = hole, 0.0 = known pixel** |
 | Hole pixel content in `image` | ignored | ignored |
@@ -46,9 +46,9 @@ garbage, right half masked):
 
 | Fact | MI-GAN experiment | LaMa experiment |
 |---|---|---|
-| Mask polarity | `known=255/hole=0`: left stayed `[255,0,0]` and the hole became `[214,8,1]` (red continued). Inverted mask: the left half was repainted `[6,82,14]` and the right half kept the green garbage. A mask of value 1 instead of 255 is treated as hole everywhere (hole mean `[135,125,109]`, a hallucination). | `hole=1`: left `[255.5,0,0]`, hole `[207,23,17]` (red continued). `hole=0`: left repainted `[6,228,54]`, right green kept. |
-| Value range | uint8 in and out; inputs are 0..255. | 0..1 input: red continues. `-1..1` input: hole `[254,254,252]` (white, wrong). 0..255 input: hole `[255,255,255]` (wrong). Output is on a 0..255 scale (max 255.5). |
-| Channel order | Feeding RGB gave a red continuation in channel 0; feeding BGR gave a continuation in channel 2. So the output order equals the input order. Whether the training order is RGB cannot be proven by quality: on 4 photos with the right half hidden the error against the original was 54.3 (fed RGB) vs 54.2 (fed BGR), indistinguishable. Use RGB (documented upstream order); the model is colour-aware (RGB-fed and BGR-fed outputs differ by 46 grey levels on a natural image). | Same: red channel 0 in gives channel 0 out. Ground-truth test 47.0 (RGB) vs 46.7 (BGR), indecisive. Use RGB. |
+| Mask polarity | `known=255/hole=0`: left stayed `[255,0,0]` and the hole became `[214,8,1]` (red continued). Inverted mask: the left half was repainted `[6,82,14]` and the right half kept the green garbage. A mask of value 1 instead of 255 is treated as hole everywhere (hole mean `[135,125,109]`, a hallucination). | `hole=1`: left `[255,0,0]`, hole `[207.5,22.7,16.6]` (red continued). `hole=0`: left repainted `[5.6,228,53.6]`, right green kept. |
+| Value range | uint8 in and out; inputs are 0..255. | 0..1 input: red continues. `-1..1` input: hole `[253,254,252]` (white, wrong). 0..255 input: hole `[255,254,254]` (wrong). Output is on a 0..255 scale (observed max 255.0). Means are computed in float64; an earlier float32 `mean()` printed 255.5 spuriously. |
+| Channel order | Feeding RGB gave a red continuation in channel 0; feeding BGR gave a continuation in channel 2. So the output order equals the input order. Whether the training order is RGB cannot be proven by quality (probe re-run and logged in `F:/Apps/ScaleUP/outpaint-spike/probe_fix1.txt`): on 4 photos with the right half hidden the error against the original was 54.3 (fed RGB) vs 54.2 (fed BGR), indistinguishable. Use RGB (documented upstream order); the model is colour-aware (RGB-fed and BGR-fed outputs differ by 46 grey levels on a natural image). | Same: red channel 0 in gives channel 0 out. Ground-truth test 47.0 (RGB) vs 46.7 (BGR), indecisive. Use RGB. |
 | Hole content ignored | Two different garbage fills gave outputs with max absolute difference 0. | Same, difference 0.0. So the prefill may be fed in the hole; it has no effect. |
 
 ## 3. Timing, one 512x512 window (half known), 5 runs after 2 warm-ups
@@ -74,7 +74,11 @@ cover, found while running it:
   `rocket_sky` and `coffee_wall` at 256 (2 windows), and `chelsea_cat` at 128 (1) and 256 (2). Task 5/6 needs
   the same fallback, not a skip.
 - Pixels outside the canvas inside a window are reflect-padded and counted as known; the window for a strip
-  shorter than the window is centred on the strip.
+  shorter than the window is centred on the strip. For a source shorter than 512 that centred side window also
+  reaches into (and fills part of) the corner regions before the corner windows run, so corners are not always
+  filled by a corner window with three known quadrants.
+- In the k experiment at k=4 the window (2048 px) is taller than the 2001 px source, so reflect-padded rows
+  counted as known there.
 
 Window logs per image, margin and model: `out/sheets_log.txt` (windows, minimum known fraction, relaxed
 windows, seconds).
@@ -118,9 +122,11 @@ Text at the frame edge was not tested (the screenshot's borders are plain).
 Summary of observed behaviour:
 
 - LaMa fails by smoothing: contexts it cannot continue become blur or flat tone. Never invented objects in these tests.
-- MI-GAN fails by inventing: new objects, faces, text-like marks, regular dot patterns. Frequent from +128 on, and almost always at +256 or on four sides.
-- Four-sided extension is much worse than one-sided at the same margin, for both models. Corners are where most defects appear.
-- Margin bands for LaMa on photos: +64 good, +128 acceptable, +256 soft/plain background but not invented (one-sided OK on soft backgrounds, four-sided loses detail). Textures (`gravel`) are poor beyond +64 for both models.
+- MI-GAN fails by inventing: new objects, faces, text-like marks, regular dot patterns. It already fails at +64 on `chelsea_cat`, `rocket_sky` and `screenshot_text` (right side) and on four sides at +64 on `chelsea_cat`, `rocket_sky`, `astronaut_cut` and `gravel_texture`.
+- MI-GAN band supported by the table: one side only, +64 and +128, on `coffee_wall` and `astronaut_cut`. Four sides: only `coffee_wall` +64 (with a pale band along the top); nothing else.
+- LaMa band supported by the table (photos with soft or plain backgrounds: coffee, chelsea, astronaut, rocket sky; screenshot with plain borders): one side +64 and +128 acceptable (`chelsea_cat` +128 has a pink smear at the top-right corner); +256 gives a plain or blurred fill, not invented objects. Four sides: +64 clean or acceptable on all of these; +128 good on `coffee_wall` and `rocket_sky`, but a blurred halo on `chelsea_cat` and lost sleeves/body on `astronaut_cut`; +256 is mostly flat tone. These are "acceptable", not "good", judged by eye at sheet scale.
+- Textures are excluded: `gravel_texture` fails for LaMa from +128 one-sided and is visibly smoothed at +64, and fails for MI-GAN from +128 (blob pattern).
+- Four-sided versus one-sided: much worse for MI-GAN at the same margin; for LaMa mixed (similar on coffee and rocket up to +128, worse on chelsea and astronaut from +128).
 
 ## 5. Context factor k experiment
 
@@ -155,12 +161,14 @@ and was **not verified** at 1:1.
   path** with ORT 1.24.4 DirectML (it throws), so Task 4 must pin LaMa to the CPU provider (or retest other builds
   or providers).
 - **Second catalogue entry: yes, but it is MI-GAN, as the light/fast option.** 29.5 MB, 54 ms per window on
-  DirectML, 709 ms on CPU, good enough for margins up to +64, and on easy soft backgrounds (coffee, astronaut)
-  up to +128. Label it as lower quality for large or four-sided extensions. If the owner wants a single entry, ship
+  DirectML, 709 ms on CPU, usable only for one-sided extensions of up to +128 on soft photo backgrounds
+  (`coffee_wall`, `astronaut_cut` in these tests). It failed at +64 on `chelsea_cat`, `rocket_sky`, `screenshot_text` and on
+  most four-sided runs, so label it as an unreliable fast option, not a general one. If the owner wants a single entry, ship
   LaMa only.
 - **Ring depth: window/2 = 256 px at k=1 (256*k at other k), as specified.** Two rings (k=1, >256) visibly
-  degrade LaMa (grey-green drift and banding); use larger k instead of more rings (see k rule). Quality bands to
-  state in the UI/doc: up to 128 px per side good, 256 px soft, beyond that expect blur.
+  degrade LaMa (grey-green drift and banding); use larger k instead of more rings (see k rule). Quality wording the evidence supports (LaMa,
+  photos with soft or plain backgrounds only, textures excluded): up to 128 px per side acceptable, though four-sided 128 can
+  blur or lose detail on busy subjects; 256 px gives a plain or blurred fill. Do not claim "good".
 - **k rule: keep `k = clamp(ceil(max_margin / 192), 1, 4)` for LaMa.** It gave k=1 at 192 (fine), k=2 at 384 (clearly
   better than k=1) and k=4 at 768 (best). For MI-GAN use k=1 whatever the margin (larger k made it worse).
 - **Walk implementation requirements from the evidence:** (a) run the best-placed window when the half-known rule
