@@ -176,10 +176,16 @@ impl Upscaler {
     /// ONNX file path. It always runs on ONNX Runtime, on the main backend's device when that is
     /// ONNX Runtime and otherwise on the device `pref` names there. An upscaling catalogue id, a
     /// missing model or a graph of neither inpainting layout is an error.
+    ///
+    /// `download_progress(done, total)` reports the download's bytes and is not called when the
+    /// model is already on disk. A cancelled `cancel` aborts the download with
+    /// [`ScaleUpError::Cancelled`] and leaves no partial file; the load that follows cannot be
+    /// interrupted.
     pub fn load_inpainter(
         &self,
         id_or_path: &str,
         download_progress: &mut dyn FnMut(u64, u64),
+        cancel: &CancelToken,
     ) -> Result<Box<dyn Inpainter>> {
         let path = match self.registry.get(id_or_path) {
             Some(entry) if entry.kind != ModelKind::Inpaint => {
@@ -190,7 +196,9 @@ impl Upscaler {
                     ids.join(", ")
                 )));
             }
-            Some(_) => self.registry.ensure(id_or_path, download_progress)?,
+            Some(_) => self
+                .registry
+                .ensure_cancellable(id_or_path, download_progress, cancel)?,
             None => self.registry.resolve(id_or_path)?.path,
         };
         self.inpaint_backend()?.load_inpainter(&path)
@@ -1132,12 +1140,64 @@ mod tests {
         let registry = Registry::from_entries(vec![inpaint_entry("fill")], dir.path().into());
         std::fs::copy(inpaint_fixture(), registry.local_path("fill")).unwrap();
         let up = Upscaler::new(DevicePreference::Cpu, registry).unwrap();
-        let by_id = up.load_inpainter("fill", &mut |_, _| {}).unwrap();
+        let by_id = up
+            .load_inpainter("fill", &mut |_, _| {}, &CancelToken::new())
+            .unwrap();
         assert_eq!(by_id.window(), 16);
         let by_path = up
-            .load_inpainter(&inpaint_fixture(), &mut |_, _| {})
+            .load_inpainter(&inpaint_fixture(), &mut |_, _| {}, &CancelToken::new())
             .unwrap();
         assert_eq!(by_path.window(), 16);
+    }
+
+    #[test]
+    fn load_inpainter_download_reports_progress_and_can_be_cancelled() {
+        use std::io::{Read, Write};
+        // Promises 100000 bytes, sends a few, then holds the connection open.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\nabcdef");
+                let _ = s.flush();
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let models = dir.path().join("models");
+        let entry = crate::registry::ModelEntry {
+            url: format!("http://{addr}/slow.onnx"),
+            sha256: "00".repeat(32),
+            ..inpaint_entry("slow-fill")
+        };
+        let up = Upscaler::new(
+            DevicePreference::Cpu,
+            Registry::from_entries(vec![entry], models.clone()),
+        )
+        .unwrap();
+        let cancel = CancelToken::new();
+        let observer = cancel.clone();
+        let mut reported = 0;
+        let res = up.load_inpainter(
+            "slow-fill",
+            &mut |_, _| {
+                reported += 1;
+                observer.cancel();
+            },
+            &cancel,
+        );
+        assert!(
+            matches!(res, Err(ScaleUpError::Cancelled)),
+            "{:?}",
+            res.err()
+        );
+        assert!(reported > 0, "the download reported no progress");
+        let left: Vec<_> = std::fs::read_dir(&models)
+            .map(|d| d.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     #[test]
@@ -1146,16 +1206,19 @@ mod tests {
         let up = cpu_upscaler(dir.path());
         // An upscaling catalogue model, without downloading it.
         let err = up
-            .load_inpainter("realesr-general-x4v3", &mut |_, _| {})
+            .load_inpainter("realesr-general-x4v3", &mut |_, _| {}, &CancelToken::new())
             .err()
             .expect("refused");
         assert!(matches!(err, ScaleUpError::InvalidOption(_)), "{err:?}");
         // An upscaling model file: neither inpainting layout.
-        let err = up.load_inpainter(&fixture(), &mut |_, _| {}).err().unwrap();
+        let err = up
+            .load_inpainter(&fixture(), &mut |_, _| {}, &CancelToken::new())
+            .err()
+            .unwrap();
         assert!(matches!(err, ScaleUpError::Model(_)), "{err:?}");
         // Nothing there: an error, never a quiet fallback.
         let err = up
-            .load_inpainter("no-such-inpainter", &mut |_, _| {})
+            .load_inpainter("no-such-inpainter", &mut |_, _| {}, &CancelToken::new())
             .err()
             .unwrap();
         assert!(matches!(err, ScaleUpError::Model(_)), "{err:?}");
@@ -1188,7 +1251,9 @@ mod tests {
             let sha = crate::registry::sha256_of(&mut fs::File::open(&path).unwrap()).unwrap();
             assert_eq!(sha, reg.get(id).unwrap().sha256, "{id}: {}", path.display());
             let t = Instant::now();
-            let model = up.load_inpainter(id, &mut |_, _| {}).unwrap();
+            let model = up
+                .load_inpainter(id, &mut |_, _| {}, &CancelToken::new())
+                .unwrap();
             let load = t.elapsed().as_secs_f32();
             let t = Instant::now();
             let out = outpaint(model.as_ref(), &img, m, &mut |_| {}, &CancelToken::new()).unwrap();

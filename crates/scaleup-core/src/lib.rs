@@ -22,10 +22,7 @@ pub use backend::{
     create_backend, list_devices, register_extra_backend,
 };
 pub use error::{Result, ScaleUpError};
-pub use extend::{
-    ExtendOptions, Fill, MarginSpec, Margins, Window, context_factor, outpaint, pad_canvas,
-    plan_windows,
-};
+pub use extend::{ExtendOptions, Fill, MarginSpec, Margins, outpaint, pad_canvas};
 pub use facade::{FileJob, Upscaler};
 pub use image32::Image32;
 pub use io::{OutputFormat, load_image, save_image};

@@ -21,7 +21,7 @@ use scaleup_core::hub::{
 };
 use scaleup_core::io::is_supported_input;
 use scaleup_core::{
-    CancelToken, DeviceInfo, DevicePreference, FileJob, Fill, Inpainter, Margins, Model, ModelKind,
+    CancelToken, DeviceInfo, DevicePreference, FileJob, Fill, Inpainter, Margins, Model,
     OutputFormat, Phase, Progress, Registry, Result, ScaleUpError, Upscaler, list_devices,
     load_image,
 };
@@ -775,29 +775,26 @@ impl Worker {
         self.inpainter = None;
         self.ensure_upscaler()?;
         let upscaler = self.upscaler.as_ref().expect("just ensured");
-        // An upscaling id is left to `load_inpainter`, which refuses it without downloading.
-        if upscaler
-            .registry()
-            .get(id)
-            .is_some_and(|e| e.kind == ModelKind::Inpaint)
-        {
-            let (events, inbox) = (&self.events, &mut self.inbox);
-            upscaler.registry().ensure_cancellable(
-                id,
-                &mut |done, total| {
-                    events.send(WorkerEvent::Download { done, total });
-                    inbox.poll(cancel);
-                },
-                cancel,
-            )?;
-        }
-        self.emit(WorkerEvent::Progress {
+        let loading = || WorkerEvent::Progress {
             file,
             files,
             percent: 0.0,
             phase: "Loading extension model".into(),
-        });
-        let inpainter = upscaler.load_inpainter(id, &mut |_, _| {})?;
+        };
+        self.emit(loading());
+        // A download in between replaces that status with its own; its last chunk brings it back.
+        let (events, inbox) = (&self.events, &mut self.inbox);
+        let inpainter = upscaler.load_inpainter(
+            id,
+            &mut |done, total| {
+                events.send(WorkerEvent::Download { done, total });
+                if total > 0 && done >= total {
+                    events.send(loading());
+                }
+                inbox.poll(cancel);
+            },
+            cancel,
+        )?;
         self.emit(WorkerEvent::Log(format!(
             "inpainting model {id}, {} px window",
             inpainter.window()
@@ -1719,9 +1716,15 @@ mod tests {
 
     /// A registry with one inpainting entry, `test-fill`, served from `url`; when `installed`, the
     /// mean-filling fixture is already in place as its downloaded file.
-    fn inpaint_registry(dir: &Path, url: &str, installed: bool) -> Registry {
-        let models = dir.join("models");
-        let entry = ModelEntry {
+    fn inpaint_fixture() -> PathBuf {
+        PathBuf::from(format!(
+            "{}/../../tests/fixtures/inpaint_mean_lama.onnx",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+    }
+
+    fn inpaint_entry(url: &str, sha256: String) -> ModelEntry {
+        ModelEntry {
             id: "test-fill".into(),
             name: "Test fill".into(),
             arch: "lama".into(),
@@ -1730,25 +1733,22 @@ mod tests {
             commercial: true,
             size_bytes: 100_000,
             url: url.into(),
-            sha256: "00".repeat(32),
+            sha256,
             tags: vec![],
             notes: String::new(),
             format: "onnx".into(),
             source: "catalogue".into(),
             kind: scaleup_core::ModelKind::Inpaint,
-        };
+        }
+    }
+
+    fn inpaint_registry(dir: &Path, url: &str, installed: bool) -> Registry {
+        let models = dir.join("models");
         if installed {
             std::fs::create_dir_all(&models).unwrap();
-            std::fs::copy(
-                format!(
-                    "{}/../../tests/fixtures/inpaint_mean_lama.onnx",
-                    env!("CARGO_MANIFEST_DIR")
-                ),
-                models.join("test-fill.onnx"),
-            )
-            .unwrap();
+            std::fs::copy(inpaint_fixture(), models.join("test-fill.onnx")).unwrap();
         }
-        Registry::from_entries(vec![entry], models)
+        Registry::from_entries(vec![inpaint_entry(url, "00".repeat(32))], models)
     }
 
     #[test]
@@ -1941,6 +1941,55 @@ mod tests {
         let evs = until_end(&h);
         assert!(matches!(evs.last(), Some(WorkerEvent::Error(_))), "{evs:?}");
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn a_downloaded_inpainter_reports_the_download_then_the_load() {
+        use sha2::{Digest, Sha256};
+        let body = std::fs::read(inpaint_fixture()).unwrap();
+        let sha: String = Sha256::digest(&body)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut c, _)) = l.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = c.read(&mut buf);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = c.write_all(head.as_bytes());
+                let _ = c.write_all(&body);
+            }
+        });
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 16);
+        let models = d.path().join("models");
+        let entry = inpaint_entry(&format!("http://{addr}/fill.onnx"), sha);
+        let h = spawn(Registry::from_entries(vec![entry], models.clone()), "cpu");
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input),
+            settings: Box::new(extend_settings(d.path(), "ai", 4.0)),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::AllDone { done: 1, failed: 0 }),
+            "{evs:?}"
+        );
+        assert!(models.join("test-fill.onnx").is_file());
+        let loading = |e: &WorkerEvent| matches!(e, WorkerEvent::Progress { phase, .. } if phase == "Loading extension model");
+        let last_download = evs
+            .iter()
+            .rposition(|e| matches!(e, WorkerEvent::Download { .. }))
+            .expect("the download reported its progress");
+        // The status says the model is loading once its download is over.
+        assert!(evs[last_download..].iter().any(loading), "{evs:?}");
     }
 
     /// Answers one request with a long body that arrives a byte every 50 ms.

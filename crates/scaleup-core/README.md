@@ -38,7 +38,8 @@ fn main() -> scaleup_core::Result<()> {
 For in-memory images use `scaleup_core::upscale(model, &rgba, &opts, &mut progress, &cancel)`.
 
 To add canvas before upscaling, set `FileJob::extend` (margins and a fill); an AI fill needs an
-inpainter from `Upscaler::load_inpainter`, passed as `run_file`'s second argument. With no upscale
+inpainter from `Upscaler::load_inpainter` (its download reports progress and stops on the
+`CancelToken` it is given), passed as `run_file`'s second argument. With no upscale
 model (`None`), `run_file` only extends. Name such outputs with `Upscaler::output_name_for`.
 
 ## Notes

@@ -23,6 +23,7 @@ serde_json.workspace = true
 [dev-dependencies]
 scaleup-core = { path = "../scaleup-core", features = ["testing"] }
 tempfile = "3"
+sha2.workspace = true
 # Headless render of the OpenModelDB window (`hub_dialog_renders`, ignored by default).
 egui_kittest = { version = "0.34", features = ["wgpu", "snapshot"] }
 

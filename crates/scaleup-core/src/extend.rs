@@ -244,6 +244,9 @@ pub struct ExtendOptions {
 ///
 /// The original pixels are copied bit-exact. New pixels are opaque (alpha 255) for every fill except
 /// [`Fill::Transparent`], which gives `[0, 0, 0, 0]`.
+///
+/// Callers must obtain `m` from [`MarginSpec::resolve`], which enforces the margin and canvas size
+/// limits; this function only refuses a canvas size that overflows `u32`.
 pub fn pad_canvas(img: &RgbaImage, m: Margins, fill: &Fill) -> Result<RgbaImage> {
     let (w, h) = img.dimensions();
     let too_big =
@@ -314,7 +317,7 @@ const CONTEXT_STEP: u32 = 192;
 ///
 /// With factor `k` a window covers `window·k` source pixels per side and is downsampled to `window`
 /// for the model, so deep margins take fewer rings and see wider context.
-pub fn context_factor(m: Margins, max: u32) -> u32 {
+pub(crate) fn context_factor(m: Margins, max: u32) -> u32 {
     let deepest = m.left.max(m.top).max(m.right).max(m.bottom);
     deepest.div_ceil(CONTEXT_STEP).clamp(1, max.max(1))
 }
@@ -325,7 +328,7 @@ pub fn context_factor(m: Margins, max: u32) -> u32 {
 /// Positions are in canvas (source-resolution) pixels and the window covers `window·k` of them per
 /// side. Rings count from 0; ring `r` fills the margin depth between `r·span/2` and `(r+1)·span/2`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Window {
+pub(crate) struct Window {
     pub x: i64,
     pub y: i64,
     pub ring: u32,
@@ -345,7 +348,7 @@ pub struct Window {
 /// context as there is, and runs anyway. Such a window may overhang the canvas, may cover part of a
 /// corner region and may reach past its ring; the driver writes only the pixels of its ring, and the
 /// ring's own windows cover that ring, so every canvas pixel is filled by the end of the plan.
-pub fn plan_windows(w: u32, h: u32, m: Margins, window: u32, k: u32) -> Vec<Window> {
+pub(crate) fn plan_windows(w: u32, h: u32, m: Margins, window: u32, k: u32) -> Vec<Window> {
     let span = i64::from(window) * i64::from(k.max(1));
     let depth = (span / 2).max(1);
     let (mut x0, mut y0) = (i64::from(m.left), i64::from(m.top));
@@ -406,8 +409,8 @@ fn strip_starts(lo: i64, hi: i64, span: i64) -> Vec<i64> {
 /// Extends `img` by `m`, inventing the new pixels with `model` window by window.
 ///
 /// The canvas is first padded by reflection ([`Fill::Mirror`]), which only serves as the starting
-/// guess for the unknown pixels. Windows then run in [`plan_windows`] order with the context factor
-/// from [`context_factor`]: each is cut from the canvas (pixels past the canvas edge are reflected
+/// guess for the unknown pixels. Windows then run ring by ring, with a context factor `k` chosen
+/// from the deepest margin and the model's [`Inpainter::max_context_factor`]: each is cut from the canvas (pixels past the canvas edge are reflected
 /// and passed as unknown), downsampled when `k > 1`, filled, upsampled, and only its still-unknown
 /// pixels inside its ring are written and marked known, so one ring adds at most `window·k / 2`
 /// pixels of depth on each side. Where windows overlap the earlier one wins.
@@ -416,6 +419,9 @@ fn strip_starts(lo: i64, hi: i64, span: i64) -> Vec<i64> {
 /// their stored RGB is used as context. New pixels are opaque. Reports [`Phase::Extending`], then
 /// one [`Progress::Tiles`] per planned window; cancellation is checked after every window. An error
 /// from `model` is returned as is.
+///
+/// Callers must obtain `m` from [`MarginSpec::resolve`], which enforces the margin and canvas size
+/// limits; this function only refuses a canvas size that overflows `u32`.
 pub fn outpaint(
     model: &dyn Inpainter,
     img: &RgbaImage,

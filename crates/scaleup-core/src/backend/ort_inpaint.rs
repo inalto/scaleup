@@ -151,7 +151,8 @@ impl OrtBackend {
         };
         let why = match (layout, self.device().kind) {
             (Layout::LaMa, kind) if kind != DeviceKind::Cpu => {
-                " (LaMa runs on the CPU only: it fails on GPU execution providers)"
+                " (LaMa runs on the CPU only: it fails on DirectML; other GPU providers are \
+                 untested)"
             }
             _ => "",
         };
