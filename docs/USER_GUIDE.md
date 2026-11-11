@@ -131,6 +131,10 @@ not downloaded yet, the Start button says **Download and start**.
 
 Formats without transparency (JPEG) show the transparent area as white.
 
+Transparent pixels of the source are kept as they are and count as known pixels. The AI fill uses
+their stored colour, often black, as context, and the pixels it invents are opaque. For an image with
+a transparent border, use the `transparent` or `edge` fill.
+
 ### Inpainting models
 
 | Model | Licence | Download | Runs on | Use it for |
@@ -141,9 +145,10 @@ Formats without transparency (JPEG) show the transparent area as white.
 The weights are under the licences above; the licence texts are in `models/licenses/lama-512.txt`
 and `models/licenses/migan-512-places2.txt`. The licences of the training data were not checked.
 
-Timings were measured on one machine (a desktop CPU with an NVIDIA GTX 1660 SUPER) and will differ
-on other hardware. With the shipped build, loading LaMa on the CPU took about 13 s, and extending one
-test photo took about 2 s. Loading MI-GAN took about 0.7 s. The feasibility spike, which ran in Python
+Timings were measured on one machine (with an NVIDIA GTX 1660 SUPER; the CPU model was not
+recorded) and will differ on other hardware. In a test run of a debug build, loading LaMa on the CPU
+took about 13 s, and extending a 256 × 192 image by 64 px on one side, a single 512 px window, took
+about 2 s. Loading MI-GAN took about 0.7 s. The feasibility spike, which ran in Python
 and not in the shipped build, measured about 14 s for LaMa on the CPU and about 1 s for MI-GAN on the
 GPU for a 3000 × 2000 photo with a 192 px right margin.
 

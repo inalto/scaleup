@@ -16,6 +16,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   same options. Two inpainting models are in the catalogue: `lama-512` (default, LaMa, Apache-2.0,
   runs on the CPU) and `migan-512-places2` (MI-GAN, MIT, fast, may invent objects in the new area).
 
+### Changed
+
+- `scaleup-core` API: `Upscaler::run_file` now takes `Option<&dyn Model>` (`None` extends without
+  upscaling) and an `Option<&dyn Inpainter>`; `FileJob` gained an `extend` field and no longer
+  implements `Eq`; the new `Upscaler::load_inpainter` takes a `CancelToken` that stops its download.
+
 ## [0.2.1] - 2026-11-05
 
 First published release: everything listed under 0.2.0 and 0.1.0 below, with updated dependencies.

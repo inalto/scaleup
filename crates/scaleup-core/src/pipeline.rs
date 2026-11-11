@@ -50,7 +50,7 @@ impl UpscaleOptions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Loading,
-    /// Inventing new canvas around the image (AI fill), before upscaling.
+    /// Adding canvas around the image (any fill, plain or AI), before upscaling.
     Extending,
     Upscaling,
     Resizing,

@@ -1,8 +1,8 @@
 # Outpainting feasibility spike (Task 1, gate)
 
 Throwaway measurements for the canvas-extension feature. Code: `tools/outpaint_spike.py` (Python 3.11,
-onnxruntime-directml 1.24.4, Windows 11, GTX 1660 SUPER). Scratch folder (models, venv, outputs):
-`F:/Apps/ScaleUP/outpaint-spike/`. Contact sheets: `F:/Apps/ScaleUP/outpaint-spike/out/sheet_*.png`.
+onnxruntime-directml 1.24.4, Windows 11, GTX 1660 SUPER). Models, venv and outputs were kept in
+the spike's scratch folder, outside the repository; the contact sheets are its `out/sheet_*.png`.
 Tasks 2 to 7 should treat tables 2, 3 and 6 as the contract.
 
 ## 7. Gate result (stated first)
@@ -48,7 +48,7 @@ garbage, right half masked):
 |---|---|---|
 | Mask polarity | `known=255/hole=0`: left stayed `[255,0,0]` and the hole became `[214,8,1]` (red continued). Inverted mask: the left half was repainted `[6,82,14]` and the right half kept the green garbage. A mask of value 1 instead of 255 is treated as hole everywhere (hole mean `[135,125,109]`, a hallucination). | `hole=1`: left `[255,0,0]`, hole `[207.5,22.7,16.6]` (red continued). `hole=0`: left repainted `[5.6,228,53.6]`, right green kept. |
 | Value range | uint8 in and out; inputs are 0..255. | 0..1 input: red continues. `-1..1` input: hole `[253,254,252]` (white, wrong). 0..255 input: hole `[255,254,254]` (wrong). Output is on a 0..255 scale (observed max 255.0). Means are computed in float64; an earlier float32 `mean()` printed 255.5 spuriously. |
-| Channel order | Feeding RGB gave a red continuation in channel 0; feeding BGR gave a continuation in channel 2. So the output order equals the input order. Whether the training order is RGB cannot be proven by quality (probe re-run and logged in `F:/Apps/ScaleUP/outpaint-spike/probe_fix1.txt`): on 4 photos with the right half hidden the error against the original was 54.3 (fed RGB) vs 54.2 (fed BGR), indistinguishable. Use RGB (documented upstream order); the model is colour-aware (RGB-fed and BGR-fed outputs differ by 46 grey levels on a natural image). | Same: red channel 0 in gives channel 0 out. Ground-truth test 47.0 (RGB) vs 46.7 (BGR), indecisive. Use RGB. |
+| Channel order | Feeding RGB gave a red continuation in channel 0; feeding BGR gave a continuation in channel 2. So the output order equals the input order. Whether the training order is RGB cannot be proven by quality (probe re-run and logged in `probe_fix1.txt` in the spike's scratch folder, outside the repository): on 4 photos with the right half hidden the error against the original was 54.3 (fed RGB) vs 54.2 (fed BGR), indistinguishable. Use RGB (documented upstream order); the model is colour-aware (RGB-fed and BGR-fed outputs differ by 46 grey levels on a natural image). | Same: red channel 0 in gives channel 0 out. Ground-truth test 47.0 (RGB) vs 46.7 (BGR), indecisive. Use RGB. |
 | Hole content ignored | Two different garbage fills gave outputs with max absolute difference 0. | Same, difference 0.0. So the prefill may be fed in the hole; it has no effect. |
 
 ## 3. Timing, one 512x512 window (half known), 5 runs after 2 warm-ups
@@ -83,7 +83,7 @@ cover, found while running it:
 Window logs per image, margin and model: `out/sheets_log.txt` (windows, minimum known fraction, relaxed
 windows, seconds).
 
-## 4. Quality notes (judged by eye on `F:/Apps/ScaleUP/outpaint-spike/out/sheet_<image>_<right|all4>.png`)
+## 4. Quality notes (judged by eye on `out/sheet_<image>_<right|all4>.png` in the spike's scratch folder, outside the repository)
 
 Each sheet is margins 64, 128, 256 (rows) by mirror prefill, MI-GAN, LaMa (columns), tiles downscaled to 460 px
 wide, so fine seams at 1:1 were **not** inspected. MI-GAN ran on DirectML, LaMa on CPU (the DML results of
@@ -156,7 +156,9 @@ and was **not verified** at 1:1.
 ## 6. Verdict
 
 - **Default model: LaMa (`lama_fp32.onnx`).** Its failure mode (blur or flat tone) is tolerable in a canvas
-  extender; MI-GAN's (invented objects, patterns, faces) is not, from +128 on. This inverts the plan's assumption
+  extender; MI-GAN's (invented objects, patterns, faces) is not, and it shows from +64 on some images (one side:
+  `chelsea_cat`, `rocket_sky`, `screenshot_text`; four sides: `chelsea_cat`, `rocket_sky`, `astronaut_cut`,
+  `gravel_texture`); only one-sided +64 and +128 on `coffee_wall` and `astronaut_cut`, and four-sided +64 on `coffee_wall`, held up. This inverts the plan's assumption
   that MI-GAN is the default; owner decision. Costs of LaMa: 208 MB download, ~2 s per window on CPU, and **no GPU
   path** with ORT 1.24.4 DirectML (it throws), so Task 4 must pin LaMa to the CPU provider (or retest other builds
   or providers).
