@@ -69,6 +69,7 @@ impl App {
         match mode_from_path(path) {
             Some(mode) => {
                 self.compare.clear();
+                self.state.source_size = None;
                 if let Mode::Single(p) = &mode {
                     self.send(UiMsg::Preview(p.clone()));
                 }
@@ -89,6 +90,12 @@ impl App {
         if self.state.status.is_running() {
             return;
         }
+        // The sidebar disables Start then; the keyboard shortcut lands here.
+        if let Some(Err(e)) = self.state.settings.extend_summary(self.state.source_size) {
+            self.toasts
+                .push(Toast::error(format!("Extend canvas: {e}")));
+            return;
+        }
         self.state.status = Status::Running {
             file: 0,
             files: 1,
@@ -97,7 +104,7 @@ impl App {
         };
         self.send(UiMsg::Start {
             mode,
-            settings: self.state.settings.clone(),
+            settings: Box::new(self.state.settings.clone()),
         });
     }
 
@@ -109,8 +116,14 @@ impl App {
 
     fn handle_event(&mut self, ctx: &egui::Context, ev: WorkerEvent) {
         match ev {
-            WorkerEvent::Preview { which, image, size } => {
-                self.compare.set(ctx, which, image, size);
+            WorkerEvent::Preview {
+                which,
+                image,
+                size,
+                margins,
+            } => {
+                self.state.note_preview(which, size);
+                self.compare.set(ctx, which, image, size, margins);
                 return;
             }
             WorkerEvent::HubCatalog(cat) => {
@@ -251,11 +264,10 @@ impl eframe::App for App {
                 });
         }
 
-        let entries: Vec<_> = self.registry.upscalers().cloned().collect();
         let side = egui::Panel::left("sidebar")
             .exact_size(300.0)
             .resizable(false)
-            .show_inside(ui, |ui| sidebar::show(ui, &mut self.state, &entries))
+            .show_inside(ui, |ui| sidebar::show(ui, &mut self.state, &self.registry))
             .inner;
         if let Some(p) = side.picked {
             self.select(&p);

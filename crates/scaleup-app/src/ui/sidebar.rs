@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use scaleup_core::registry::SOURCE_HUB;
-use scaleup_core::{DeviceInfo, DeviceKind, ModelEntry};
+use scaleup_core::{DeviceInfo, DeviceKind, Fill, ModelEntry, Registry};
 
-use crate::state::{AppState, Mode};
+use crate::state::{AppState, ExtendMode, Mode, Settings};
 
 /// What the user asked for this frame.
 #[derive(Default)]
@@ -257,9 +257,172 @@ fn advanced(ui: &mut egui::Ui, st: &mut AppState, out: &mut SidebarOutput) {
     });
 }
 
-pub fn show(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) -> SidebarOutput {
+/// The Start button's text: it says when the run will download a model first.
+pub fn start_label(s: &Settings, registry: &Registry) -> &'static str {
+    let missing = |id: &str| registry.get(id).is_some() && !registry.is_downloaded(id);
+    let ai = s.extend_enabled && Fill::parse(&s.extend_fill) == Ok(Fill::Ai);
+    if missing(&s.model_id) || (ai && missing(&s.extend_model)) {
+        "Download and start"
+    } else {
+        "Upscale"
+    }
+}
+
+/// The fill choices of the Extend section: label, and the settings value it selects.
+const FILLS: [(&str, &str); 5] = [
+    ("AI (inpainting)", "ai"),
+    ("Mirror", "mirror"),
+    ("Edge pixels", "edge"),
+    ("Colour", "#ffffff"),
+    ("Transparent", "transparent"),
+];
+
+fn fill_label(fill: &str) -> &'static str {
+    match Fill::parse(fill) {
+        Ok(Fill::Color(_)) => "Colour",
+        _ => FILLS
+            .iter()
+            .find(|(_, v)| v.eq_ignore_ascii_case(fill.trim()))
+            .map_or("?", |(label, _)| label),
+    }
+}
+
+fn side_value(ui: &mut egui::Ui, v: &mut f32, mode: ExtendMode) {
+    let drag = match mode {
+        ExtendMode::Percent => egui::DragValue::new(v)
+            .range(0.0..=400.0)
+            .speed(0.5)
+            .max_decimals(1)
+            .suffix(" %"),
+        _ => egui::DragValue::new(v)
+            .range(0.0..=16384.0)
+            .speed(1.0)
+            .fixed_decimals(0)
+            .suffix(" px"),
+    };
+    ui.add(drag);
+}
+
+const ASPECTS: [(u32, u32); 5] = [(1, 1), (4, 3), (3, 2), (16, 9), (9, 16)];
+
+fn extend_section(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) {
+    let source = st.source_size;
+    let s = &mut st.settings;
+    egui::CollapsingHeader::new("Extend canvas")
+        .default_open(s.extend_enabled)
+        .show(ui, |ui| {
+            ui.checkbox(&mut s.extend_enabled, "Add canvas before upscaling");
+            ui.add_enabled_ui(s.extend_enabled, |ui| {
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut s.extend_mode, ExtendMode::Pixels, "Pixels");
+                    ui.radio_value(&mut s.extend_mode, ExtendMode::Percent, "Percent");
+                    ui.radio_value(&mut s.extend_mode, ExtendMode::Aspect, "Aspect");
+                });
+                if s.extend_mode == ExtendMode::Aspect {
+                    ui.horizontal_wrapped(|ui| {
+                        for (w, h) in ASPECTS {
+                            ui.selectable_value(&mut s.extend_aspect, (w, h), format!("{w}:{h}"));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Custom");
+                        ui.add(egui::DragValue::new(&mut s.extend_aspect.0).range(1..=100));
+                        ui.label(":");
+                        ui.add(egui::DragValue::new(&mut s.extend_aspect.1).range(1..=100));
+                    });
+                } else {
+                    ui.checkbox(&mut s.extend_linked, "Same on every side");
+                    let mode = s.extend_mode;
+                    if s.extend_linked {
+                        ui.horizontal(|ui| {
+                            ui.label("Each side");
+                            side_value(ui, &mut s.extend_left, mode);
+                        });
+                    } else {
+                        egui::Grid::new("extend_sides").show(ui, |ui| {
+                            ui.label("Left");
+                            side_value(ui, &mut s.extend_left, mode);
+                            ui.label("Top");
+                            side_value(ui, &mut s.extend_top, mode);
+                            ui.end_row();
+                            ui.label("Right");
+                            side_value(ui, &mut s.extend_right, mode);
+                            ui.label("Bottom");
+                            side_value(ui, &mut s.extend_bottom, mode);
+                            ui.end_row();
+                        });
+                    }
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Fill");
+                    egui::ComboBox::from_id_salt("extend_fill")
+                        .selected_text(fill_label(&s.extend_fill))
+                        .show_ui(ui, |ui| {
+                            let current = fill_label(&s.extend_fill);
+                            for (label, value) in FILLS {
+                                if ui.selectable_label(current == label, label).clicked()
+                                    && current != label
+                                {
+                                    s.extend_fill = value.into();
+                                }
+                            }
+                        });
+                    if let Ok(Fill::Color(mut rgb)) = Fill::parse(&s.extend_fill)
+                        && ui.color_edit_button_srgb(&mut rgb).changed()
+                    {
+                        let [r, g, b] = rgb;
+                        s.extend_fill = format!("#{r:02x}{g:02x}{b:02x}");
+                    }
+                });
+                if Fill::parse(&s.extend_fill) == Ok(Fill::Ai) {
+                    inpainter_picker(ui, &mut s.extend_model, registry);
+                }
+            });
+            match s.extend_summary(source) {
+                Some(Ok(text)) => {
+                    ui.label(text);
+                }
+                Some(Err(e)) => {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                }
+                None => {}
+            }
+        });
+}
+
+fn inpainter_picker(ui: &mut egui::Ui, selected: &mut String, registry: &Registry) {
+    let entry = registry.get(selected);
+    ui.horizontal(|ui| {
+        ui.label("Model");
+        egui::ComboBox::from_id_salt("extend_model")
+            .width(ui.available_width())
+            .selected_text(entry.map_or(selected.as_str(), |e| e.name.as_str()))
+            .show_ui(ui, |ui| {
+                for e in registry.inpainters() {
+                    ui.selectable_value(selected, e.id.clone(), &e.name)
+                        .on_hover_text(&e.notes);
+                }
+            });
+    });
+    ui.small("Suits modest extensions of soft or plain backgrounds.");
+    if let Some(e) = entry
+        && !registry.is_downloaded(&e.id)
+    {
+        ui.small(format!(
+            "Downloads {:.0} MB on first use.",
+            e.size_bytes as f64 / (1024.0 * 1024.0)
+        ));
+    }
+}
+
+pub fn show(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) -> SidebarOutput {
     let mut out = SidebarOutput::default();
     let running = st.status.is_running();
+    let entries: Vec<ModelEntry> = registry.upscalers().cloned().collect();
+    let invalid = match st.settings.extend_summary(st.source_size) {
+        Some(Err(e)) => Some(e),
+        _ => None,
+    };
 
     egui::Panel::bottom("sidebar_actions")
         .show_separator_line(false)
@@ -278,14 +441,18 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) -> Sid
                     out.stop = true;
                 }
             } else {
-                let text = egui::RichText::new("Upscale").size(18.0).strong();
+                let label = start_label(&st.settings, registry);
+                let text = egui::RichText::new(label).size(18.0).strong();
                 let button = egui::Button::new(text);
-                if ui
-                    .add_enabled(st.mode.is_some(), |ui: &mut egui::Ui| {
-                        ui.add_sized(size, button)
-                    })
-                    .clicked()
-                {
+                let resp = ui.add_enabled(
+                    st.mode.is_some() && invalid.is_none(),
+                    |ui: &mut egui::Ui| ui.add_sized(size, button),
+                );
+                if let Some(e) = &invalid {
+                    resp.clone()
+                        .on_disabled_hover_text(format!("Extend canvas: {e}"));
+                }
+                if resp.clicked() {
                     out.start = true;
                 }
             }
@@ -327,9 +494,11 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) -> Sid
                         out.open_hub = true;
                     }
                 });
-                model_picker(ui, st, entries);
+                model_picker(ui, st, &entries);
                 ui.separator();
                 output_options(ui, st);
+                ui.separator();
+                extend_section(ui, st, registry);
                 ui.separator();
                 advanced(ui, st, &mut out);
             });
@@ -395,6 +564,183 @@ mod tests {
                 .chain(&nc)
                 .all(|e| e.kind == scaleup_core::ModelKind::Upscale)
         );
+    }
+
+    #[test]
+    fn start_says_when_a_model_will_be_downloaded_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        let mut s = Settings::default();
+        assert_eq!(start_label(&s, &reg), "Download and start");
+        s.model_id = dir.path().join("mine.onnx").to_string_lossy().into_owned();
+        assert_eq!(start_label(&s, &reg), "Upscale");
+        s.extend_enabled = true;
+        assert_eq!(s.extend_fill, "ai");
+        assert_eq!(start_label(&s, &reg), "Download and start");
+        s.extend_fill = "mirror".into();
+        assert_eq!(start_label(&s, &reg), "Upscale");
+        s.extend_fill = "ai".into();
+        std::fs::write(reg.local_path("lama-512"), b"x").unwrap();
+        assert_eq!(start_label(&s, &reg), "Upscale");
+        s.extend_model = "migan-512-places2".into();
+        assert_eq!(start_label(&s, &reg), "Download and start");
+    }
+
+    #[test]
+    fn fill_labels_name_every_choice() {
+        for (label, value) in FILLS {
+            assert_eq!(fill_label(value), label);
+        }
+        assert_eq!(fill_label("#102030"), "Colour");
+        assert_eq!(fill_label("AI"), "AI (inpainting)");
+    }
+
+    /// Draws the sidebar with the Extend section open and the compare view of an extended result
+    /// headless (egui_kittest + wgpu) into `$SCALEUP_RENDER_DIR/*.png` for a person to look at.
+    /// The result is real: the fixture photo extended by 128 px on each side with the mirror fill
+    /// and upscaled 4× through the nearest-neighbour fixture model on the CPU. Run with
+    /// `-- --ignored`; skipped when the variable is unset.
+    #[test]
+    #[ignore = "writes PNG files for a manual look; needs SCALEUP_RENDER_DIR and a GPU adapter"]
+    fn extend_renders() {
+        use crate::ui::compare::CompareView;
+        use crate::worker::Which;
+        use scaleup_core::{
+            CancelToken, DevicePreference, ExtendOptions, FileJob, MarginSpec, Margins,
+            OutputFormat, Upscaler,
+        };
+
+        let Some(out) = std::env::var_os("SCALEUP_RENDER_DIR").map(PathBuf::from) else {
+            eprintln!("skipped: SCALEUP_RENDER_DIR is not set");
+            return;
+        };
+        std::fs::create_dir_all(&out).unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+        let photo = root.join("images/photo_like_256x192.jpg");
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+
+        let settings = Settings {
+            extend_enabled: true,
+            extend_left: 128.0,
+            ..Settings::default()
+        };
+        let mut st = AppState {
+            settings,
+            mode: Some(Mode::Single(photo.clone())),
+            source_size: Some([256, 192]),
+            ..AppState::default()
+        };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([300.0, 760.0])
+            .wgpu()
+            .build_ui_state(
+                |ui, (st, reg): &mut (AppState, Registry)| {
+                    show(ui, st, reg);
+                },
+                (st.clone(), reg.clone()),
+            );
+        for _ in 0..4 {
+            harness.step();
+        }
+        let file = out.join("extend-sidebar.png");
+        harness.render().expect("render").save(&file).unwrap();
+        eprintln!("wrote {}", file.display());
+
+        // The over-the-limit case: the reason in red and Start disabled.
+        st.settings.extend_left = 2000.0;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([300.0, 760.0])
+            .wgpu()
+            .build_ui_state(
+                |ui, (st, reg): &mut (AppState, Registry)| {
+                    show(ui, st, reg);
+                },
+                (st, reg),
+            );
+        for _ in 0..4 {
+            harness.step();
+        }
+        let file = out.join("extend-sidebar-invalid.png");
+        harness.render().expect("render").save(&file).unwrap();
+        eprintln!("wrote {}", file.display());
+
+        let up = Upscaler::new(
+            DevicePreference::Cpu,
+            Registry::with_dir(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let model = up
+            .load(
+                root.join("nearest2x.onnx").to_str().unwrap(),
+                &mut |_, _| {},
+            )
+            .unwrap();
+        let spec = MarginSpec::Pixels(Margins {
+            left: 128,
+            top: 128,
+            right: 128,
+            bottom: 128,
+        });
+        let job = FileJob {
+            input: photo.clone(),
+            output: dir.path().join("extended.png"),
+            format: OutputFormat::Png,
+            quality: 90,
+            overwrite: true,
+            double: false,
+            extend: Some(ExtendOptions {
+                margins: spec.clone(),
+                fill: Fill::Mirror,
+            }),
+        };
+        let opts = scaleup_core::UpscaleOptions {
+            output_scale: Some(4),
+            ..Default::default()
+        };
+        let result = up
+            .run_file(
+                Some(model.as_ref()),
+                None,
+                &job,
+                &opts,
+                &mut |_| {},
+                &CancelToken::new(),
+            )
+            .unwrap();
+        let margins = spec.resolve(256, 192).unwrap();
+        let color = |p: &Path| {
+            let img = scaleup_core::load_image(p).unwrap();
+            let size = [img.width(), img.height()];
+            let dims = [size[0] as usize, size[1] as usize];
+            (
+                egui::ColorImage::from_rgba_unmultiplied(dims, img.as_raw()),
+                size,
+            )
+        };
+        let (before, before_size) = color(&photo);
+        let (after, after_size) = color(&result);
+        assert_eq!(after_size, [(256 + 256) * 4, (192 + 256) * 4]);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([900.0, 700.0])
+            .wgpu()
+            .build_ui_state(
+                |ui, view: &mut CompareView| view.show(ui),
+                CompareView::default(),
+            );
+        let ctx = harness.ctx.clone();
+        harness
+            .state_mut()
+            .set(&ctx, Which::Before, before, before_size, Margins::default());
+        harness
+            .state_mut()
+            .set(&ctx, Which::After, after, after_size, margins);
+        for _ in 0..4 {
+            harness.step();
+        }
+        let file = out.join("extend-compare.png");
+        harness.render().expect("render").save(&file).unwrap();
+        eprintln!("wrote {}", file.display());
     }
 
     #[test]

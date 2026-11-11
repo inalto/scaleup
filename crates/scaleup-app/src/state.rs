@@ -2,12 +2,25 @@
 
 use std::path::{Path, PathBuf};
 
-use scaleup_core::UpscaleOptions;
 use scaleup_core::io::is_supported_input;
+use scaleup_core::resize::target_size;
+use scaleup_core::{ExtendOptions, Fill, MarginSpec, Margins, ScaleUpError, UpscaleOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::ui::toast::Toast;
-use crate::worker::WorkerEvent;
+use crate::worker::{Which, WorkerEvent};
+
+/// How the four side values of the "Extend canvas" section are read.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtendMode {
+    #[default]
+    Pixels,
+    /// Of the side each margin extends.
+    Percent,
+    /// Grow, centred, to `extend_aspect`.
+    Aspect,
+}
 
 /// Every setting visible in the sidebar; survives restarts.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -29,6 +42,22 @@ pub struct Settings {
     pub overwrite: bool,
     pub output_dir: Option<PathBuf>,
     pub show_nc_models: bool,
+    /// Add canvas around the image before upscaling.
+    pub extend_enabled: bool,
+    pub extend_mode: ExtendMode,
+    /// Side values in pixels or percent, as `extend_mode` says.
+    pub extend_left: f32,
+    pub extend_top: f32,
+    pub extend_right: f32,
+    pub extend_bottom: f32,
+    /// Every side takes `extend_left`.
+    pub extend_linked: bool,
+    /// Target ratio for [`ExtendMode::Aspect`], width:height.
+    pub extend_aspect: (u32, u32),
+    /// `ai`, `mirror`, `edge`, `transparent` or `#rrggbb`, as [`Fill::parse`] reads it.
+    pub extend_fill: String,
+    /// Inpainting model of the AI fill (catalogue id).
+    pub extend_model: String,
     /// The filter toggles of the OpenModelDB window (its search text is not kept).
     pub hub: HubFilters,
 }
@@ -77,6 +106,16 @@ impl Default for Settings {
             overwrite: false,
             output_dir: None,
             show_nc_models: false,
+            extend_enabled: false,
+            extend_mode: ExtendMode::Pixels,
+            extend_left: 64.0,
+            extend_top: 64.0,
+            extend_right: 64.0,
+            extend_bottom: 64.0,
+            extend_linked: true,
+            extend_aspect: (16, 9),
+            extend_fill: "ai".into(),
+            extend_model: "lama-512".into(),
             hub: HubFilters::default(),
         }
     }
@@ -94,11 +133,120 @@ impl Settings {
         }
     }
 
+    /// Left, top, right, bottom as the user set them; all the left value when linked.
+    pub fn extend_sides(&self) -> [f32; 4] {
+        if self.extend_linked {
+            [self.extend_left; 4]
+        } else {
+            [
+                self.extend_left,
+                self.extend_top,
+                self.extend_right,
+                self.extend_bottom,
+            ]
+        }
+    }
+
+    /// The canvas extension these settings ask for: `None` when it is off, an error when the fill
+    /// cannot be read.
+    pub fn to_extend_options(&self) -> Result<Option<ExtendOptions>, String> {
+        if !self.extend_enabled {
+            return Ok(None);
+        }
+        let fill = Fill::parse(&self.extend_fill)?;
+        let [left, top, right, bottom] = self.extend_sides();
+        let px = |v: f32| v.max(0.0).round() as u32;
+        let margins = match self.extend_mode {
+            ExtendMode::Pixels => MarginSpec::Pixels(Margins {
+                left: px(left),
+                top: px(top),
+                right: px(right),
+                bottom: px(bottom),
+            }),
+            ExtendMode::Percent => MarginSpec::Percent {
+                left,
+                top,
+                right,
+                bottom,
+            },
+            ExtendMode::Aspect => MarginSpec::Aspect {
+                w: self.extend_aspect.0,
+                h: self.extend_aspect.1,
+            },
+        };
+        Ok(Some(ExtendOptions { margins, fill }))
+    }
+
+    /// The "resulting size" line of the Extend section, `None` when extension is off. With the
+    /// source size: `1200×800 ➡ 1600×800 ➡ 6400×3200`; without it (a folder, where every file has
+    /// its own size) the rule, `+64 px each side ➡ 4×`. `Err` holds why the settings cannot be used,
+    /// for this image when its size is known.
+    pub fn extend_summary(&self, source: Option<[u32; 2]>) -> Option<Result<String, String>> {
+        let ext = match self.to_extend_options() {
+            Ok(None) => return None,
+            Ok(Some(ext)) => ext,
+            Err(e) => return Some(Err(e)),
+        };
+        let reason = |e: ScaleUpError| match e {
+            ScaleUpError::InvalidOption(m) => m,
+            other => other.to_string(),
+        };
+        let factor = if self.double {
+            self.scale * self.scale
+        } else {
+            self.scale
+        };
+        let Some([w, h]) = source else {
+            let upscale = if self.use_width {
+                format!("{} px wide", self.width)
+            } else {
+                format!("{factor}×")
+            };
+            return Some(Ok(format!("{} ➡ {upscale}", margin_rule(&ext.margins))));
+        };
+        Some(
+            ext.margins
+                .resolve(w, h)
+                .and_then(|m| {
+                    let (cw, ch) = (w + m.left + m.right, h + m.top + m.bottom);
+                    let (ow, oh) = if self.use_width {
+                        target_size(cw, ch, 1, None, Some(self.width))?
+                    } else {
+                        (cw * factor, ch * factor)
+                    };
+                    Ok(format!("{w}×{h} ➡ {cw}×{ch} ➡ {ow}×{oh}"))
+                })
+                .map_err(reason),
+        )
+    }
+
     /// The configured output folder, else the folder `input` is in.
     pub fn output_dir_for(&self, input: &Path) -> PathBuf {
         self.output_dir
             .clone()
             .unwrap_or_else(|| input.parent().map(Path::to_path_buf).unwrap_or_default())
+    }
+}
+
+/// `+64 px each side`, `+1/2/3/4 px (L/T/R/B)`, `+10% each side` or `grow to 16:9`.
+fn margin_rule(spec: &MarginSpec) -> String {
+    fn sides<T: PartialEq + std::fmt::Display>(v: [T; 4], unit: &str) -> String {
+        if v.iter().all(|x| *x == v[0]) {
+            format!("+{}{unit} each side", v[0])
+        } else {
+            let [l, t, r, b] = v;
+            format!("+{l}/{t}/{r}/{b}{unit} (L/T/R/B)")
+        }
+    }
+    match *spec {
+        MarginSpec::Pixels(m) => sides([m.left, m.top, m.right, m.bottom], " px"),
+        MarginSpec::Percent {
+            left,
+            top,
+            right,
+            bottom,
+        } => sides([left, top, right, bottom], "%"),
+        MarginSpec::Aspect { w, h } => format!("grow to {w}:{h}"),
     }
 }
 
@@ -145,6 +293,8 @@ pub struct AppState {
     pub last_file_error: Option<String>,
     /// Stop was pressed and the worker has not confirmed yet.
     pub stopping: bool,
+    /// Size of the selected single image, once its preview is decoded; `None` for a folder.
+    pub source_size: Option<[u32; 2]>,
 }
 
 /// What a selected or dropped path means: a folder is a batch, a supported image a single run.
@@ -274,6 +424,13 @@ impl AppState {
     /// Records that Stop was pressed; the run ends when the worker says so.
     pub fn request_stop(&mut self) {
         self.stopping = self.status.is_running();
+    }
+
+    /// Remembers the size of a decoded preview: the "before" of a single image is the source.
+    pub fn note_preview(&mut self, which: Which, size: [u32; 2]) {
+        if which == Which::Before && matches!(self.mode, Some(Mode::Single(_))) {
+            self.source_size = Some(size);
+        }
     }
 
     /// The status bar text.
@@ -591,6 +748,16 @@ mod tests {
             overwrite: true,
             output_dir: Some(PathBuf::from("out")),
             show_nc_models: true,
+            extend_enabled: true,
+            extend_mode: ExtendMode::Percent,
+            extend_left: 1.0,
+            extend_top: 2.0,
+            extend_right: 3.0,
+            extend_bottom: 4.5,
+            extend_linked: false,
+            extend_aspect: (9, 16),
+            extend_fill: "#102030".into(),
+            extend_model: "migan-512-places2".into(),
             hub: HubFilters {
                 scales: vec![2, 4],
                 content: vec!["anime".into()],
@@ -608,6 +775,169 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"scale":2}"#).unwrap();
         assert_eq!(s.scale, 2);
         assert_eq!(s.format, "png");
+    }
+
+    #[test]
+    fn extend_settings_default_and_load_from_older_json() {
+        let s: Settings = serde_json::from_str(r#"{"scale":2}"#).unwrap();
+        assert!(!s.extend_enabled);
+        assert_eq!(s.extend_mode, ExtendMode::Pixels);
+        assert_eq!(
+            [s.extend_left, s.extend_top, s.extend_right, s.extend_bottom],
+            [64.0; 4]
+        );
+        assert!(s.extend_linked);
+        assert_eq!(s.extend_aspect, (16, 9));
+        assert_eq!(s.extend_fill, "ai");
+        assert_eq!(s.extend_model, "lama-512");
+        assert_eq!(s.to_extend_options(), Ok(None));
+    }
+
+    fn extending(mode: ExtendMode, sides: [f32; 4], fill: &str) -> Settings {
+        let [l, t, r, b] = sides;
+        Settings {
+            extend_enabled: true,
+            extend_mode: mode,
+            extend_left: l,
+            extend_top: t,
+            extend_right: r,
+            extend_bottom: b,
+            extend_linked: false,
+            extend_aspect: (4, 3),
+            extend_fill: fill.into(),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn extend_settings_roundtrip_to_core_options() {
+        let s = extending(ExtendMode::Pixels, [1.0, 2.4, 3.6, 0.0], "mirror");
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(
+            back.to_extend_options(),
+            Ok(Some(ExtendOptions {
+                margins: MarginSpec::Pixels(Margins {
+                    left: 1,
+                    top: 2,
+                    right: 4,
+                    bottom: 0
+                }),
+                fill: Fill::Mirror,
+            }))
+        );
+        let s = extending(ExtendMode::Percent, [10.0, 0.0, 12.5, 5.0], "#FF8000");
+        assert_eq!(
+            s.to_extend_options(),
+            Ok(Some(ExtendOptions {
+                margins: MarginSpec::Percent {
+                    left: 10.0,
+                    top: 0.0,
+                    right: 12.5,
+                    bottom: 5.0
+                },
+                fill: Fill::Color([255, 128, 0]),
+            }))
+        );
+        let s = extending(ExtendMode::Aspect, [0.0; 4], "ai");
+        assert_eq!(
+            s.to_extend_options(),
+            Ok(Some(ExtendOptions {
+                margins: MarginSpec::Aspect { w: 4, h: 3 },
+                fill: Fill::Ai,
+            }))
+        );
+        assert!(
+            extending(ExtendMode::Pixels, [1.0; 4], "blur")
+                .to_extend_options()
+                .is_err()
+        );
+        // Linked sides all follow the left value.
+        let mut s = extending(ExtendMode::Pixels, [8.0, 1.0, 2.0, 3.0], "edge");
+        s.extend_linked = true;
+        let Ok(Some(o)) = s.to_extend_options() else {
+            panic!()
+        };
+        assert_eq!(
+            o.margins,
+            MarginSpec::Pixels(Margins {
+                left: 8,
+                top: 8,
+                right: 8,
+                bottom: 8
+            })
+        );
+    }
+
+    #[test]
+    fn extend_summary_shows_sizes_rules_and_errors() {
+        let mut s = extending(ExtendMode::Pixels, [200.0, 0.0, 200.0, 0.0], "ai");
+        s.extend_linked = false;
+        assert_eq!(
+            s.extend_summary(Some([1200, 800])),
+            Some(Ok("1200×800 ➡ 1600×800 ➡ 6400×3200".into()))
+        );
+        assert_eq!(
+            s.extend_summary(None),
+            Some(Ok("+200/0/200/0 px (L/T/R/B) ➡ 4×".into()))
+        );
+        s.extend_linked = true;
+        s.extend_left = 64.0;
+        assert_eq!(
+            s.extend_summary(None),
+            Some(Ok("+64 px each side ➡ 4×".into()))
+        );
+        s.double = true;
+        assert_eq!(
+            s.extend_summary(None),
+            Some(Ok("+64 px each side ➡ 16×".into()))
+        );
+        s.use_width = true;
+        assert_eq!(
+            s.extend_summary(Some([100, 100])),
+            Some(Ok("100×100 ➡ 228×228 ➡ 1920×1920".into()))
+        );
+        assert_eq!(
+            s.extend_summary(None),
+            Some(Ok("+64 px each side ➡ 1920 px wide".into()))
+        );
+        let mut s = extending(ExtendMode::Percent, [12.5; 4], "ai");
+        assert_eq!(
+            s.extend_summary(None),
+            Some(Ok("+12.5% each side ➡ 4×".into()))
+        );
+        s.extend_mode = ExtendMode::Aspect;
+        assert_eq!(s.extend_summary(None), Some(Ok("grow to 4:3 ➡ 4×".into())));
+        // Over the limits for this image: the core's reason, without the error-kind prefix.
+        let s = extending(ExtendMode::Pixels, [500.0; 4], "ai");
+        let Some(Err(e)) = s.extend_summary(Some([100, 100])) else {
+            panic!()
+        };
+        assert!(e.starts_with("left margin 500 px exceeds"), "{e}");
+        assert!(
+            extending(ExtendMode::Pixels, [1.0; 4], "blur")
+                .extend_summary(None)
+                .is_some_and(|r| r.is_err())
+        );
+        assert_eq!(Settings::default().extend_summary(Some([10, 10])), None);
+    }
+
+    #[test]
+    fn source_size_comes_from_the_single_image_preview() {
+        let mut st = AppState {
+            mode: Some(Mode::Single(PathBuf::from("a.png"))),
+            ..AppState::default()
+        };
+        st.note_preview(crate::worker::Which::Before, [30, 20]);
+        assert_eq!(st.source_size, Some([30, 20]));
+        st.note_preview(crate::worker::Which::After, [120, 80]);
+        assert_eq!(st.source_size, Some([30, 20]));
+        // A batch shows each file's preview: none of them is "the" source size.
+        st.mode = Some(Mode::Batch(PathBuf::from("dir")));
+        st.source_size = None;
+        st.note_preview(crate::worker::Which::Before, [30, 20]);
+        assert_eq!(st.source_size, None);
     }
 
     #[test]

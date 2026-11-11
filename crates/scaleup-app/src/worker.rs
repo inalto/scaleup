@@ -21,8 +21,9 @@ use scaleup_core::hub::{
 };
 use scaleup_core::io::is_supported_input;
 use scaleup_core::{
-    CancelToken, DeviceInfo, DevicePreference, FileJob, Model, OutputFormat, Phase, Progress,
-    Registry, Result, ScaleUpError, Upscaler, list_devices, load_image,
+    CancelToken, DeviceInfo, DevicePreference, FileJob, Fill, Inpainter, Margins, Model, ModelKind,
+    OutputFormat, Phase, Progress, Registry, Result, ScaleUpError, Upscaler, list_devices,
+    load_image,
 };
 
 use crate::state::{Mode, Settings};
@@ -52,7 +53,7 @@ impl HubConfig {
 pub enum UiMsg {
     Start {
         mode: Mode,
-        settings: Settings,
+        settings: Box<Settings>,
     },
     Stop,
     ChangeDevice(String),
@@ -127,6 +128,9 @@ pub enum WorkerEvent {
         image: egui::ColorImage,
         /// Size of the file, which `image` may be a downscaled copy of.
         size: [u32; 2],
+        /// Canvas this result added around the source image. Zero for a "before", when nothing
+        /// was extended, and in a batch.
+        margins: Margins,
     },
     HubCatalog(Arc<Catalog>),
     /// The catalogue could not be loaded. Separate from `Error`, so other failures do not touch the
@@ -213,6 +217,7 @@ pub fn spawn_with(registry: Registry, initial_gpu: &str, hub: HubConfig) -> Work
                 gpu,
                 upscaler: None,
                 model: None,
+                inpainter: None,
                 hub,
                 catalog: None,
             };
@@ -262,18 +267,39 @@ pub(crate) fn plan_jobs(mode: &Mode, s: &Settings) -> Vec<FileJob> {
     let format = OutputFormat::parse(&s.format).unwrap_or(OutputFormat::Png);
     let opts = s.to_options();
     let label = model_label(&s.model_id);
+    // `start` refuses settings whose fill cannot be read before it plans anything.
+    let extend = s.to_extend_options().ok().flatten();
     inputs
         .into_iter()
         .map(|input| FileJob {
-            output: Upscaler::output_name(&input, &s.output_dir_for(&input), &label, &opts, format),
+            output: Upscaler::output_name_for(
+                &input,
+                &s.output_dir_for(&input),
+                Some(&label),
+                extend.as_ref().map(|e| &e.fill),
+                &opts,
+                format,
+            ),
             input,
             format,
             quality: s.quality,
             overwrite: s.overwrite,
             double: s.double,
-            extend: None,
+            extend: extend.clone(),
         })
         .collect()
+}
+
+/// The canvas `job` adds around its input, for the compare view; zero when it does not extend or
+/// the input cannot be measured.
+fn job_margins(job: &FileJob) -> Margins {
+    job.extend
+        .as_ref()
+        .and_then(|ext| {
+            let (w, h) = image::image_dimensions(&job.input).ok()?;
+            ext.margins.resolve(w, h).ok()
+        })
+        .unwrap_or_default()
 }
 
 /// Long side limit of preview textures.
@@ -297,7 +323,7 @@ pub(crate) fn cap_long_side(img: image::RgbaImage, max: u32) -> image::RgbaImage
 }
 
 /// Decodes `path` into a preview event.
-fn preview_event(path: &Path, which: Which) -> Result<WorkerEvent> {
+fn preview_event(path: &Path, which: Which, margins: Margins) -> Result<WorkerEvent> {
     let img = load_image(path)?;
     let size = [img.width(), img.height()];
     let img = cap_long_side(img, MAX_PREVIEW_SIDE);
@@ -306,6 +332,7 @@ fn preview_event(path: &Path, which: Which) -> Result<WorkerEvent> {
         which,
         image: egui::ColorImage::from_rgba_unmultiplied(dims, img.as_raw()),
         size,
+        margins,
     })
 }
 
@@ -359,6 +386,8 @@ struct Worker {
     upscaler: Option<Upscaler>,
     /// The loaded model and the `model_id` it came from.
     model: Option<(String, Box<dyn Model>)>,
+    /// The loaded inpainting model of the AI fill and its id.
+    inpainter: Option<(String, Box<dyn Inpainter>)>,
     hub: HubConfig,
     /// The OpenModelDB catalogue, once loaded.
     catalog: Option<Arc<Catalog>>,
@@ -438,6 +467,7 @@ impl Worker {
                 .or_else(|| payload.downcast_ref::<&str>().copied())
                 .unwrap_or("unknown failure");
             self.model = None;
+            self.inpainter = None;
             self.upscaler = None;
             self.emit(WorkerEvent::Error(format!(
                 "processing stopped unexpectedly: {detail}"
@@ -451,7 +481,7 @@ impl Worker {
             // Nothing is running, so there is nothing to stop.
             UiMsg::Stop => {}
             UiMsg::ChangeDevice(gpu) => self.change_device(gpu),
-            UiMsg::Preview(path) => match preview_event(&path, Which::Before) {
+            UiMsg::Preview(path) => match preview_event(&path, Which::Before, Margins::default()) {
                 Ok(ev) => self.emit(ev),
                 Err(e) => self.emit(WorkerEvent::Error(format!("{}: {e}", path.display()))),
             },
@@ -535,6 +565,7 @@ impl Worker {
         self.registry = Registry::with_dir(self.registry.models_dir().to_path_buf());
         self.upscaler = None;
         self.model = None;
+        self.inpainter = None;
     }
 
     fn hub_install(&mut self, id: &str, job: HubJob) {
@@ -637,8 +668,8 @@ impl Worker {
     }
 
     /// A preview that cannot be decoded must not disturb the run: it only reaches the log.
-    fn emit_preview(&self, path: &Path, which: Which) {
-        match preview_event(path, which) {
+    fn emit_preview(&self, path: &Path, which: Which, margins: Margins) {
+        match preview_event(path, which, margins) {
             Ok(ev) => self.emit(ev),
             Err(e) => self.emit(WorkerEvent::Log(format!(
                 "no preview for {}: {e}",
@@ -652,6 +683,7 @@ impl Worker {
             self.gpu = gpu;
             self.upscaler = None;
             self.model = None;
+            self.inpainter = None;
         }
         if let Err(e) = self.ensure_upscaler() {
             self.emit(WorkerEvent::Error(e.to_string()));
@@ -699,9 +731,64 @@ impl Worker {
         Ok(())
     }
 
+    /// Makes `id` the loaded inpainting model, downloading it first if needed. Like the upscale
+    /// model, the download reads the inbox so Stop aborts it; loading itself cannot be interrupted
+    /// and takes many seconds for LaMa, so the status says what is happening.
+    fn ensure_inpainter(
+        &mut self,
+        id: &str,
+        file: usize,
+        files: usize,
+        cancel: &CancelToken,
+    ) -> Result<()> {
+        if self
+            .inpainter
+            .as_ref()
+            .is_some_and(|(loaded, _)| loaded == id)
+        {
+            return Ok(());
+        }
+        self.inpainter = None;
+        self.ensure_upscaler()?;
+        let upscaler = self.upscaler.as_ref().expect("just ensured");
+        // An upscaling id is left to `load_inpainter`, which refuses it without downloading.
+        if upscaler
+            .registry()
+            .get(id)
+            .is_some_and(|e| e.kind == ModelKind::Inpaint)
+        {
+            let (events, inbox) = (&self.events, &mut self.inbox);
+            upscaler.registry().ensure_cancellable(
+                id,
+                &mut |done, total| {
+                    events.send(WorkerEvent::Download { done, total });
+                    inbox.poll(cancel);
+                },
+                cancel,
+            )?;
+        }
+        self.emit(WorkerEvent::Progress {
+            file,
+            files,
+            percent: 0.0,
+            phase: "Loading extension model".into(),
+        });
+        let inpainter = upscaler.load_inpainter(id, &mut |_, _| {})?;
+        self.emit(WorkerEvent::Log(format!(
+            "inpainting model {id}, {} px window",
+            inpainter.window()
+        )));
+        self.inpainter = Some((id.to_string(), inpainter));
+        Ok(())
+    }
+
     fn start(&mut self, mode: &Mode, settings: &Settings) {
         if settings.gpu != self.gpu {
             self.change_device(settings.gpu.clone());
+        }
+        if let Err(e) = settings.to_extend_options() {
+            self.emit(WorkerEvent::Error(e));
+            return;
         }
         let jobs = plan_jobs(mode, settings);
         if jobs.is_empty() {
@@ -711,6 +798,16 @@ impl Worker {
         let cancel = CancelToken::new();
         let opts = settings.to_options();
         let files = jobs.len();
+        let batch = matches!(mode, Mode::Batch(_));
+        // The compare view places the source inside a single extended result; a batch shows each
+        // file's own before and after, so it gets none.
+        let margins = |job: &FileJob| {
+            if batch {
+                Margins::default()
+            } else {
+                job_margins(job)
+            }
+        };
         let (mut done, mut failed) = (0, 0);
         for (index, job) in jobs.iter().enumerate() {
             self.inbox.poll(&cancel);
@@ -724,7 +821,7 @@ impl Worker {
                     job.output.display()
                 )));
                 self.emit(WorkerEvent::FileDone(job.output.clone()));
-                self.emit_preview(&job.output, Which::After);
+                self.emit_preview(&job.output, Which::After, margins(job));
                 done += 1;
                 continue;
             }
@@ -734,20 +831,25 @@ impl Worker {
                 percent: 0.0,
                 phase: "Loading model".into(),
             });
-            match self.ensure_model(&settings.model_id, &cancel) {
+            let mut loaded = self.ensure_model(&settings.model_id, &cancel);
+            if loaded.is_ok() && job.extend.as_ref().is_some_and(|e| e.fill == Fill::Ai) {
+                loaded = self.ensure_inpainter(&settings.extend_model, index, files, &cancel);
+            }
+            match loaded {
                 Ok(()) => {}
                 Err(ScaleUpError::Cancelled) => {
                     self.emit(WorkerEvent::Stopped { done, total: files });
                     return;
                 }
-                // Every remaining file would fail the same way.
+                // Every remaining file would fail the same way. A missing inpainting model is
+                // reported, never replaced by a plain fill.
                 Err(e) => {
                     self.emit(WorkerEvent::Error(e.to_string()));
                     return;
                 }
             }
-            if matches!(mode, Mode::Batch(_)) {
-                self.emit_preview(&job.input, Which::Before);
+            if batch {
+                self.emit_preview(&job.input, Which::Before, Margins::default());
             }
             let started = std::time::Instant::now();
             match self.run_job(index, files, job, &opts, &cancel) {
@@ -758,7 +860,7 @@ impl Worker {
                         started.elapsed().as_secs_f32()
                     )));
                     self.emit(WorkerEvent::FileDone(path.clone()));
-                    self.emit_preview(&path, Which::After);
+                    self.emit_preview(&path, Which::After, margins(job));
                     done += 1;
                 }
                 Err(ScaleUpError::Cancelled) => {
@@ -787,17 +889,25 @@ impl Worker {
     ) -> Result<PathBuf> {
         let upscaler = self.upscaler.as_ref().expect("model is loaded");
         let (_, model) = self.model.as_ref().expect("model is loaded");
+        // Loaded by `start` when this job's fill needs it.
+        let inpainter = self.inpainter.as_ref().map(|(_, i)| i.as_ref());
         let (events, inbox) = (&self.events, &mut self.inbox);
         let mut phase = phase_name(Phase::Loading);
         let mut percent = 0.0;
         upscaler.run_file(
             Some(model.as_ref()),
-            None,
+            inpainter,
             job,
             opts,
             &mut |p| {
                 match p {
-                    Progress::Phase(ph) => phase = phase_name(ph),
+                    // Extension and upscaling each count their own tiles from zero.
+                    Progress::Phase(ph) => {
+                        phase = phase_name(ph);
+                        if matches!(ph, Phase::Extending | Phase::Upscaling) {
+                            percent = 0.0;
+                        }
+                    }
                     Progress::Tiles { done, total } => {
                         percent = done as f32 * 100.0 / total.max(1) as f32;
                     }
@@ -902,7 +1012,7 @@ mod tests {
         );
         h.tx.send(UiMsg::Start {
             mode: Mode::Single(input),
-            settings: settings(d.path()),
+            settings: Box::new(settings(d.path())),
         })
         .unwrap();
         let evs = until_end(&h);
@@ -934,7 +1044,13 @@ mod tests {
         h.tx.send(UiMsg::Preview(input)).unwrap();
         loop {
             match h.rx.recv_timeout(Duration::from_secs(120)).unwrap() {
-                WorkerEvent::Preview { which, image, size } => {
+                WorkerEvent::Preview {
+                    which,
+                    image,
+                    size,
+                    margins,
+                } => {
+                    assert_eq!(margins, Margins::default());
                     assert_eq!(which, Which::Before);
                     assert_eq!(size, [9, 9]);
                     assert_eq!(image.size, [9, 9]);
@@ -965,7 +1081,7 @@ mod tests {
         let h = cpu_worker(d.path());
         h.tx.send(UiMsg::Start {
             mode: Mode::Single(input),
-            settings: settings(d.path()),
+            settings: Box::new(settings(d.path())),
         })
         .unwrap();
         let evs = until_end(&h);
@@ -1029,7 +1145,7 @@ mod tests {
         let h = cpu_worker(d.path());
         h.tx.send(UiMsg::Start {
             mode: Mode::Single(input),
-            settings: settings(d.path()),
+            settings: Box::new(settings(d.path())),
         })
         .unwrap();
         let evs = until_end(&h);
@@ -1058,7 +1174,7 @@ mod tests {
         let h = cpu_worker(d.path());
         h.tx.send(UiMsg::Start {
             mode: Mode::Batch(input),
-            settings: settings(&out),
+            settings: Box::new(settings(&out)),
         })
         .unwrap();
         loop {
@@ -1090,7 +1206,7 @@ mod tests {
         let h = cpu_worker(d.path());
         h.tx.send(UiMsg::Start {
             mode: Mode::Single(input),
-            settings: s,
+            settings: Box::new(s),
         })
         .unwrap();
         let evs = until_end(&h);
@@ -1146,7 +1262,7 @@ mod tests {
         s.model_id = "remote".into();
         h.tx.send(UiMsg::Start {
             mode: Mode::Single(input.clone()),
-            settings: s.clone(),
+            settings: Box::new(s.clone()),
         })
         .unwrap();
         let evs = until_end(&h);
@@ -1155,7 +1271,7 @@ mod tests {
         s.model_id = fixture();
         h.tx.send(UiMsg::Start {
             mode: Mode::Single(input),
-            settings: s,
+            settings: Box::new(s),
         })
         .unwrap();
         let evs = until_end(&h);
@@ -1178,7 +1294,7 @@ mod tests {
         let h = cpu_worker(d.path());
         h.tx.send(UiMsg::Start {
             mode: Mode::Batch(input),
-            settings: settings(&d.path().join("out")),
+            settings: Box::new(settings(&d.path().join("out"))),
         })
         .unwrap();
         let mut last = None;
@@ -1356,7 +1472,7 @@ mod tests {
         s.model_id = "test-direct".into();
         h.tx.send(UiMsg::Start {
             mode: Mode::Single(input),
-            settings: s,
+            settings: Box::new(s),
         })
         .unwrap();
         let evs = until_end(&h);
@@ -1576,6 +1692,203 @@ mod tests {
         assert_eq!(*http.seen.lock().unwrap(), [THUMB_URL]);
     }
 
+    fn extend_settings(out: &Path, fill: &str, px: f32) -> Settings {
+        Settings {
+            extend_enabled: true,
+            extend_left: px,
+            extend_fill: fill.into(),
+            extend_model: "test-fill".into(),
+            ..settings(out)
+        }
+    }
+
+    /// A registry with one inpainting entry, `test-fill`, served from `url`; when `installed`, the
+    /// mean-filling fixture is already in place as its downloaded file.
+    fn inpaint_registry(dir: &Path, url: &str, installed: bool) -> Registry {
+        let models = dir.join("models");
+        let entry = ModelEntry {
+            id: "test-fill".into(),
+            name: "Test fill".into(),
+            arch: "lama".into(),
+            scale: 1,
+            license: "MIT".into(),
+            commercial: true,
+            size_bytes: 100_000,
+            url: url.into(),
+            sha256: "00".repeat(32),
+            tags: vec![],
+            notes: String::new(),
+            format: "onnx".into(),
+            source: "catalogue".into(),
+            kind: scaleup_core::ModelKind::Inpaint,
+        };
+        if installed {
+            std::fs::create_dir_all(&models).unwrap();
+            std::fs::copy(
+                format!(
+                    "{}/../../tests/fixtures/inpaint_mean_lama.onnx",
+                    env!("CARGO_MANIFEST_DIR")
+                ),
+                models.join("test-fill.onnx"),
+            )
+            .unwrap();
+        }
+        Registry::from_entries(vec![entry], models)
+    }
+
+    #[test]
+    fn plan_jobs_extend_names_and_carries_the_extension() {
+        let d = tempfile::tempdir().unwrap();
+        let s = extend_settings(d.path(), "mirror", 4.0);
+        let jobs = plan_jobs(&Mode::Single(d.path().join("a.png")), &s);
+        assert_eq!(
+            jobs[0].output.file_name().unwrap().to_str().unwrap(),
+            "a_scaleup_ext_2x_nearest2x.png"
+        );
+        assert_eq!(jobs[0].extend, s.to_extend_options().unwrap());
+        assert!(jobs[0].extend.is_some());
+    }
+
+    /// The after preview of a run, with its size and margins.
+    fn after_preview(evs: &[WorkerEvent]) -> Option<([u32; 2], Margins)> {
+        evs.iter().find_map(|e| match e {
+            WorkerEvent::Preview {
+                which: Which::After,
+                size,
+                margins,
+                ..
+            } => Some((*size, *margins)),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn single_run_extends_then_upscales_and_the_preview_carries_the_margins() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 10);
+        let h = cpu_worker(d.path());
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input),
+            settings: Box::new(extend_settings(d.path(), "mirror", 4.0)),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::AllDone { done: 1, failed: 0 }),
+            "{evs:?}"
+        );
+        let four = Margins {
+            left: 4,
+            top: 4,
+            right: 4,
+            bottom: 4,
+        };
+        assert_eq!(after_preview(&evs), Some(([36, 36], four)));
+        assert!(
+            evs.iter()
+                .any(|e| matches!(e, WorkerEvent::Progress { phase, .. } if phase == "Extending"))
+        );
+    }
+
+    #[test]
+    fn ai_fill_loads_the_inpainter_and_says_so() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 16);
+        let h = spawn(inpaint_registry(d.path(), "", true), "cpu");
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input),
+            settings: Box::new(extend_settings(d.path(), "ai", 4.0)),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::AllDone { done: 1, failed: 0 }),
+            "{evs:?}"
+        );
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Progress { phase, .. } if phase == "Loading extension model"
+        )));
+        assert_eq!(after_preview(&evs).map(|(size, _)| size), Some([48, 48]));
+    }
+
+    #[test]
+    fn ai_fill_without_its_model_is_an_error_not_a_plain_fill() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 16);
+        let h = spawn(inpaint_registry(d.path(), &failing_server(), false), "cpu");
+        let s = extend_settings(d.path(), "ai", 4.0);
+        let output = plan_jobs(&Mode::Single(input.clone()), &s).remove(0).output;
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input),
+            settings: Box::new(s),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert!(matches!(evs.last(), Some(WorkerEvent::Error(_))), "{evs:?}");
+        assert!(!output.exists());
+    }
+
+    /// Answers one request with a long body that arrives a byte every 50 ms.
+    fn dripping_server() -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut c, _)) = l.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = c.read(&mut buf);
+                let _ = c.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n");
+                for _ in 0..400 {
+                    if c.write_all(b"x").and_then(|()| c.flush()).is_err() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        });
+        format!("http://{addr}/slow.onnx")
+    }
+
+    #[test]
+    fn stop_during_the_inpainter_download_stops_the_run() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 16);
+        let h = spawn(inpaint_registry(d.path(), &dripping_server(), false), "cpu");
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input),
+            settings: Box::new(extend_settings(d.path(), "ai", 4.0)),
+        })
+        .unwrap();
+        loop {
+            match h.rx.recv_timeout(Duration::from_secs(60)).unwrap() {
+                WorkerEvent::Download { .. } => break,
+                WorkerEvent::Error(e) => panic!("{e}"),
+                _ => {}
+            }
+        }
+        let stopped_at = std::time::Instant::now();
+        h.tx.send(UiMsg::Stop).unwrap();
+        let evs = until_end(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::Stopped { done: 0, total: 1 }),
+            "{evs:?}"
+        );
+        assert!(stopped_at.elapsed() < Duration::from_secs(3));
+        let left: Vec<_> = std::fs::read_dir(d.path().join("models"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
     #[test]
     fn failed_single_file_reports_filefailed_not_terminal_error() {
         let d = tempfile::tempdir().unwrap();
@@ -1584,7 +1897,7 @@ mod tests {
         let h = cpu_worker(d.path());
         h.tx.send(UiMsg::Start {
             mode: Mode::Single(input.clone()),
-            settings: settings(d.path()),
+            settings: Box::new(settings(d.path())),
         })
         .unwrap();
         let evs = until_end(&h);

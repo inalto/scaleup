@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use eframe::egui;
 use scaleup_core::registry::SOURCE_HUB;
-use scaleup_core::{ModelEntry, Registry};
+use scaleup_core::{ModelEntry, ModelKind, Registry};
 
 include!(concat!(env!("OUT_DIR"), "/licenses.rs"));
 
@@ -31,6 +31,14 @@ pub struct ModelsDialog {
     pub open: bool,
     /// Rows with their license text expanded.
     expanded: HashSet<String>,
+}
+
+/// What a model does: its scale for an upscaler, "Extend" for an inpainting model (scale 1).
+fn kind_label(e: &ModelEntry) -> String {
+    match e.kind {
+        ModelKind::Upscale => format!("{}× {}", e.scale, e.arch),
+        ModelKind::Inpaint => format!("Extend · {}", e.arch),
+    }
 }
 
 fn size_label(bytes: u64) -> String {
@@ -102,7 +110,7 @@ impl ModelsDialog {
         action: &mut Option<DialogAction>,
     ) {
         ui.label(&e.name).on_hover_text(&e.id);
-        ui.label(format!("{}× {}", e.scale, e.arch));
+        ui.label(kind_label(e));
         license_badge(ui, e);
         ui.label(size_label(e.size_bytes));
         if registry.is_downloaded(&e.id) {
@@ -147,6 +155,16 @@ mod tests {
             ..builtin
         };
         assert_eq!(delete_action(&hub), DialogAction::RemoveHub(hub.id.clone()));
+    }
+
+    #[test]
+    fn inpainting_models_are_labelled_extend_not_by_scale() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::with_dir(dir.path().to_path_buf());
+        let lama = registry.get("lama-512").unwrap();
+        assert_eq!(kind_label(lama), "Extend · LaMa");
+        let up = registry.upscalers().next().unwrap();
+        assert_eq!(kind_label(up), format!("{}× {}", up.scale, up.arch));
     }
 
     #[test]
