@@ -342,8 +342,9 @@ pub struct Window {
 ///
 /// When the known extent along a side is shorter than `span`, no placement can be half known; the
 /// single window for that strip is centred on it, so it covers the whole strip and as much known
-/// context as there is, and runs anyway. Such a window may overhang the canvas and may cover part of
-/// a corner region. Every canvas pixel is covered by the end of the plan.
+/// context as there is, and runs anyway. Such a window may overhang the canvas, may cover part of a
+/// corner region and may reach past its ring; the driver writes only the pixels of its ring, and the
+/// ring's own windows cover that ring, so every canvas pixel is filled by the end of the plan.
 pub fn plan_windows(w: u32, h: u32, m: Margins, window: u32, k: u32) -> Vec<Window> {
     let span = i64::from(window) * i64::from(k.max(1));
     let depth = (span / 2).max(1);
@@ -408,7 +409,8 @@ fn strip_starts(lo: i64, hi: i64, span: i64) -> Vec<i64> {
 /// guess for the unknown pixels. Windows then run in [`plan_windows`] order with the context factor
 /// from [`context_factor`]: each is cut from the canvas (pixels past the canvas edge are reflected
 /// and passed as unknown), downsampled when `k > 1`, filled, upsampled, and only its still-unknown
-/// canvas pixels are written and marked known. Where windows overlap the earlier one wins.
+/// pixels inside its ring are written and marked known, so one ring adds at most `window·k / 2`
+/// pixels of depth on each side. Where windows overlap the earlier one wins.
 ///
 /// The original pixels, alpha included, are copied bit-exact; transparent ones count as known and
 /// their stored RGB is used as context. New pixels are opaque. Reports [`Phase::Extending`], then
@@ -448,7 +450,8 @@ pub fn outpaint(
     }
     let total = plan.len() as u32;
     for (i, win) in plan.iter().enumerate() {
-        fill_window(model, &mut canvas, &mut known, win, window, k)?;
+        let target = ring_extent(w, h, m, window * k, win.ring);
+        fill_window(model, &mut canvas, &mut known, win, target, window, k)?;
         progress(Progress::Tiles {
             done: i as u32 + 1,
             total,
@@ -460,12 +463,28 @@ pub fn outpaint(
     Ok(canvas)
 }
 
-/// Runs one window of `window·k` canvas pixels and writes its still-unknown canvas pixels.
+/// The canvas rectangle `[x0, y0, x1, y1)` known once `ring` is done: the source grown on each
+/// side by the ring's cumulative depth, `min(margin, (ring + 1)·span/2)`.
+fn ring_extent(w: u32, h: u32, m: Margins, span: u32, ring: u32) -> [i64; 4] {
+    let depth = (i64::from(span) / 2).max(1);
+    let grown = |margin: u32| i64::from(margin).min((i64::from(ring) + 1) * depth);
+    let (left, top) = (i64::from(m.left), i64::from(m.top));
+    [
+        left - grown(m.left),
+        top - grown(m.top),
+        left + i64::from(w) + grown(m.right),
+        top + i64::from(h) + grown(m.bottom),
+    ]
+}
+
+/// Runs one window of `window·k` canvas pixels and writes its still-unknown pixels that lie in
+/// `target` (the window's ring, see [`ring_extent`]), so a ring never fills deeper than its depth.
 fn fill_window(
     model: &dyn Inpainter,
     canvas: &mut RgbaImage,
     known: &mut [bool],
     win: &Window,
+    target: [i64; 4],
     window: u32,
     k: u32,
 ) -> Result<()> {
@@ -474,6 +493,9 @@ fn fill_window(
     let inside =
         |x: i64, y: i64| (0..i64::from(cw)).contains(&x) && (0..i64::from(ch)).contains(&y);
     let index = |x: i64, y: i64| y as usize * cw as usize + x as usize;
+    // `target` lies inside the canvas.
+    let [tx0, ty0, tx1, ty1] = target;
+    let writable = |x: i64, y: i64| (tx0..tx1).contains(&x) && (ty0..ty1).contains(&y);
     // Cut with reflection past the canvas edge. Opaque, so resizing ignores the source alpha.
     let mut cut = RgbaImage::new(span, span);
     let mut cut_known = vec![false; span as usize * span as usize];
@@ -486,7 +508,7 @@ fn fill_window(
             if inside(x, y) {
                 let kn = known[index(x, y)];
                 cut_known[(j * span + i) as usize] = kn;
-                anything_to_fill |= !kn;
+                anything_to_fill |= !kn && writable(x, y);
             }
         }
     }
@@ -517,7 +539,7 @@ fn fill_window(
     for j in 0..span {
         for i in 0..span {
             let (x, y) = (win.x + i64::from(i), win.y + i64::from(j));
-            if inside(x, y) && !known[index(x, y)] {
+            if writable(x, y) && !known[index(x, y)] {
                 let p = filled.get_pixel(i, j);
                 canvas.put_pixel(x as u32, y as u32, Rgba([p[0], p[1], p[2], 255]));
                 known[index(x, y)] = true;
@@ -904,9 +926,17 @@ mod tests {
         assert_eq!(context_factor(px(5000, 0, 0, 0), 0), 1);
     }
 
-    /// Replays `plan` on a known mask the way the driver does. Returns, per window, the number of
-    /// known canvas pixels it saw, and whether every canvas pixel is known at the end.
-    fn replay(w: u32, h: u32, m: Margins, span: u32, plan: &[Window]) -> (Vec<u64>, bool) {
+    /// Replays `plan` on a known mask the way the driver does (a window writes only inside its
+    /// ring's extent). Returns, per window, the number of known canvas pixels it saw and the
+    /// bounding box `[x0, y0, x1, y1)` of the known pixels after it ran, and whether every canvas
+    /// pixel is known at the end.
+    fn replay(
+        w: u32,
+        h: u32,
+        m: Margins,
+        span: u32,
+        plan: &[Window],
+    ) -> (Vec<u64>, Vec<[i64; 4]>, bool) {
         let (cw, ch) = (
             i64::from(w + m.left + m.right),
             i64::from(h + m.top + m.bottom),
@@ -917,9 +947,13 @@ mod tests {
                 known[(i64::from(y) * cw + i64::from(x)) as usize] = true;
             }
         }
-        let span = i64::from(span);
+        let (left, top) = (i64::from(m.left), i64::from(m.top));
+        let mut bbox = [left, top, left + i64::from(w), top + i64::from(h)];
         let mut seen = Vec::new();
+        let mut boxes = Vec::new();
         for win in plan {
+            let [tx0, ty0, tx1, ty1] = ring_extent(w, h, m, span, win.ring);
+            let span = i64::from(span);
             let xs = win.x.max(0)..(win.x + span).min(cw);
             let ys = win.y.max(0)..(win.y + span).min(ch);
             let mut n = 0;
@@ -929,13 +963,54 @@ mod tests {
                 }
             }
             seen.push(n);
-            for y in ys {
-                for x in xs.clone() {
+            let wx = xs.start.max(tx0)..xs.end.min(tx1);
+            let wy = ys.start.max(ty0)..ys.end.min(ty1);
+            if !wx.is_empty() && !wy.is_empty() {
+                bbox = [
+                    bbox[0].min(wx.start),
+                    bbox[1].min(wy.start),
+                    bbox[2].max(wx.end),
+                    bbox[3].max(wy.end),
+                ];
+            }
+            for y in wy {
+                for x in wx.clone() {
                     known[(y * cw + x) as usize] = true;
                 }
             }
+            boxes.push(bbox);
         }
-        (seen, known.iter().all(|&k| k))
+        (seen, boxes, known.iter().all(|&k| k))
+    }
+
+    /// After each window of ring `r`, no known pixel lies deeper than `(r+1)·span/2` from the
+    /// source, checked on each side separately.
+    fn assert_ring_depth(
+        m: Margins,
+        w: u32,
+        h: u32,
+        span: u32,
+        plan: &[Window],
+        boxes: &[[i64; 4]],
+        case: &str,
+    ) {
+        let half = (i64::from(span) / 2).max(1);
+        let (left, top) = (i64::from(m.left), i64::from(m.top));
+        for (win, b) in plan.iter().zip(boxes) {
+            let limit = (i64::from(win.ring) + 1) * half;
+            let depths = [
+                ("left", left - b[0]),
+                ("top", top - b[1]),
+                ("right", b[2] - left - i64::from(w)),
+                ("bottom", b[3] - top - i64::from(h)),
+            ];
+            for (side, depth) in depths {
+                assert!(
+                    depth <= limit,
+                    "{case}: {win:?} filled {depth} px deep on the {side}, ring limit {limit}"
+                );
+            }
+        }
     }
 
     /// Rings never go back, and within a ring every side window comes before every corner.
@@ -963,7 +1038,7 @@ mod tests {
             corner: false,
         };
         assert_eq!(plan, vec![w(0), w(256), w(288)]);
-        let (seen, full) = replay(1000, 800, px(0, 0, 256, 0), 512, &plan);
+        let (seen, _, full) = replay(1000, 800, px(0, 0, 256, 0), 512, &plan);
         assert!(full);
         assert!(seen.iter().all(|&n| n * 2 >= 512 * 512));
         // Each side alone: windows only on that side, never on the three without margin.
@@ -996,7 +1071,7 @@ mod tests {
         let (cw, ch) = (1300, 930);
         let at = |x, y| corners.iter().any(|w| (w.x, w.y) == (x, y));
         assert!(at(cw - 512, 0) && at(0, 0) && at(cw - 512, ch - 512) && at(0, ch - 512));
-        let (seen, full) = replay(1000, 800, m, 512, &plan);
+        let (seen, _, full) = replay(1000, 800, m, 512, &plan);
         assert!(full);
         assert!(seen.iter().all(|&n| n * 2 >= 512 * 512));
         // A corner window sees three known quadrants: at least 3/4 known.
@@ -1021,14 +1096,14 @@ mod tests {
             plan.iter()
                 .all(|w| w.x + 512 <= 1800 && w.y >= 0 && w.y + 512 <= 1200)
         );
-        let (seen, full) = replay(1200, 1200, px(0, 0, 600, 0), 512, &plan);
+        let (seen, _, full) = replay(1200, 1200, px(0, 0, 600, 0), 512, &plan);
         assert!(full);
         assert!(seen.iter().all(|&n| n * 2 >= 512 * 512));
         // With context factor 2 the same margin takes two rings of 512 and 88 source pixels.
         let plan = plan_windows(1200, 1200, px(0, 0, 600, 0), 512, 2);
         let xs: Vec<(i64, u32)> = plan.iter().map(|w| (w.x, w.ring)).collect();
         assert_eq!(xs, [(688, 0), (688, 0), (776, 1), (776, 1)]);
-        assert!(replay(1200, 1200, px(0, 0, 600, 0), 1024, &plan).1);
+        assert!(replay(1200, 1200, px(0, 0, 600, 0), 1024, &plan).2);
     }
 
     #[test]
@@ -1038,12 +1113,44 @@ mod tests {
         let plan = plan_windows(200, 120, m, 512, 1);
         assert_order(&plan);
         assert!(!plan.is_empty());
-        let (seen, full) = replay(200, 120, m, 512, &plan);
+        let (seen, _, full) = replay(200, 120, m, 512, &plan);
         assert!(full);
         // Every window still runs with real context, and the side windows cover the whole source.
         assert!(seen.iter().all(|&n| n > 0));
         for win in plan.iter().filter(|w| !w.corner) {
             assert!(win.x <= 64 && win.x + 512 >= 264 && win.y <= 64 && win.y + 512 >= 184);
+        }
+    }
+
+    #[test]
+    fn narrow_source_ring_stays_within_its_depth() {
+        // 300 px wide, left 1200, right 10, window 512: k = 4, span 2048, ring depth 1024. The
+        // ring-0 right window reaches 2038 px left of the source's right edge, deep into the left
+        // margin, but may fill only this ring's 1024 px of it.
+        let (w, h, m) = (300, 200, px(1200, 0, 10, 0));
+        let k = context_factor(m, 4);
+        assert_eq!(k, 4);
+        let span = 512 * k;
+        let plan = plan_windows(w, h, m, 512, k);
+        let (_, boxes, full) = replay(w, h, m, span, &plan);
+        assert!(full);
+        assert_ring_depth(m, w, h, span, &plan, &boxes, "narrow");
+        // After the first (right) window only the right margin and ring 0 of the left are filled.
+        assert_eq!(boxes[0], [1200 - 1024, 0, 1510, 200]);
+
+        // The driver: the right window fills the right margin and ring 0 of the left; the ring-0 left
+        // window then has nothing left and is skipped; the ring-1 left window fills the last 176 px.
+        // A driver that wrote the whole window would fill everything in the first call.
+        assert_eq!(plan.len(), 3);
+        let img = sample(w, h);
+        let model = Paint::new(512);
+        let out = run(&model, &img, m).unwrap();
+        assert_known_region(&out, &img, m);
+        assert_eq!(model.calls.lock().unwrap().len(), 2);
+        for (x, y, p) in out.enumerate_pixels() {
+            if is_new(x, y, &img, m) {
+                assert_eq!(p[3], 255, "({x},{y})");
+            }
         }
     }
 
@@ -1069,7 +1176,7 @@ mod tests {
             );
             let plan = plan_windows(w, h, m, window, k);
             assert_order(&plan);
-            let (seen, full) = replay(w, h, m, span, &plan);
+            let (seen, _, full) = replay(w, h, m, span, &plan);
             let case = format!("{w}x{h} {m:?} window {window} k {k}");
             assert!(full, "{case}: holes");
             let area = u64::from(span) * u64::from(span);
@@ -1118,13 +1225,14 @@ mod tests {
             );
             let plan = plan_windows(w, h, m, window, k);
             assert_order(&plan);
-            let (seen, full) = replay(w, h, m, span, &plan);
+            let (seen, boxes, full) = replay(w, h, m, span, &plan);
             let case = format!("{w}x{h} {m:?} window {window} k {k}");
             assert!(full, "{case}: holes");
             assert!(
                 seen.iter().all(|&n| n > 0),
                 "{case}: a window without context"
             );
+            assert_ring_depth(m, w, h, span, &plan, &boxes, &case);
         }
     }
 
