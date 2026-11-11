@@ -141,9 +141,11 @@ Formats without transparency (JPEG) show the transparent area as white.
 The weights are under the licences above; the licence texts are in `models/licenses/lama-512.txt`
 and `models/licenses/migan-512-places2.txt`. The licences of the training data were not checked.
 
-On the CPU, LaMa takes about 2 s per 512 px window, and loading the model takes about 19 s. In a
-test with a 3000 × 2000 photo and a 192 px right margin, LaMa on the CPU took about 14 s and
-MI-GAN on the GPU about 1 s.
+Timings were measured on one machine (a desktop CPU with an NVIDIA GTX 1660 SUPER) and will differ
+on other hardware. With the shipped build, loading LaMa on the CPU took about 13 s, and extending one
+test photo took about 2 s. Loading MI-GAN took about 0.7 s. The feasibility spike, which ran in Python
+and not in the shipped build, measured about 14 s for LaMa on the CPU and about 1 s for MI-GAN on the
+GPU for a 3000 × 2000 photo with a 192 px right margin.
 
 ### What the models do well and badly
 
