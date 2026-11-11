@@ -53,11 +53,21 @@ impl Reporter {
         }
     }
 
+    /// A file was upscaled (with or without extending it first). The human line is upscayl-bin's.
     pub fn done(&self, path: &Path) {
+        self.finished(path, " Upscayled Successfully!");
+    }
+
+    /// A file was extended by `scaleup extend`, without upscaling.
+    pub fn extended(&self, path: &Path) {
+        self.finished(path, " Extended Successfully!");
+    }
+
+    fn finished(&self, path: &Path, human: &str) {
         if self.json {
             self.event(json!({"event": "done", "path": path.display().to_string()}));
         } else {
-            self.line(" Upscayled Successfully!");
+            self.line(human);
         }
     }
 
@@ -190,6 +200,17 @@ mod tests {
         r.phase(Phase::Resizing);
         r.done(Path::new("x"));
         assert_eq!(buf.text(), "12.34%\nResizing\n Upscayled Successfully!\n");
+    }
+
+    #[test]
+    fn extended_has_the_done_shape() {
+        let (r, buf) = reporter(false, false);
+        r.extended(Path::new("x"));
+        assert_eq!(buf.text(), " Extended Successfully!\n");
+        let (r, buf) = reporter(true, false);
+        r.extended(Path::new("x.png"));
+        let event: serde_json::Value = serde_json::from_str(buf.text().trim()).unwrap();
+        assert_eq!(event, json!({"event": "done", "path": "x.png"}));
     }
 
     #[test]

@@ -106,7 +106,7 @@ exits 4; a second Ctrl-C exits immediately.
 ## Progress and JSON events
 
 Human mode writes `12.34%` lines on stderr, `Resizing` when a final resize runs, and ` Upscayled Successfully!`
-per file. The AI fill reports one progress step per inpainting window, then the upscale counts its own
+per file (` Extended Successfully!` for `scaleup extend`, which does not upscale). The AI fill reports one progress step per inpainting window, then the upscale counts its own
 tiles from zero. With `--json` every line is an object:
 
 ```

@@ -109,7 +109,11 @@ impl Ctx<'_> {
         );
         match result {
             Ok(path) => {
-                self.rep.done(&path);
+                if self.upscale.is_some() {
+                    self.rep.done(&path);
+                } else {
+                    self.rep.extended(&path);
+                }
                 Outcome::Done
             }
             Err(e) => Outcome::Failed(e),

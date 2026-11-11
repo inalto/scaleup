@@ -3970,6 +3970,7 @@ dependencies = [
  "scaleup-core",
  "scaleup-wgpu",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 

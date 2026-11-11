@@ -273,6 +273,147 @@ fn models_list_hides_inpainters_unless_asked() {
         .stdout(predicate::str::contains("realesrgan-x4plus"));
 }
 
+fn inpaint_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/inpaint_mean_lama.onnx")
+}
+
+/// `got`'s pixels at `(left, top)` and on are `input`'s, each repeated `scale`×`scale` times.
+fn assert_known_region(got: &Path, input: &Path, left: u32, top: u32, scale: u32) {
+    let got = image::open(got).unwrap().to_rgba8();
+    let src = image::open(input).unwrap().to_rgba8();
+    for y in 0..src.height() * scale {
+        for x in 0..src.width() * scale {
+            assert_eq!(
+                got.get_pixel(left + x, top + y),
+                src.get_pixel(x / scale, y / scale),
+                "at {x},{y}"
+            );
+        }
+    }
+}
+
+#[test]
+fn default_ai_fill_extends_with_the_inpainting_model() {
+    let (_d, input, out) = setup();
+    extend(&input, &out)
+        .args(["--extend", "2", "--extend-model"])
+        .arg(inpaint_fixture())
+        .assert()
+        .code(0);
+    assert_eq!(size_of(&out), (12, 8));
+    assert_known_region(&out, &input, 2, 2, 1);
+}
+
+#[test]
+fn upscale_with_the_default_ai_fill_extends_then_upscales() {
+    let (_d, input, out) = setup();
+    scaleup()
+        .args(["upscale", "-g", "cpu", "-i"])
+        .arg(&input)
+        .arg("-o")
+        .arg(&out)
+        .arg("-n")
+        .arg(fixture_model())
+        .args(["--extend", "2", "--extend-model"])
+        .arg(inpaint_fixture())
+        .assert()
+        .code(0);
+    assert_eq!(size_of(&out), (24, 16));
+    assert_known_region(&out, &input, 4, 4, 2);
+}
+
+#[test]
+fn extend_says_extended_and_upscale_keeps_the_upscayl_line() {
+    let (dir, input, out) = setup();
+    let stderr =
+        |a: assert_cmd::assert::Assert| String::from_utf8(a.get_output().stderr.clone()).unwrap();
+    let extended = stderr(
+        extend(&input, &out)
+            .args(["--extend", "2", "--extend-fill", "edge"])
+            .assert()
+            .code(0),
+    );
+    assert_eq!(extended, " Extended Successfully!\n");
+    // `upscale`, with and without an extension, keeps the upscayl-bin line.
+    let no_flags: &[&str] = &[];
+    for (name, flags) in [
+        ("plain.png", no_flags),
+        ("ext.png", &["--extend", "2", "--extend-fill", "edge"]),
+    ] {
+        let upscaled = stderr(
+            scaleup()
+                .args(["upscale", "-g", "cpu", "-i"])
+                .arg(&input)
+                .arg("-o")
+                .arg(dir.path().join(name))
+                .arg("-n")
+                .arg(fixture_model())
+                .args(flags)
+                .assert()
+                .code(0),
+        );
+        assert!(
+            upscaled.ends_with(" Upscayled Successfully!\n") && !upscaled.contains("Extended"),
+            "{name}: {upscaled:?}"
+        );
+    }
+}
+
+/// Serves `body` once with HTTP 200 on a loopback port; returns its URL.
+fn serve_once(body: Vec<u8>) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        if let Ok((mut s, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = s.write_all(head.as_bytes());
+            let _ = s.write_all(&body);
+        }
+    });
+    format!("http://127.0.0.1:{port}/fill.onnx")
+}
+
+#[test]
+fn inpainter_download_reports_its_progress() {
+    use sha2::{Digest, Sha256};
+    let body = std::fs::read(inpaint_fixture()).unwrap();
+    let sha: String = Sha256::digest(&body)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let size = body.len();
+    let url = serve_once(body);
+    let (dir, input, out) = setup();
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        format!(
+            r#"{{"version":1,"models":[{{"id":"test-fill","name":"Fill","arch":"lama","scale":1,
+            "license":"MIT","commercial":true,"size_bytes":{size},"kind":"inpaint",
+            "url":"{url}","sha256":"{sha}","tags":[],"notes":""}}]}}"#
+        ),
+    )
+    .unwrap();
+    let models = dir.path().join("models");
+    extend(&input, &out)
+        .env("SCALEUP_TEST_MANIFEST", &manifest)
+        .arg("-m")
+        .arg(&models)
+        .args(["--extend", "2", "--extend-model", "test-fill", "-v"])
+        .assert()
+        .code(0)
+        .stderr(predicate::str::contains("downloading model test-fill"))
+        .stderr(predicate::str::contains("download 100%"));
+    assert!(models.join("test-fill.onnx").is_file());
+    assert_eq!(size_of(&out), (12, 8));
+}
+
 #[test]
 fn ctrlc_during_inpainter_download_exits_4_and_leaves_no_file() {
     use std::io::{Read, Write};
