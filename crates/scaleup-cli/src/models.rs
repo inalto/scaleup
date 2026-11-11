@@ -5,7 +5,7 @@ use std::path::Path;
 use scaleup_core::registry::parse_manifest;
 use scaleup_core::{CancelToken, Registry, ScaleUpError};
 
-use crate::args::ModelsCmd;
+use crate::args::{KindFilter, ModelsCmd};
 
 /// Registry for `dir` (or the default models dir). `SCALEUP_TEST_MANIFEST` replaces the catalogue
 /// with a manifest file; it exists for tests only.
@@ -79,23 +79,34 @@ pub fn print_table(head: &[&str], rows: Vec<Vec<String>>) {
 pub fn run_models(cmd: &ModelsCmd, cancel: &CancelToken) -> Result<i32, ScaleUpError> {
     let mut reg = registry_for(None);
     match cmd {
-        ModelsCmd::List => {
-            let rows = reg
-                .upscalers()
+        ModelsCmd::List { kind } => {
+            let entries: Vec<_> = match kind {
+                KindFilter::Upscale => reg.upscalers().collect(),
+                KindFilter::Inpaint => reg.inpainters().collect(),
+                KindFilter::All => reg.entries().iter().collect(),
+            };
+            let with_kind = *kind == KindFilter::All;
+            let rows = entries
+                .into_iter()
                 .map(|e| {
-                    vec![
+                    let mut row = vec![
                         e.id.clone(),
                         format!("{}x", e.scale),
                         e.license.clone(),
                         yes_no(e.commercial).into(),
                         yes_no(reg.is_downloaded(&e.id)).into(),
-                    ]
+                    ];
+                    if with_kind {
+                        row.push(format!("{:?}", e.kind).to_lowercase());
+                    }
+                    row
                 })
                 .collect();
-            print_table(
-                &["ID", "SCALE", "LICENSE", "COMMERCIAL", "DOWNLOADED"],
-                rows,
-            );
+            let mut head = vec!["ID", "SCALE", "LICENSE", "COMMERCIAL", "DOWNLOADED"];
+            if with_kind {
+                head.push("KIND");
+            }
+            print_table(&head, rows);
         }
         ModelsCmd::Info { id } => {
             let e = reg.get(id).ok_or_else(|| unknown(id))?;

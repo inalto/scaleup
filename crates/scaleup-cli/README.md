@@ -4,7 +4,8 @@
 
 ```
 scaleup upscale -i <file|dir> -o <file|dir> [options]     (or bare: scaleup -i .. -o ..)
-scaleup models list | info <id> | download <id> | path <id> | import <dir> | convert <file>
+scaleup extend -i <file|dir> -o <file|dir> (--extend <spec> | --aspect <W:H>) [options]
+scaleup models list [--kind upscale|inpaint|all] | info <id> | download <id> | path <id> | import <dir> | convert <file>
 scaleup hub search | info | install | import | remove | recommend | refresh
 scaleup devices
 scaleup --version
@@ -31,10 +32,37 @@ scaleup --version
 | `--jobs N` | files processed in parallel in folder mode | `--jobs 2` |
 | `-v` | print phases, device and model | |
 | `--json` | one JSON object per line on stderr | |
+| `--extend`, `--aspect`, `--extend-fill`, `--extend-model` | add canvas before upscaling, see [Extending the canvas](#extending-the-canvas) | `--extend 64` |
 | `-z`, `-j load:proc:save` | accepted for upscayl-bin compatibility and ignored with a warning | |
 
 Folder mode skips files that are not images and reports `N done, M failed, K skipped`. A corrupt file is
 reported and does not stop the run; the exit code is non-zero only if every file failed.
+
+## Extending the canvas
+
+`upscale` can grow the canvas around each image before it upscales; `scaleup extend` does only that and
+writes the extended image at its own size. Both take the same flags.
+
+| Flag | Meaning | Example |
+|---|---|---|
+| `--extend <SPEC>` | `64` (all sides), `l,t,r,b`, `20%` or `l%,t%,r%,b%`; pixels and percentages are of the source image | `--extend 0,0,128,0` |
+| `--aspect <W:H>` | grow, centred, to this ratio; never crops. Conflicts with `--extend` | `--aspect 16:9` |
+| `--extend-fill <FILL>` | `ai` (default), `mirror`, `edge`, `transparent` or `#rrggbb` | `--extend-fill "#202020"` |
+| `--extend-model <ID\|PATH>` | inpainting model for the `ai` fill: `lama-512` (default) or `migan-512-places2`, or a path to an `.onnx` file | `--extend-model migan-512-places2` |
+
+`scaleup extend` needs `--extend` or `--aspect`; on `upscale`, `--extend-fill` and `--extend-model` are usage
+errors without one of them. `--extend` only takes margins and `--aspect` only takes `W:H`. The inpainting model
+is downloaded and loaded once per run, and only for the `ai` fill: the other fills never touch it. `scaleup
+models list --kind inpaint` shows the inpainting models (`--kind all` shows both kinds; plain `models list`
+shows upscalers only).
+
+Output names get `_ext` before the size: `photo_scaleup_ext_4x_<model>.png` when upscaling, and
+`photo_scaleup_ext_<fill>.png` with `extend` (`<fill>` is `ai`, `mirror`, `edge`, `transparent` or `rrggbb`).
+
+```
+scaleup extend -i photo.jpg -o wide.png --aspect 16:9
+scaleup upscale -i photo.jpg -o out/ --extend 10% --extend-fill mirror
+```
 
 ## OpenModelDB
 
@@ -78,11 +106,12 @@ exits 4; a second Ctrl-C exits immediately.
 ## Progress and JSON events
 
 Human mode writes `12.34%` lines on stderr, `Resizing` when a final resize runs, and ` Upscayled Successfully!`
-per file. With `--json` every line is an object:
+per file. The AI fill reports one progress step per inpainting window, then the upscale counts its own
+tiles from zero. With `--json` every line is an object:
 
 ```
 {"event":"progress","percent":12.34}
-{"event":"phase","phase":"saving"}            (verbose, or resizing)
+{"event":"phase","phase":"saving"}            (verbose, or resizing; "extending" when the canvas grows)
 {"event":"file","index":1,"total":3,"path":"..."}
 {"event":"done","path":"..."}
 {"event":"error","message":"..."}

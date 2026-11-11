@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
-use scaleup_core::DevicePreference;
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use scaleup_core::{DevicePreference, ExtendOptions, Fill, MarginSpec};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -15,15 +15,21 @@ use scaleup_core::DevicePreference;
 pub struct Cli {
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
-    /// Bare `scaleup -i .. -o ..` is the same as `scaleup upscale`.
+    /// Bare `scaleup -i .. -o ..` is the same as `scaleup upscale`. The halves are separate: clap
+    /// tests an optional flattened struct by its own args, and `opts` has only defaulted ones.
     #[command(flatten)]
-    pub upscale: Option<UpscaleArgs>,
+    pub common: Option<CommonArgs>,
+    #[command(flatten)]
+    pub opts: UpscaleOpts,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
     /// Upscale an image or a folder of images
     Upscale(Box<UpscaleArgs>),
+    /// Add canvas around an image or a folder of images, without upscaling
+    #[command(mut_arg("extend", |a| a.required_unless_present("aspect")))]
+    Extend(Box<ExtendArgs>),
     /// List, inspect and download models
     Models {
         #[command(subcommand)]
@@ -107,10 +113,22 @@ pub enum HubCmd {
     Refresh,
 }
 
+/// Which catalogue models `models list` shows.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KindFilter {
+    Upscale,
+    Inpaint,
+    All,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum ModelsCmd {
-    /// Table of all catalogue models
-    List,
+    /// Table of catalogue models
+    List {
+        /// Which models: upscale, inpaint (for --extend-model) or all
+        #[arg(long, value_enum, default_value_t = KindFilter::Upscale)]
+        kind: KindFilter,
+    },
     /// Details and license of one model
     Info { id: String },
     /// Download a model (verified against its sha256)
@@ -128,47 +146,27 @@ pub enum ModelsCmd {
     },
 }
 
+/// Input, output and run-wide flags shared by `upscale` and `extend`.
 #[derive(Args, Debug, Clone)]
-pub struct UpscaleArgs {
+pub struct CommonArgs {
     /// Input image or folder
     #[arg(short = 'i', long)]
     pub input: PathBuf,
     /// Output file or folder
     #[arg(short = 'o', long)]
     pub output: PathBuf,
-    /// Model id from the catalogue, or path to an .onnx file
-    #[arg(short = 'n', long, default_value = "realesr-general-x4v3")]
-    pub model: String,
     /// Models directory
     #[arg(short = 'm', long)]
     pub models_dir: Option<PathBuf>,
-    /// Output scale 2..4 (default: the model's scale)
-    #[arg(short = 's', long, value_parser = clap::value_parser!(u32).range(2..=4))]
-    pub scale: Option<u32>,
-    /// Output width in pixels (overrides -s)
-    #[arg(short = 'w', long, value_parser = clap::value_parser!(u32).range(1..))]
-    pub width: Option<u32>,
     /// Output format: png, jpg or webp (default: output extension, else png)
     #[arg(short = 'f', long)]
     pub format: Option<String>,
     /// Quality 0..100 for jpg; PNG compression level
     #[arg(short = 'c', long, default_value_t = 90, value_parser = clap::value_parser!(u8).range(0..=100))]
     pub quality: u8,
-    /// Tile size, 0 = automatic, otherwise at least 32
-    #[arg(short = 't', long, default_value_t = 0, value_parser = parse_tile)]
-    pub tile: u32,
-    /// Pixels of context around each tile, capped at a quarter tile (default: what the model asks for)
-    #[arg(long)]
-    pub tile_overlap: Option<u32>,
     /// Device: auto, cpu or a GPU index
     #[arg(short = 'g', long, default_value = "auto", value_parser = validate_gpu)]
     pub gpu: String,
-    /// Test-time augmentation (8x slower, slightly better)
-    #[arg(short = 'x', long)]
-    pub tta: bool,
-    /// Run the model twice
-    #[arg(long)]
-    pub double: bool,
     /// Replace existing output files
     #[arg(long)]
     pub overwrite: bool,
@@ -181,12 +179,114 @@ pub struct UpscaleArgs {
     /// One JSON object per line on stderr
     #[arg(long)]
     pub json: bool,
+}
+
+/// Canvas extension flags, shared by `upscale` (optional) and `extend` (one of the first two required).
+#[derive(Args, Debug, Clone)]
+#[command(group(ArgGroup::new("canvas").args(["extend", "aspect"]).multiple(false)))]
+pub struct CanvasArgs {
+    /// Add canvas: 64 (all sides), l,t,r,b, 20% or l%,t%,r%,b%, in source pixels or percent
+    #[arg(long, value_parser = parse_extend, value_name = "SPEC")]
+    pub extend: Option<MarginSpec>,
+    /// Grow, centred, to this aspect ratio (W:H, for example 16:9); never crops
+    #[arg(long, value_parser = parse_aspect, value_name = "W:H")]
+    pub aspect: Option<MarginSpec>,
+    /// What fills the new canvas: ai, mirror, edge, transparent or #rrggbb [default: ai]
+    #[arg(long, value_parser = Fill::parse, requires = "canvas", value_name = "FILL")]
+    pub extend_fill: Option<Fill>,
+    /// Inpainting model for the ai fill: catalogue id or path to an .onnx file [default: lama-512]
+    #[arg(long, requires = "canvas", value_name = "ID|PATH")]
+    pub extend_model: Option<String>,
+}
+
+impl CanvasArgs {
+    /// The requested extension, if any.
+    pub fn options(&self) -> Option<ExtendOptions> {
+        let margins = self.extend.clone().or_else(|| self.aspect.clone())?;
+        Some(ExtendOptions {
+            margins,
+            fill: self.extend_fill.clone().unwrap_or(Fill::Ai),
+        })
+    }
+
+    pub fn model(&self) -> &str {
+        self.extend_model.as_deref().unwrap_or(DEFAULT_EXTEND_MODEL)
+    }
+}
+
+pub const DEFAULT_EXTEND_MODEL: &str = "lama-512";
+
+/// `scaleup upscale`: the shared flags plus the upscaling and canvas flags.
+#[derive(Args, Debug, Clone)]
+pub struct UpscaleArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+    #[command(flatten)]
+    pub opts: UpscaleOpts,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct UpscaleOpts {
+    /// Model id from the catalogue, or path to an .onnx file
+    #[arg(short = 'n', long, default_value = "realesr-general-x4v3")]
+    pub model: String,
+    /// Output scale 2..4 (default: the model's scale)
+    #[arg(short = 's', long, value_parser = clap::value_parser!(u32).range(2..=4))]
+    pub scale: Option<u32>,
+    /// Output width in pixels (overrides -s)
+    #[arg(short = 'w', long, value_parser = clap::value_parser!(u32).range(1..))]
+    pub width: Option<u32>,
+    /// Tile size, 0 = automatic, otherwise at least 32
+    #[arg(short = 't', long, default_value_t = 0, value_parser = parse_tile)]
+    pub tile: u32,
+    /// Pixels of context around each tile, capped at a quarter tile (default: what the model asks for)
+    #[arg(long)]
+    pub tile_overlap: Option<u32>,
+    /// Test-time augmentation (8x slower, slightly better)
+    #[arg(short = 'x', long)]
+    pub tta: bool,
+    /// Run the model twice
+    #[arg(long)]
+    pub double: bool,
+    #[command(flatten)]
+    pub canvas: CanvasArgs,
     /// Accepted for upscayl-bin compatibility, ignored
     #[arg(short = 'z', long = "model-scale")]
     pub model_scale: Option<u32>,
     /// upscayl-bin `load:proc:save` thread counts; accepted and ignored
     #[arg(short = 'j', long)]
     pub threads: Option<String>,
+}
+
+/// `scaleup extend`: add canvas, no upscaling.
+#[derive(Args, Debug, Clone)]
+pub struct ExtendArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+    #[command(flatten)]
+    pub canvas: CanvasArgs,
+}
+
+fn parse_extend(s: &str) -> Result<MarginSpec, String> {
+    match MarginSpec::parse(s)? {
+        MarginSpec::Aspect { .. } => Err(format!(
+            "'{s}' is an aspect ratio; use --aspect {s}. --extend takes 64, l,t,r,b, 20% or l%,t%,r%,b%"
+        )),
+        spec => Ok(spec),
+    }
+}
+
+fn parse_aspect(s: &str) -> Result<MarginSpec, String> {
+    match MarginSpec::parse(s) {
+        Ok(spec @ MarginSpec::Aspect { .. }) => Ok(spec),
+        Ok(_) => Err(format!(
+            "'{s}' is not an aspect ratio; --aspect takes W:H, for example 16:9 (margins go to --extend)"
+        )),
+        Err(e) if s.contains(':') => Err(e),
+        Err(_) => Err(format!(
+            "'{s}' is not an aspect ratio; --aspect takes W:H, for example 16:9"
+        )),
+    }
 }
 
 fn parse_jobs(s: &str) -> Result<usize, String> {

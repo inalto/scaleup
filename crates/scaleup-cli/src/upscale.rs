@@ -1,12 +1,15 @@
-//! `scaleup upscale`: single image and folder mode.
+//! `scaleup upscale` and `scaleup extend`: single image and folder mode.
 
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 use scaleup_core::io::is_supported_input;
-use scaleup_core::{CancelToken, FileJob, OutputFormat, ScaleUpError, UpscaleOptions, Upscaler};
+use scaleup_core::{
+    CancelToken, ExtendOptions, FileJob, Fill, Inpainter, Model, OutputFormat, ScaleUpError,
+    UpscaleOptions, Upscaler,
+};
 
-use crate::args::{UpscaleArgs, parse_gpu};
+use crate::args::{CanvasArgs, CommonArgs, ExtendArgs, UpscaleArgs, UpscaleOpts, parse_gpu};
 use crate::models::registry_for;
 use crate::report::Reporter;
 
@@ -25,7 +28,7 @@ pub fn exit_code_for(err: &ScaleUpError) -> i32 {
 }
 
 /// `-f`, else the output path's extension, else png.
-pub fn resolve_format(args: &UpscaleArgs) -> OutputFormat {
+pub fn resolve_format(args: &CommonArgs) -> OutputFormat {
     args.format
         .as_deref()
         .and_then(OutputFormat::from_ext)
@@ -49,17 +52,36 @@ enum Outcome {
     Failed(ScaleUpError),
 }
 
+/// The upscaling model of a run; absent for `scaleup extend`.
+struct Loaded<'a> {
+    model: &'a dyn Model,
+    id: &'a str,
+}
+
 struct Ctx<'a> {
     upscaler: &'a Upscaler,
-    model: &'a dyn scaleup_core::Model,
-    model_id: &'a str,
+    upscale: Option<Loaded<'a>>,
+    inpainter: Option<&'a dyn Inpainter>,
+    extend: Option<&'a ExtendOptions>,
     opts: &'a UpscaleOptions,
-    args: &'a UpscaleArgs,
+    double: bool,
+    args: &'a CommonArgs,
     rep: &'a Reporter,
     cancel: &'a CancelToken,
 }
 
 impl Ctx<'_> {
+    fn output_name(&self, input: &Path, out_dir: &Path, format: OutputFormat) -> PathBuf {
+        Upscaler::output_name_for(
+            input,
+            out_dir,
+            self.upscale.as_ref().map(|u| u.id),
+            self.extend.map(|e| &e.fill),
+            self.opts,
+            format,
+        )
+    }
+
     fn process(&self, input: &Path, output: PathBuf, format: OutputFormat) -> Outcome {
         if output.exists() && !self.args.overwrite {
             self.rep.warn(&format!(
@@ -74,12 +96,12 @@ impl Ctx<'_> {
             format,
             quality: self.args.quality,
             overwrite: self.args.overwrite,
-            double: self.args.double,
-            extend: None,
+            double: self.double,
+            extend: self.extend.cloned(),
         };
         let result = self.upscaler.run_file(
-            Some(self.model),
-            None,
+            self.upscale.as_ref().map(|u| u.model),
+            self.inpainter,
             &job,
             self.opts,
             &mut |p| self.rep.core_progress(p),
@@ -95,18 +117,54 @@ impl Ctx<'_> {
     }
 }
 
-/// Runs the whole command and returns the process exit code.
+/// `scaleup upscale`, extending the canvas first when `--extend`/`--aspect` is given.
 pub fn run_upscale(
     args: &UpscaleArgs,
     rep: &Reporter,
     cancel: &CancelToken,
 ) -> Result<i32, ScaleUpError> {
-    if args.model_scale.is_some() {
+    if args.opts.model_scale.is_some() {
         rep.warn("-z is ignored (the model scale is read from the model)");
     }
-    if args.threads.is_some() {
+    if args.opts.threads.is_some() {
         rep.warn("-j load:proc:save is ignored; use --jobs for parallel files");
     }
+    run(
+        &args.common,
+        Some(&args.opts),
+        &args.opts.canvas,
+        rep,
+        cancel,
+    )
+}
+
+/// `scaleup extend`: the canvas grows and nothing is upscaled.
+pub fn run_extend(
+    args: &ExtendArgs,
+    rep: &Reporter,
+    cancel: &CancelToken,
+) -> Result<i32, ScaleUpError> {
+    run(&args.common, None, &args.canvas, rep, cancel)
+}
+
+/// Reports a model download in tenths, in verbose mode.
+fn download_progress(rep: &Reporter) -> impl FnMut(u64, u64) + '_ {
+    let mut last_decile = u64::MAX;
+    move |done, total| {
+        if total > 0 && done * 10 / total != last_decile {
+            last_decile = done * 10 / total;
+            rep.info(&format!("download {}%", done * 100 / total));
+        }
+    }
+}
+
+fn run(
+    args: &CommonArgs,
+    up: Option<&UpscaleOpts>,
+    canvas: &CanvasArgs,
+    rep: &Reporter,
+    cancel: &CancelToken,
+) -> Result<i32, ScaleUpError> {
     if let Some(f) = &args.format {
         OutputFormat::parse(f)?;
     }
@@ -138,60 +196,78 @@ pub fn run_upscale(
     let upscaler = Upscaler::new(pref, registry)?;
     rep.info(&format!("device: {}", upscaler.device().name));
 
-    let in_catalogue = upscaler.registry().get(&args.model).is_some();
-    if !in_catalogue && !Path::new(&args.model).is_file() {
-        return Err(ScaleUpError::Model(format!(
-            "'{}' is neither a known model id nor an existing file; search OpenModelDB with `scaleup hub search`",
-            args.model
-        )));
-    }
-    let model_id = if in_catalogue {
-        args.model.clone()
-    } else {
-        Path::new(&args.model)
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| args.model.clone())
-    };
-    if in_catalogue && !upscaler.registry().is_downloaded(&args.model) {
-        rep.info(&format!("downloading model {}", args.model));
-        let mut last_decile = u64::MAX;
-        upscaler.registry().ensure_cancellable(
-            &args.model,
-            &mut |done, total| {
-                if total > 0 && done * 10 / total != last_decile {
-                    last_decile = done * 10 / total;
-                    rep.info(&format!("download {}%", done * 100 / total));
-                }
-            },
-            cancel,
-        )?;
-    }
-    let model = upscaler.load(&args.model, &mut |_, _| {})?;
-    rep.info(&format!("model: {model_id} ({}x)", model.scale()));
-    let active = upscaler.active_device();
-    if active != *upscaler.device() {
-        let line = format!("this model runs on {}", active.name);
-        // Auto picked nothing in particular; an explicit choice deserves to know it was not used.
-        if pref == scaleup_core::DevicePreference::Auto {
-            rep.info(&line);
-        } else {
-            rep.warn(&line);
+    let mut loaded = None;
+    if let Some(up) = up {
+        let in_catalogue = upscaler.registry().get(&up.model).is_some();
+        if !in_catalogue && !Path::new(&up.model).is_file() {
+            return Err(ScaleUpError::Model(format!(
+                "'{}' is neither a known model id nor an existing file; search OpenModelDB with `scaleup hub search`",
+                up.model
+            )));
         }
+        let model_id = if in_catalogue {
+            up.model.clone()
+        } else {
+            Path::new(&up.model)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| up.model.clone())
+        };
+        if in_catalogue && !upscaler.registry().is_downloaded(&up.model) {
+            rep.info(&format!("downloading model {}", up.model));
+            upscaler.registry().ensure_cancellable(
+                &up.model,
+                &mut download_progress(rep),
+                cancel,
+            )?;
+        }
+        let model = upscaler.load(&up.model, &mut |_, _| {})?;
+        rep.info(&format!("model: {model_id} ({}x)", model.scale()));
+        let active = upscaler.active_device();
+        if active != *upscaler.device() {
+            let line = format!("this model runs on {}", active.name);
+            // Auto picked nothing in particular; an explicit choice deserves to know it was not used.
+            if pref == scaleup_core::DevicePreference::Auto {
+                rep.info(&line);
+            } else {
+                rep.warn(&line);
+            }
+        }
+        loaded = Some((model, model_id));
     }
 
-    let opts = UpscaleOptions {
-        tile_size: args.tile,
-        tile_overlap: args.tile_overlap,
-        tta: args.tta,
-        output_scale: args.scale,
-        output_width: args.width,
+    // The inpainting model is loaded once per run, and only when the AI fill will use it.
+    let extend = canvas.options();
+    let mut inpainter = None;
+    if extend.as_ref().is_some_and(|e| e.fill == Fill::Ai) {
+        let id = canvas.model();
+        if upscaler.registry().get(id).is_some() && !upscaler.registry().is_downloaded(id) {
+            rep.info(&format!("downloading model {id}"));
+        }
+        inpainter = Some(upscaler.load_inpainter(id, &mut download_progress(rep))?);
+        rep.info(&format!("inpainting model: {id}"));
+    }
+
+    let opts = match up {
+        Some(up) => UpscaleOptions {
+            tile_size: up.tile,
+            tile_overlap: up.tile_overlap,
+            tta: up.tta,
+            output_scale: up.scale,
+            output_width: up.width,
+        },
+        None => UpscaleOptions::default(),
     };
     let ctx = Ctx {
         upscaler: &upscaler,
-        model: model.as_ref(),
-        model_id: &model_id,
+        upscale: loaded.as_ref().map(|(model, id)| Loaded {
+            model: model.as_ref(),
+            id,
+        }),
+        inpainter: inpainter.as_deref(),
+        extend: extend.as_ref(),
         opts: &opts,
+        double: up.is_some_and(|u| u.double),
         args,
         rep,
         cancel,
@@ -200,7 +276,7 @@ pub fn run_upscale(
 
     if !batch {
         let output = if out_is_dir {
-            Upscaler::output_name(&args.input, &args.output, &model_id, &opts, format)
+            ctx.output_name(&args.input, &args.output, format)
         } else {
             args.output.clone()
         };
@@ -242,8 +318,7 @@ fn run_batch(ctx: &Ctx, format: OutputFormat) -> Result<i32, ScaleUpError> {
                     return None;
                 }
                 ctx.rep.file_start(i + 1, total, input);
-                let output =
-                    Upscaler::output_name(input, &ctx.args.output, ctx.model_id, ctx.opts, format);
+                let output = ctx.output_name(input, &ctx.args.output, format);
                 Some(ctx.process(input, output, format))
             })
             .collect()
