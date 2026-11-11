@@ -128,8 +128,9 @@ pub enum WorkerEvent {
         image: egui::ColorImage,
         /// Size of the file, which `image` may be a downscaled copy of.
         size: [u32; 2],
-        /// Canvas this result added around the source image. Zero for a "before", when nothing
-        /// was extended, and in a batch.
+        /// Canvas this result added around its source image (single image or batch file), so
+        /// the view can place that file's "before" inside it. Zero for a "before" and when
+        /// nothing was extended.
         margins: Margins,
     },
     HubCatalog(Arc<Catalog>),
@@ -290,13 +291,36 @@ pub(crate) fn plan_jobs(mode: &Mode, s: &Settings) -> Vec<FileJob> {
         .collect()
 }
 
-/// The canvas `job` adds around its input, for the compare view; zero when it does not extend or
-/// the input cannot be measured.
+/// Size of `path` as [`load_image`] returns it: with EXIF orientation applied, so a quarter turn
+/// swaps the sides. Reads the header only, the way `load_image` opens the file.
+fn oriented_dimensions(path: &Path) -> Option<(u32, u32)> {
+    use image::ImageDecoder;
+    use image::metadata::Orientation;
+    let mut decoder = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_decoder()
+        .ok()?;
+    let (w, h) = decoder.dimensions();
+    let turned = matches!(
+        decoder.orientation().ok()?,
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
+    );
+    Some(if turned { (h, w) } else { (w, h) })
+}
+
+/// The canvas `job` adds around its input, for the compare view: the margins resolved against the
+/// oriented image, as `run_file` resolves them. Zero when it does not extend or the input cannot
+/// be measured.
 fn job_margins(job: &FileJob) -> Margins {
     job.extend
         .as_ref()
         .and_then(|ext| {
-            let (w, h) = image::image_dimensions(&job.input).ok()?;
+            let (w, h) = oriented_dimensions(&job.input)?;
             ext.margins.resolve(w, h).ok()
         })
         .unwrap_or_default()
@@ -799,15 +823,6 @@ impl Worker {
         let opts = settings.to_options();
         let files = jobs.len();
         let batch = matches!(mode, Mode::Batch(_));
-        // The compare view places the source inside a single extended result; a batch shows each
-        // file's own before and after, so it gets none.
-        let margins = |job: &FileJob| {
-            if batch {
-                Margins::default()
-            } else {
-                job_margins(job)
-            }
-        };
         let (mut done, mut failed) = (0, 0);
         for (index, job) in jobs.iter().enumerate() {
             self.inbox.poll(&cancel);
@@ -821,7 +836,7 @@ impl Worker {
                     job.output.display()
                 )));
                 self.emit(WorkerEvent::FileDone(job.output.clone()));
-                self.emit_preview(&job.output, Which::After, margins(job));
+                self.emit_preview(&job.output, Which::After, job_margins(job));
                 done += 1;
                 continue;
             }
@@ -860,7 +875,7 @@ impl Worker {
                         started.elapsed().as_secs_f32()
                     )));
                     self.emit(WorkerEvent::FileDone(path.clone()));
-                    self.emit_preview(&path, Which::After, margins(job));
+                    self.emit_preview(&path, Which::After, job_margins(job));
                     done += 1;
                 }
                 Err(ScaleUpError::Cancelled) => {
@@ -1790,6 +1805,100 @@ mod tests {
             evs.iter()
                 .any(|e| matches!(e, WorkerEvent::Progress { phase, .. } if phase == "Extending"))
         );
+    }
+
+    /// A `w`×`h` JPEG whose EXIF orientation is 6 (rotate 90° clockwise to view): it loads as
+    /// `h`×`w`.
+    fn write_rotated_jpeg(path: &Path, w: u32, h: u32) {
+        let img =
+            image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x * 20) as u8, (y * 9) as u8, 90]));
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95)
+            .encode_image(&img)
+            .unwrap();
+        // APP1 "Exif": a little-endian TIFF header and one IFD entry, Orientation (0x0112) = 6.
+        let tiff: [u8; 26] = [
+            b'I', b'I', 0x2a, 0, 8, 0, 0, 0, // header, IFD at offset 8
+            1, 0, // one entry
+            0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, // Orientation, SHORT, 1, value 6
+            0, 0, 0, 0, // no next IFD
+        ];
+        let mut app1 = vec![0xff, 0xe1, 0, (2 + 6 + tiff.len()) as u8];
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(&tiff);
+        let mut out = jpeg[..2].to_vec();
+        out.extend_from_slice(&app1);
+        out.extend_from_slice(&jpeg[2..]);
+        std::fs::write(path, out).unwrap();
+    }
+
+    #[test]
+    fn preview_margins_follow_the_exif_orientation_core_applies() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("portrait.jpg");
+        write_rotated_jpeg(&input, 20, 10);
+        assert_eq!(load_image(&input).unwrap().dimensions(), (10, 20));
+        let s = Settings {
+            extend_mode: crate::state::ExtendMode::Percent,
+            ..extend_settings(d.path(), "mirror", 50.0)
+        };
+        let h = cpu_worker(d.path());
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input),
+            settings: Box::new(s),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::AllDone { done: 1, failed: 0 }),
+            "{evs:?}"
+        );
+        // 50% of the oriented 10×20: 5 left and right, 10 top and bottom; the raw 20×10 would give
+        // the opposite. The result is (oriented size + margins) × 2.
+        let (size, m) = after_preview(&evs).unwrap();
+        assert_eq!(
+            m,
+            Margins {
+                left: 5,
+                top: 10,
+                right: 5,
+                bottom: 10
+            }
+        );
+        assert_eq!(size, [(10 + 5 + 5) * 2, (20 + 10 + 10) * 2]);
+    }
+
+    #[test]
+    fn batch_previews_carry_each_files_margins() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("in");
+        std::fs::create_dir(&dir).unwrap();
+        write_png(&dir.join("a.png"), 10);
+        let h = cpu_worker(d.path());
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Batch(dir),
+            settings: Box::new(extend_settings(&d.path().join("out"), "mirror", 4.0)),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::AllDone { done: 1, failed: 0 }),
+            "{evs:?}"
+        );
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Preview { which: Which::Before, size: [10, 10], margins, .. }
+                if *margins == Margins::default()
+        )));
+        let four = Margins {
+            left: 4,
+            top: 4,
+            right: 4,
+            bottom: 4,
+        };
+        assert_eq!(after_preview(&evs), Some(([36, 36], four)));
     }
 
     #[test]
