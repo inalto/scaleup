@@ -75,9 +75,11 @@ impl Ctx<'_> {
             quality: self.args.quality,
             overwrite: self.args.overwrite,
             double: self.args.double,
+            extend: None,
         };
         let result = self.upscaler.run_file(
-            self.model,
+            Some(self.model),
+            None,
             &job,
             self.opts,
             &mut |p| self.rep.core_progress(p),

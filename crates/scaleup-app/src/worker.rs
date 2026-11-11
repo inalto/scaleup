@@ -271,6 +271,7 @@ pub(crate) fn plan_jobs(mode: &Mode, s: &Settings) -> Vec<FileJob> {
             quality: s.quality,
             overwrite: s.overwrite,
             double: s.double,
+            extend: None,
         })
         .collect()
 }
@@ -790,7 +791,8 @@ impl Worker {
         let mut phase = phase_name(Phase::Loading);
         let mut percent = 0.0;
         upscaler.run_file(
-            model.as_ref(),
+            Some(model.as_ref()),
+            None,
             job,
             opts,
             &mut |p| {

@@ -8,6 +8,7 @@ use crate::backend::{
     Backend, DeviceInfo, DevicePreference, Inpainter, Model, OrtBackend, create_backend,
     cross_preference, extra_backend, is_extra_backend_model,
 };
+use crate::extend::{ExtendOptions, Fill, Margins, outpaint, pad_canvas};
 use crate::image32::Image32;
 use crate::io::{OutputFormat, load_image, save_image};
 use crate::pipeline::{CancelToken, Phase, Progress, UpscaleOptions, upscale};
@@ -17,7 +18,8 @@ use crate::tiling::{auto_tile_size, room_for_overlap, tile_grid};
 use crate::{Result, ScaleUpError};
 
 /// One input file → one output file.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Not `Eq`: percentage margins hold floats.
+#[derive(Clone, Debug, PartialEq)]
 pub struct FileJob {
     pub input: PathBuf,
     pub output: PathBuf,
@@ -28,6 +30,8 @@ pub struct FileJob {
     pub overwrite: bool,
     /// Run the model twice (second pass on the first result) before the final resize.
     pub double: bool,
+    /// Add canvas around the image before upscaling.
+    pub extend: Option<ExtendOptions>,
 }
 
 /// A model whose catalogue entry names the overlap: the ONNX file itself does not say what it is.
@@ -213,31 +217,83 @@ impl Upscaler {
         }
     }
 
-    /// Upscales `job.input` into `job.output` and returns the output path. An existing output is left
-    /// alone (and its path returned) unless `job.overwrite`. The output is written atomically, so a
-    /// cancelled or failed run leaves no file behind.
+    /// Extends and/or upscales `job.input` into `job.output` and returns the output path: load, then
+    /// extend (`job.extend`), then upscale, resize and save. An existing output is left alone (and its
+    /// path returned) unless `job.overwrite`. The output is written atomically, so a cancelled or
+    /// failed run leaves no file behind.
+    ///
+    /// `inpainter` is required when `job.extend` uses [`Fill::Ai`], else `InvalidOption`. The margins
+    /// are resolved against the loaded image before any other work, so a margin or canvas over the
+    /// limits is `InvalidOption` with nothing extended or upscaled. Margins that resolve to zero (an
+    /// aspect the image already has) skip extension entirely.
+    ///
+    /// `model == None` extends without upscaling: the output is the extended image at its own size,
+    /// and `opts.output_scale`, `opts.output_width`, `opts.tta` and `job.double` are ignored. With no
+    /// model, `job.extend` must be set (`InvalidOption` otherwise).
+    ///
+    /// Phases come in the order `Loading, Extending, Upscaling, Resizing, Saving`, each only when it
+    /// applies. The AI fill reports one tile per window; the upscale then counts its own tiles from
+    /// zero.
     pub fn run_file(
         &self,
-        model: &dyn Model,
+        model: Option<&dyn Model>,
+        inpainter: Option<&dyn Inpainter>,
         job: &FileJob,
         opts: &UpscaleOptions,
         progress: &mut dyn FnMut(Progress),
         cancel: &CancelToken,
     ) -> Result<PathBuf> {
+        if model.is_none() && job.extend.is_none() {
+            return Err(ScaleUpError::InvalidOption(
+                "nothing to do: no upscale model and no canvas extension".into(),
+            ));
+        }
+        if let Some(ext) = &job.extend
+            && ext.fill == Fill::Ai
+            && inpainter.is_none()
+        {
+            return Err(ScaleUpError::InvalidOption(
+                "AI fill needs an inpainting model".into(),
+            ));
+        }
         if job.output.exists() && !job.overwrite {
             return Ok(job.output.clone());
         }
         progress(Progress::Phase(Phase::Loading));
-        let input = load_image(&job.input)?;
-        let opts = UpscaleOptions {
-            tile_size: self.effective_tile(opts.tile_size, opts.overlap_for(model)),
-            ..opts.clone()
-        };
+        let mut image = load_image(&job.input)?;
 
-        let output = if job.double {
-            self.upscale_twice(model, &input, &opts, progress, cancel)?
-        } else {
-            upscale(model, &input, &opts, progress, cancel)?
+        if let Some(ext) = &job.extend {
+            let margins = ext.margins.resolve(image.width(), image.height())?;
+            if margins != Margins::default() {
+                image = match (&ext.fill, inpainter) {
+                    (Fill::Ai, Some(inpainter)) => {
+                        outpaint(inpainter, &image, margins, progress, cancel)?
+                    }
+                    (Fill::Ai, None) => unreachable!("checked above"),
+                    (fill, _) => {
+                        progress(Progress::Phase(Phase::Extending));
+                        pad_canvas(&image, margins, fill)?
+                    }
+                };
+                if cancel.is_cancelled() {
+                    return Err(ScaleUpError::Cancelled);
+                }
+            }
+        }
+
+        let output = match model {
+            Some(model) => {
+                let opts = UpscaleOptions {
+                    tile_size: self.effective_tile(opts.tile_size, opts.overlap_for(model)),
+                    ..opts.clone()
+                };
+                if job.double {
+                    self.upscale_twice(model, &image, &opts, progress, cancel)?
+                } else {
+                    upscale(model, &image, &opts, progress, cancel)?
+                }
+            }
+            None => image,
         };
         if cancel.is_cancelled() {
             return Err(ScaleUpError::Cancelled);
@@ -319,7 +375,8 @@ impl Upscaler {
 
     /// Output path for `input` in `out_dir`: `<stem>_scaleup_<s>x_<model_id>.<ext>`, or
     /// `<stem>_scaleup_<w>px_<model_id>.<ext>` with a custom width. Without an explicit output scale,
-    /// `s` comes from the model id (Upscayl's name rule).
+    /// `s` comes from the model id (Upscayl's name rule). See [`Upscaler::output_name_for`] for jobs
+    /// that extend the canvas.
     pub fn output_name(
         input: &Path,
         out_dir: &Path,
@@ -327,16 +384,51 @@ impl Upscaler {
         opts: &UpscaleOptions,
         fmt: OutputFormat,
     ) -> PathBuf {
+        Self::output_name_for(input, out_dir, Some(model_id), None, opts, fmt)
+    }
+
+    /// [`Upscaler::output_name`] for any job. `extend_fill` is the fill when the job extends the
+    /// canvas: `_ext` then goes before the size (`<stem>_scaleup_ext_4x_<model_id>.<ext>`). With no
+    /// upscale model the name is `<stem>_scaleup_ext_<fill>.<ext>`, `<fill>` being the fill's CLI word
+    /// (`ai`, `mirror`, `edge`, `transparent`, or the colour as `rrggbb`). With neither, it is
+    /// `<stem>_scaleup.<ext>`.
+    pub fn output_name_for(
+        input: &Path,
+        out_dir: &Path,
+        model_id: Option<&str>,
+        extend_fill: Option<&Fill>,
+        opts: &UpscaleOptions,
+        fmt: OutputFormat,
+    ) -> PathBuf {
         let stem = input
             .file_stem()
             .map(|s| s.to_string_lossy())
             .unwrap_or_default();
-        let size = match (opts.output_width, opts.output_scale) {
-            (Some(w), _) => format!("{w}px"),
-            (None, Some(s)) => format!("{s}x"),
-            (None, None) => format!("{}x", scale_from_name(model_id)),
+        let ext = if extend_fill.is_some() { "_ext" } else { "" };
+        let tail = match (model_id, extend_fill) {
+            (Some(model_id), _) => {
+                let size = match (opts.output_width, opts.output_scale) {
+                    (Some(w), _) => format!("{w}px"),
+                    (None, Some(s)) => format!("{s}x"),
+                    (None, None) => format!("{}x", scale_from_name(model_id)),
+                };
+                format!("{ext}_{size}_{model_id}")
+            }
+            (None, Some(fill)) => format!("_ext_{}", fill_word(fill)),
+            (None, None) => String::new(),
         };
-        out_dir.join(format!("{stem}_scaleup_{size}_{model_id}.{}", fmt.ext()))
+        out_dir.join(format!("{stem}_scaleup{tail}.{}", fmt.ext()))
+    }
+}
+
+/// The CLI word for `fill`, as [`Fill::parse`] reads it (a colour without its `#`).
+fn fill_word(fill: &Fill) -> String {
+    match fill {
+        Fill::Ai => "ai".into(),
+        Fill::Mirror => "mirror".into(),
+        Fill::Edge => "edge".into(),
+        Fill::Transparent => "transparent".into(),
+        Fill::Color([r, g, b]) => format!("{r:02x}{g:02x}{b:02x}"),
     }
 }
 
@@ -373,6 +465,8 @@ mod tests {
     }
     use crate::ScaleUpError;
     use crate::backend::DeviceKind;
+    use crate::backend::fake::MeanInpainter;
+    use crate::extend::MarginSpec;
     use image::{Rgba, RgbaImage};
 
     fn fixture() -> String {
@@ -405,6 +499,7 @@ mod tests {
             quality: 90,
             overwrite: false,
             double: false,
+            extend: None,
         }
     }
 
@@ -508,7 +603,8 @@ mod tests {
         let mut phases = Vec::new();
         let got = up
             .run_file(
-                model.as_ref(),
+                Some(model.as_ref()),
+                None,
                 &job(input.clone(), output.clone()),
                 &UpscaleOptions::default(),
                 &mut |p| {
@@ -541,13 +637,27 @@ mod tests {
         let mut j = job(input, output.clone());
         let opts = UpscaleOptions::default();
         let got = up
-            .run_file(model.as_ref(), &j, &opts, &mut |_| {}, &CancelToken::new())
+            .run_file(
+                Some(model.as_ref()),
+                None,
+                &j,
+                &opts,
+                &mut |_| {},
+                &CancelToken::new(),
+            )
             .unwrap();
         assert_eq!(got, output);
         assert_eq!(std::fs::read(&output).unwrap(), b"keep me");
         j.overwrite = true;
-        up.run_file(model.as_ref(), &j, &opts, &mut |_| {}, &CancelToken::new())
-            .unwrap();
+        up.run_file(
+            Some(model.as_ref()),
+            None,
+            &j,
+            &opts,
+            &mut |_| {},
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert_eq!(load_image(&output).unwrap().dimensions(), (8, 8));
     }
 
@@ -562,7 +672,8 @@ mod tests {
         j.double = true;
         let mut last_tiles = None;
         up.run_file(
-            model.as_ref(),
+            Some(model.as_ref()),
+            None,
             &j,
             &UpscaleOptions::default(),
             &mut |p| {
@@ -593,7 +704,8 @@ mod tests {
             ..Default::default()
         };
         let res = up.run_file(
-            model.as_ref(),
+            Some(model.as_ref()),
+            None,
             &job(input, output.clone()),
             &opts,
             &mut |p| {
@@ -610,6 +722,371 @@ mod tests {
             .filter(|n| n.starts_with("cancelled"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    fn right(px: u32, fill: Fill) -> ExtendOptions {
+        ExtendOptions {
+            margins: MarginSpec::Pixels(Margins {
+                right: px,
+                ..Margins::default()
+            }),
+            fill,
+        }
+    }
+
+    fn extend_job(input: PathBuf, output: PathBuf, extend: ExtendOptions) -> FileJob {
+        FileJob {
+            extend: Some(extend),
+            ..job(input, output)
+        }
+    }
+
+    /// Runs `job` and returns the phases and tile events it reported.
+    fn run_logged(
+        up: &Upscaler,
+        model: Option<&dyn Model>,
+        inpainter: Option<&dyn Inpainter>,
+        job: &FileJob,
+        opts: &UpscaleOptions,
+    ) -> (Result<PathBuf>, Vec<Progress>) {
+        let mut log = Vec::new();
+        let res = up.run_file(
+            model,
+            inpainter,
+            job,
+            opts,
+            &mut |p| log.push(p),
+            &CancelToken::new(),
+        );
+        (res, log)
+    }
+
+    fn phases_of(log: &[Progress]) -> Vec<Phase> {
+        log.iter()
+            .filter_map(|p| match p {
+                Progress::Phase(ph) => Some(*ph),
+                Progress::Tiles { .. } => None,
+            })
+            .collect()
+    }
+
+    fn assert_left_is_plain_upscale(result: &RgbaImage, plain: &RgbaImage) {
+        for y in 0..plain.height() {
+            for x in 0..plain.width() {
+                assert_eq!(result.get_pixel(x, y), plain.get_pixel(x, y), "at {x},{y}");
+            }
+        }
+    }
+
+    #[test]
+    fn run_file_extends_then_upscales() {
+        let dir = tempfile::tempdir().unwrap();
+        let up = cpu_upscaler(dir.path());
+        let model = up.load(&fixture(), &mut |_, _| {}).unwrap();
+        let input = write_input(dir.path(), 4, 4);
+        let plain_out = dir.path().join("plain.png");
+        up.run_file(
+            Some(model.as_ref()),
+            None,
+            &job(input.clone(), plain_out.clone()),
+            &UpscaleOptions::default(),
+            &mut |_| {},
+            &CancelToken::new(),
+        )
+        .unwrap();
+        let plain = load_image(&plain_out).unwrap();
+        let src = load_image(&input).unwrap();
+        let mean = MeanInpainter { window: 16 };
+        for (name, fill, inpainter) in [
+            ("edge", Fill::Edge, None),
+            ("ai", Fill::Ai, Some(&mean as &dyn Inpainter)),
+        ] {
+            let output = dir.path().join(format!("{name}.png"));
+            let j = extend_job(input.clone(), output.clone(), right(2, fill));
+            let (res, log) = run_logged(
+                &up,
+                Some(model.as_ref()),
+                inpainter,
+                &j,
+                &UpscaleOptions::default(),
+            );
+            assert_eq!(res.unwrap(), output);
+            let result = load_image(&output).unwrap();
+            assert_eq!(result.dimensions(), (12, 8), "{name}");
+            assert_left_is_plain_upscale(&result, &plain);
+            assert_eq!(
+                phases_of(&log),
+                vec![
+                    Phase::Loading,
+                    Phase::Extending,
+                    Phase::Upscaling,
+                    Phase::Saving
+                ],
+                "{name}"
+            );
+            // The upscale pass counts its own tiles from zero.
+            let upscaling = log
+                .iter()
+                .position(|p| *p == Progress::Phase(Phase::Upscaling))
+                .unwrap();
+            assert!(matches!(
+                log[upscaling + 1],
+                Progress::Tiles { done: 1, .. }
+            ));
+            if name == "edge" {
+                // The new column repeats the last source column, upscaled.
+                assert_eq!(result.get_pixel(11, 5), src.get_pixel(3, 2));
+            } else {
+                // The AI path reported its windows before the upscale.
+                assert!(matches!(log[2], Progress::Tiles { .. }), "{log:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn run_file_extend_only_keeps_the_extended_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let up = cpu_upscaler(dir.path());
+        let input = write_input(dir.path(), 4, 4);
+        let output = dir.path().join("ext.png");
+        let fill = Fill::Color([1, 2, 3]);
+        let j = extend_job(input.clone(), output.clone(), right(2, fill.clone()));
+        // Upscale options do not apply without a model.
+        let opts = UpscaleOptions {
+            output_scale: Some(4),
+            output_width: Some(100),
+            ..Default::default()
+        };
+        let (res, log) = run_logged(&up, None, None, &j, &opts);
+        assert_eq!(res.unwrap(), output);
+        let result = load_image(&output).unwrap();
+        assert_eq!(result.dimensions(), (6, 4));
+        let src = load_image(&input).unwrap();
+        let expected = pad_canvas(
+            &src,
+            Margins {
+                right: 2,
+                ..Margins::default()
+            },
+            &fill,
+        )
+        .unwrap();
+        assert_eq!(result, expected);
+        assert_eq!(
+            phases_of(&log),
+            vec![Phase::Loading, Phase::Extending, Phase::Saving]
+        );
+    }
+
+    #[test]
+    fn run_file_zero_margins_skip_extending() {
+        let dir = tempfile::tempdir().unwrap();
+        let up = cpu_upscaler(dir.path());
+        let model = up.load(&fixture(), &mut |_, _| {}).unwrap();
+        let input = write_input(dir.path(), 4, 4);
+        let output = dir.path().join("square.png");
+        let extend = ExtendOptions {
+            margins: MarginSpec::Aspect { w: 1, h: 1 },
+            fill: Fill::Ai,
+        };
+        // Already square: no inpainter is needed because nothing is extended.
+        let mean = MeanInpainter { window: 16 };
+        let j = extend_job(input, output.clone(), extend);
+        let (res, log) = run_logged(
+            &up,
+            Some(model.as_ref()),
+            Some(&mean),
+            &j,
+            &UpscaleOptions::default(),
+        );
+        res.unwrap();
+        assert_eq!(load_image(&output).unwrap().dimensions(), (8, 8));
+        assert_eq!(
+            phases_of(&log),
+            vec![Phase::Loading, Phase::Upscaling, Phase::Saving]
+        );
+    }
+
+    #[test]
+    fn run_file_refuses_invalid_extension_before_any_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let up = cpu_upscaler(dir.path());
+        let model = up.load(&fixture(), &mut |_, _| {}).unwrap();
+        let input = write_input(dir.path(), 4, 4);
+        let output = dir.path().join("refused.png");
+        let opts = UpscaleOptions::default();
+        // No model and nothing to extend.
+        let (res, log) = run_logged(&up, None, None, &job(input.clone(), output.clone()), &opts);
+        assert!(
+            matches!(res, Err(ScaleUpError::InvalidOption(_))),
+            "{res:?}"
+        );
+        assert!(log.is_empty());
+        // AI fill without an inpainter: never a quiet plain fill.
+        let j = extend_job(input.clone(), output.clone(), right(2, Fill::Ai));
+        let (res, log) = run_logged(&up, Some(model.as_ref()), None, &j, &opts);
+        assert!(
+            matches!(res, Err(ScaleUpError::InvalidOption(_))),
+            "{res:?}"
+        );
+        assert!(log.is_empty());
+        // A margin over 4x the side: refused right after loading.
+        let j = extend_job(input, output.clone(), right(17, Fill::Edge));
+        let (res, log) = run_logged(&up, Some(model.as_ref()), None, &j, &opts);
+        assert!(
+            matches!(res, Err(ScaleUpError::InvalidOption(_))),
+            "{res:?}"
+        );
+        assert_eq!(phases_of(&log), vec![Phase::Loading]);
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn run_file_skips_existing_with_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let up = cpu_upscaler(dir.path());
+        let model = up.load(&fixture(), &mut |_, _| {}).unwrap();
+        let input = write_input(dir.path(), 4, 4);
+        let output = dir.path().join("exists.png");
+        std::fs::write(&output, b"keep me").unwrap();
+        let mut j = extend_job(input, output.clone(), right(2, Fill::Mirror));
+        let opts = UpscaleOptions::default();
+        let got = up
+            .run_file(
+                Some(model.as_ref()),
+                None,
+                &j,
+                &opts,
+                &mut |_| {},
+                &CancelToken::new(),
+            )
+            .unwrap();
+        assert_eq!(got, output);
+        assert_eq!(std::fs::read(&output).unwrap(), b"keep me");
+        j.overwrite = true;
+        up.run_file(
+            Some(model.as_ref()),
+            None,
+            &j,
+            &opts,
+            &mut |_| {},
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert_eq!(load_image(&output).unwrap().dimensions(), (12, 8));
+    }
+
+    #[test]
+    fn cancelled_extension_leaves_no_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let up = cpu_upscaler(dir.path());
+        let model = up.load(&fixture(), &mut |_, _| {}).unwrap();
+        let input = write_input(dir.path(), 64, 64);
+        let mean = MeanInpainter { window: 16 };
+        let opts = UpscaleOptions {
+            tile_size: 64,
+            ..Default::default()
+        };
+        // Cancelled during the extension (with and without an upscale model), then during the
+        // upscale that follows it.
+        for (name, with_model, cancel_in) in [
+            ("cancel_ext", true, Phase::Extending),
+            ("cancel_extonly", false, Phase::Extending),
+            ("cancel_up", true, Phase::Upscaling),
+        ] {
+            let output = dir.path().join(format!("{name}.png"));
+            let j = extend_job(input.clone(), output.clone(), right(32, Fill::Ai));
+            let token = CancelToken::new();
+            let observer = token.clone();
+            let mut phase = Phase::Loading;
+            let mut extended_tiles = 0;
+            let res = up.run_file(
+                with_model.then_some(model.as_ref()),
+                Some(&mean),
+                &j,
+                &opts,
+                &mut |p| match p {
+                    Progress::Phase(ph) => phase = ph,
+                    Progress::Tiles { .. } => {
+                        if phase == Phase::Extending {
+                            extended_tiles += 1;
+                        }
+                        if phase == cancel_in {
+                            observer.cancel()
+                        }
+                    }
+                },
+                &token,
+            );
+            assert!(
+                matches!(res, Err(ScaleUpError::Cancelled)),
+                "{name}: {res:?}"
+            );
+            if cancel_in == Phase::Extending {
+                assert_eq!(extended_tiles, 1, "{name}: stops after the first window");
+            }
+            let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with(name))
+                .collect();
+            assert!(leftovers.is_empty(), "{name}: {leftovers:?}");
+        }
+    }
+
+    #[test]
+    fn output_name_for_extensions() {
+        let out = Path::new("out");
+        let scale4 = UpscaleOptions {
+            output_scale: Some(4),
+            ..Default::default()
+        };
+        let name = |model: Option<&str>, fill: Option<&Fill>, opts: &UpscaleOptions| {
+            Upscaler::output_name_for(
+                Path::new("dir/a.png"),
+                out,
+                model,
+                fill,
+                opts,
+                OutputFormat::Png,
+            )
+        };
+        // Not extending: the same name as `output_name`.
+        assert_eq!(
+            name(Some("realesrgan-x4plus"), None, &scale4),
+            Upscaler::output_name(
+                Path::new("dir/a.png"),
+                out,
+                "realesrgan-x4plus",
+                &scale4,
+                OutputFormat::Png
+            )
+        );
+        assert_eq!(
+            name(Some("realesrgan-x4plus"), Some(&Fill::Ai), &scale4),
+            out.join("a_scaleup_ext_4x_realesrgan-x4plus.png")
+        );
+        let width = UpscaleOptions {
+            output_width: Some(1920),
+            ..Default::default()
+        };
+        assert_eq!(
+            name(Some("realesrgan-x4plus"), Some(&Fill::Edge), &width),
+            out.join("a_scaleup_ext_1920px_realesrgan-x4plus.png")
+        );
+        // No upscale model: the fill's CLI word, and no size.
+        for (fill, word) in [
+            (Fill::Ai, "ai"),
+            (Fill::Mirror, "mirror"),
+            (Fill::Edge, "edge"),
+            (Fill::Transparent, "transparent"),
+            (Fill::Color([0xab, 0x01, 0xff]), "ab01ff"),
+        ] {
+            assert_eq!(
+                name(None, Some(&fill), &scale4),
+                out.join(format!("a_scaleup_ext_{word}.png"))
+            );
+        }
     }
 
     fn inpaint_entry(id: &str) -> crate::registry::ModelEntry {

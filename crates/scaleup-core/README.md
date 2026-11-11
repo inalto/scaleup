@@ -22,10 +22,10 @@ fn main() -> scaleup_core::Result<()> {
 
     let opts = UpscaleOptions { output_scale: Some(4), ..Default::default() };
     let output = Upscaler::output_name(Path::new("photo.jpg"), Path::new("out"), "realesr-general-x4v3", &opts, OutputFormat::Png);
-    let job = FileJob { input: "photo.jpg".into(), output, format: OutputFormat::Png, quality: 90, overwrite: false, double: false };
+    let job = FileJob { input: "photo.jpg".into(), output, format: OutputFormat::Png, quality: 90, overwrite: false, double: false, extend: None };
 
     let cancel = CancelToken::new(); // clone it into another thread and call cancel() to stop
-    let saved = upscaler.run_file(model.as_ref(), &job, &opts, &mut |p| {
+    let saved = upscaler.run_file(Some(model.as_ref()), None, &job, &opts, &mut |p| {
         if let Progress::Tiles { done, total } = p {
             eprintln!("{:.2}%", 100.0 * done as f64 / total as f64);
         }
@@ -36,6 +36,10 @@ fn main() -> scaleup_core::Result<()> {
 ```
 
 For in-memory images use `scaleup_core::upscale(model, &rgba, &opts, &mut progress, &cancel)`.
+
+To add canvas before upscaling, set `FileJob::extend` (margins and a fill); an AI fill needs an
+inpainter from `Upscaler::load_inpainter`, passed as `run_file`'s second argument. With no upscale
+model (`None`), `run_file` only extends. Name such outputs with `Upscaler::output_name_for`.
 
 ## Notes
 

@@ -199,9 +199,11 @@ mod tests {
             quality: 90,
             overwrite: false,
             double: false,
+            extend: None,
         };
         up.run_file(
-            model.as_ref(),
+            Some(model.as_ref()),
+            None,
             &job,
             &scaleup_core::UpscaleOptions::default(),
             &mut |_| {},
