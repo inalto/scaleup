@@ -25,7 +25,7 @@ scaleup-core = { path = "../scaleup-core", features = ["testing"] }
 tempfile = "3"
 sha2.workspace = true
 # Headless render of the OpenModelDB window (`hub_dialog_renders`, ignored by default).
-egui_kittest = { version = "0.34", features = ["wgpu", "snapshot"] }
+egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 
 # `cargo deb -p scaleup-app --no-build` after `cargo build --release --workspace`.
 # `ort` loads its provider libraries from the directory next to the executable, so both binaries and the
