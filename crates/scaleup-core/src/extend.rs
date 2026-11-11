@@ -1,7 +1,12 @@
-//! Canvas extension: margin specs, fill modes and the plain (non-AI) padding of an image.
+//! Canvas extension: margin specs, fill modes, the plain (non-AI) padding of an image and the
+//! window-by-window AI fill ([`outpaint`]).
 
 use image::{Rgba, RgbaImage};
 
+use crate::backend::Inpainter;
+use crate::image32::Image32;
+use crate::pipeline::{CancelToken, Phase, Progress};
+use crate::resize::resize_rgba;
 use crate::{Result, ScaleUpError};
 
 /// Largest extended canvas, in pixels per side.
@@ -301,6 +306,227 @@ fn reflect(i: i64, n: u32) -> u32 {
     (if r < n { r } else { period - r }) as u32
 }
 
+/// Margin depth, in source pixels, that one step of the context factor covers.
+const CONTEXT_STEP: u32 = 192;
+
+/// Context factor for margins `m`: `clamp(ceil(max_margin / 192), 1, max)`, where `max_margin` is
+/// the largest of the four margins and `max` the model's [`Inpainter::max_context_factor`].
+///
+/// With factor `k` a window covers `window·k` source pixels per side and is downsampled to `window`
+/// for the model, so deep margins take fewer rings and see wider context.
+pub fn context_factor(m: Margins, max: u32) -> u32 {
+    let deepest = m.left.max(m.top).max(m.right).max(m.bottom);
+    deepest.div_ceil(CONTEXT_STEP).clamp(1, max.max(1))
+}
+
+/// One planned window: canvas position (may be negative or overhang when the canvas is smaller than
+/// the window) and the ring it belongs to.
+///
+/// Positions are in canvas (source-resolution) pixels and the window covers `window·k` of them per
+/// side. Rings count from 0; ring `r` fills the margin depth between `r·span/2` and `(r+1)·span/2`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Window {
+    pub x: i64,
+    pub y: i64,
+    pub ring: u32,
+    pub corner: bool,
+}
+
+/// Windows that fill the margins `m` around a `w`×`h` image, in the order they run.
+///
+/// The margins are filled in rings: each ring adds at most `span / 2` pixels (`span = window·k`) on
+/// every side that still has margin left, side windows first (right, left, top, bottom; along a side
+/// they overlap by half a window), then the corner windows. Every window is flush with the outer
+/// edge of its ring, so in the canvas it is at least half known when the source is at least `span`
+/// on both sides (a corner window sees three known quadrants).
+///
+/// When the known extent along a side is shorter than `span`, no placement can be half known; the
+/// single window for that strip is centred on it, so it covers the whole strip and as much known
+/// context as there is, and runs anyway. Such a window may overhang the canvas and may cover part of
+/// a corner region. Every canvas pixel is covered by the end of the plan.
+pub fn plan_windows(w: u32, h: u32, m: Margins, window: u32, k: u32) -> Vec<Window> {
+    let span = i64::from(window) * i64::from(k.max(1));
+    let depth = (span / 2).max(1);
+    let (mut x0, mut y0) = (i64::from(m.left), i64::from(m.top));
+    let (mut x1, mut y1) = (x0 + i64::from(w), y0 + i64::from(h));
+    let mut rem = [m.left, m.top, m.right, m.bottom].map(i64::from);
+    let mut plan = Vec::new();
+    let mut ring = 0;
+    while rem.iter().any(|&r| r > 0) {
+        let [l, t, r, b] = rem.map(|v| v.min(depth));
+        let mut push = |x, y, corner| plan.push(Window { x, y, ring, corner });
+        // Outer positions of this ring's windows on each side.
+        let (left, right) = (x0 - l, x1 + r - span);
+        let (top, bottom) = (y0 - t, y1 + b - span);
+        for (d, x) in [(r, right), (l, left)] {
+            if d > 0 {
+                for y in strip_starts(y0, y1, span) {
+                    push(x, y, false);
+                }
+            }
+        }
+        for (d, y) in [(t, top), (b, bottom)] {
+            if d > 0 {
+                for x in strip_starts(x0, x1, span) {
+                    push(x, y, false);
+                }
+            }
+        }
+        for (dx, dy, x, y) in [
+            (r, t, right, top),
+            (l, t, left, top),
+            (r, b, right, bottom),
+            (l, b, left, bottom),
+        ] {
+            if dx > 0 && dy > 0 {
+                push(x, y, true);
+            }
+        }
+        (x0, y0, x1, y1) = (x0 - l, y0 - t, x1 + r, y1 + b);
+        rem = [rem[0] - l, rem[1] - t, rem[2] - r, rem[3] - b];
+        ring += 1;
+    }
+    plan
+}
+
+/// Window starts that cover the strip `lo..hi` at half overlap; one centred window when the strip is
+/// no longer than `span`.
+fn strip_starts(lo: i64, hi: i64, span: i64) -> Vec<i64> {
+    let n = hi - lo;
+    if n <= span {
+        return vec![lo + n / 2 - span / 2];
+    }
+    let step = (span / 2).max(1) as usize;
+    let mut starts: Vec<i64> = (lo..hi - span).step_by(step).collect();
+    starts.push(hi - span);
+    starts
+}
+
+/// Extends `img` by `m`, inventing the new pixels with `model` window by window.
+///
+/// The canvas is first padded by reflection ([`Fill::Mirror`]), which only serves as the starting
+/// guess for the unknown pixels. Windows then run in [`plan_windows`] order with the context factor
+/// from [`context_factor`]: each is cut from the canvas (pixels past the canvas edge are reflected
+/// and passed as unknown), downsampled when `k > 1`, filled, upsampled, and only its still-unknown
+/// canvas pixels are written and marked known. Where windows overlap the earlier one wins.
+///
+/// The original pixels, alpha included, are copied bit-exact; transparent ones count as known and
+/// their stored RGB is used as context. New pixels are opaque. Reports [`Phase::Extending`], then
+/// one [`Progress::Tiles`] per planned window; cancellation is checked after every window. An error
+/// from `model` is returned as is.
+pub fn outpaint(
+    model: &dyn Inpainter,
+    img: &RgbaImage,
+    m: Margins,
+    progress: &mut dyn FnMut(Progress),
+    cancel: &CancelToken,
+) -> Result<RgbaImage> {
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 {
+        return Err(ScaleUpError::InvalidOption(format!(
+            "cannot extend an empty {w}x{h} image"
+        )));
+    }
+    let window = model.window();
+    if window < 2 {
+        return Err(ScaleUpError::InvalidOption(format!(
+            "inpainting window of {window} px is too small"
+        )));
+    }
+    if cancel.is_cancelled() {
+        return Err(ScaleUpError::Cancelled);
+    }
+    let k = context_factor(m, model.max_context_factor());
+    let plan = plan_windows(w, h, m, window, k);
+    let mut canvas = pad_canvas(img, m, &Fill::Mirror)?;
+    progress(Progress::Phase(Phase::Extending));
+    let cw = canvas.width() as usize;
+    let mut known = vec![false; cw * canvas.height() as usize];
+    for y in m.top..m.top + h {
+        let row = y as usize * cw;
+        known[row + m.left as usize..row + (m.left + w) as usize].fill(true);
+    }
+    let total = plan.len() as u32;
+    for (i, win) in plan.iter().enumerate() {
+        fill_window(model, &mut canvas, &mut known, win, window, k)?;
+        progress(Progress::Tiles {
+            done: i as u32 + 1,
+            total,
+        });
+        if cancel.is_cancelled() {
+            return Err(ScaleUpError::Cancelled);
+        }
+    }
+    Ok(canvas)
+}
+
+/// Runs one window of `window·k` canvas pixels and writes its still-unknown canvas pixels.
+fn fill_window(
+    model: &dyn Inpainter,
+    canvas: &mut RgbaImage,
+    known: &mut [bool],
+    win: &Window,
+    window: u32,
+    k: u32,
+) -> Result<()> {
+    let (cw, ch) = canvas.dimensions();
+    let span = window * k;
+    let inside =
+        |x: i64, y: i64| (0..i64::from(cw)).contains(&x) && (0..i64::from(ch)).contains(&y);
+    let index = |x: i64, y: i64| y as usize * cw as usize + x as usize;
+    // Cut with reflection past the canvas edge. Opaque, so resizing ignores the source alpha.
+    let mut cut = RgbaImage::new(span, span);
+    let mut cut_known = vec![false; span as usize * span as usize];
+    let mut anything_to_fill = false;
+    for j in 0..span {
+        for i in 0..span {
+            let (x, y) = (win.x + i64::from(i), win.y + i64::from(j));
+            let p = canvas.get_pixel(reflect(x, cw), reflect(y, ch));
+            cut.put_pixel(i, j, Rgba([p[0], p[1], p[2], 255]));
+            if inside(x, y) {
+                let kn = known[index(x, y)];
+                cut_known[(j * span + i) as usize] = kn;
+                anything_to_fill |= !kn;
+            }
+        }
+    }
+    if !anything_to_fill {
+        return Ok(());
+    }
+    let (input, mask) = if k == 1 {
+        (cut, cut_known)
+    } else {
+        // A downsampled pixel is known only when its whole k×k block is.
+        let mask = (0..window * window)
+            .map(|p| {
+                let (bx, by) = (p % window * k, p / window * k);
+                (by..by + k).all(|y| (bx..bx + k).all(|x| cut_known[(y * span + x) as usize]))
+            })
+            .collect();
+        (resize_rgba(&cut, window, window), mask)
+    };
+    let (rgb, _) = Image32::from_rgba(&input);
+    let out = model.fill(&rgb, &mask)?;
+    if (out.width, out.height) != (window, window) {
+        return Err(ScaleUpError::Model(format!(
+            "inpainter returned {}x{} for a {window}x{window} window",
+            out.width, out.height
+        )));
+    }
+    let filled = resize_rgba(&out.to_rgba(None), span, span);
+    for j in 0..span {
+        for i in 0..span {
+            let (x, y) = (win.x + i64::from(i), win.y + i64::from(j));
+            if inside(x, y) && !known[index(x, y)] {
+                let p = filled.get_pixel(i, j);
+                canvas.put_pixel(x as u32, y as u32, Rgba([p[0], p[1], p[2], 255]));
+                known[index(x, y)] = true;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,10 +544,10 @@ mod tests {
     fn sample(w: u32, h: u32) -> RgbaImage {
         RgbaImage::from_fn(w, h, |x, y| {
             Rgba([
-                x as u8 * 10 + 1,
-                y as u8 * 10 + 2,
+                (x as u8).wrapping_mul(10).wrapping_add(1),
+                (y as u8).wrapping_mul(10).wrapping_add(2),
                 (x + y) as u8,
-                100 + x as u8,
+                (x as u8).wrapping_add(100),
             ])
         })
     }
@@ -655,5 +881,445 @@ mod tests {
             let col: Vec<u8> = (0..out.height()).map(|y| out.get_pixel(x, y)[0]).collect();
             assert_eq!(col, [2, 1, 0, 1, 2, 1, 0]);
         }
+    }
+
+    // ----------------------------------------------------------------- outpainting driver
+
+    use crate::backend::fake::MeanInpainter;
+    use std::sync::Mutex;
+
+    #[test]
+    fn context_factor_rule() {
+        assert_eq!(context_factor(Margins::default(), 4), 1);
+        assert_eq!(context_factor(px(1, 0, 0, 0), 4), 1);
+        assert_eq!(context_factor(px(0, 192, 0, 0), 4), 1);
+        assert_eq!(context_factor(px(0, 0, 193, 0), 4), 2);
+        assert_eq!(context_factor(px(10, 384, 20, 0), 4), 2);
+        assert_eq!(context_factor(px(0, 0, 0, 385), 4), 3);
+        assert_eq!(context_factor(px(768, 0, 0, 0), 4), 4);
+        assert_eq!(context_factor(px(5000, 0, 0, 0), 4), 4);
+        // The model's limit caps it; a limit of 0 still gives 1.
+        assert_eq!(context_factor(px(5000, 0, 0, 0), 2), 2);
+        assert_eq!(context_factor(px(5000, 0, 0, 0), 1), 1);
+        assert_eq!(context_factor(px(5000, 0, 0, 0), 0), 1);
+    }
+
+    /// Replays `plan` on a known mask the way the driver does. Returns, per window, the number of
+    /// known canvas pixels it saw, and whether every canvas pixel is known at the end.
+    fn replay(w: u32, h: u32, m: Margins, span: u32, plan: &[Window]) -> (Vec<u64>, bool) {
+        let (cw, ch) = (
+            i64::from(w + m.left + m.right),
+            i64::from(h + m.top + m.bottom),
+        );
+        let mut known = vec![false; (cw * ch) as usize];
+        for y in m.top..m.top + h {
+            for x in m.left..m.left + w {
+                known[(i64::from(y) * cw + i64::from(x)) as usize] = true;
+            }
+        }
+        let span = i64::from(span);
+        let mut seen = Vec::new();
+        for win in plan {
+            let xs = win.x.max(0)..(win.x + span).min(cw);
+            let ys = win.y.max(0)..(win.y + span).min(ch);
+            let mut n = 0;
+            for y in ys.clone() {
+                for x in xs.clone() {
+                    n += u64::from(known[(y * cw + x) as usize]);
+                }
+            }
+            seen.push(n);
+            for y in ys {
+                for x in xs.clone() {
+                    known[(y * cw + x) as usize] = true;
+                }
+            }
+        }
+        (seen, known.iter().all(|&k| k))
+    }
+
+    /// Rings never go back, and within a ring every side window comes before every corner.
+    fn assert_order(plan: &[Window]) {
+        for pair in plan.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            assert!(a.ring <= b.ring, "ring order: {a:?} then {b:?}");
+            if a.ring == b.ring {
+                assert!(
+                    !a.corner || b.corner,
+                    "corner before side: {a:?} then {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plan_one_side_only() {
+        // Review Focus 1: margin on the right only. Strip of 800 rows, window 512 at half overlap.
+        let plan = plan_windows(1000, 800, px(0, 0, 256, 0), 512, 1);
+        let w = |y| Window {
+            x: 1256 - 512,
+            y,
+            ring: 0,
+            corner: false,
+        };
+        assert_eq!(plan, vec![w(0), w(256), w(288)]);
+        let (seen, full) = replay(1000, 800, px(0, 0, 256, 0), 512, &plan);
+        assert!(full);
+        assert!(seen.iter().all(|&n| n * 2 >= 512 * 512));
+        // Each side alone: windows only on that side, never on the three without margin.
+        for (m, check) in [
+            (
+                px(100, 0, 0, 0),
+                (|w: &Window| w.x == 0) as fn(&Window) -> bool,
+            ),
+            (px(0, 100, 0, 0), |w: &Window| w.y == 0),
+            (px(0, 0, 0, 100), |w: &Window| w.y == 800 + 100 - 512),
+        ] {
+            let plan = plan_windows(1000, 800, m, 512, 1);
+            assert!(!plan.is_empty());
+            for win in &plan {
+                assert!(check(win) && !win.corner && win.ring == 0, "{m:?}: {win:?}");
+            }
+        }
+        // Nothing to add, nothing to plan.
+        assert!(plan_windows(1000, 800, Margins::default(), 512, 1).is_empty());
+    }
+
+    #[test]
+    fn plan_sides_before_corners() {
+        let m = px(100, 50, 200, 80);
+        let plan = plan_windows(1000, 800, m, 512, 1);
+        assert_order(&plan);
+        let corners: Vec<_> = plan.iter().filter(|w| w.corner).collect();
+        assert_eq!(corners.len(), 4);
+        // Right-top, left-top, right-bottom, left-bottom, each flush with its canvas corner.
+        let (cw, ch) = (1300, 930);
+        let at = |x, y| corners.iter().any(|w| (w.x, w.y) == (x, y));
+        assert!(at(cw - 512, 0) && at(0, 0) && at(cw - 512, ch - 512) && at(0, ch - 512));
+        let (seen, full) = replay(1000, 800, m, 512, &plan);
+        assert!(full);
+        assert!(seen.iter().all(|&n| n * 2 >= 512 * 512));
+        // A corner window sees three known quadrants: at least 3/4 known.
+        for (win, &n) in plan.iter().zip(&seen) {
+            if win.corner {
+                assert!(n * 4 >= 3 * 512 * 512, "{win:?} saw {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn plan_deep_margin_takes_rings() {
+        // Review Focus 3: 600 px with a 512 window: rings of 256, 256 and a partial 88.
+        let plan = plan_windows(1200, 1200, px(0, 0, 600, 0), 512, 1);
+        assert_order(&plan);
+        let rings: Vec<u32> = plan.iter().map(|w| w.ring).collect();
+        assert_eq!(rings, [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]);
+        let xs: Vec<i64> = plan.iter().map(|w| w.x).step_by(4).collect();
+        assert_eq!(xs, [944, 1200, 1288]);
+        // The partial ring stops at the canvas edge.
+        assert!(
+            plan.iter()
+                .all(|w| w.x + 512 <= 1800 && w.y >= 0 && w.y + 512 <= 1200)
+        );
+        let (seen, full) = replay(1200, 1200, px(0, 0, 600, 0), 512, &plan);
+        assert!(full);
+        assert!(seen.iter().all(|&n| n * 2 >= 512 * 512));
+        // With context factor 2 the same margin takes two rings of 512 and 88 source pixels.
+        let plan = plan_windows(1200, 1200, px(0, 0, 600, 0), 512, 2);
+        let xs: Vec<(i64, u32)> = plan.iter().map(|w| (w.x, w.ring)).collect();
+        assert_eq!(xs, [(688, 0), (688, 0), (776, 1), (776, 1)]);
+        assert!(replay(1200, 1200, px(0, 0, 600, 0), 1024, &plan).1);
+    }
+
+    #[test]
+    fn plan_source_smaller_than_window() {
+        // Review Focus 2: 200x120 extended by 64 on every side; the canvas is smaller than 512.
+        let m = px(64, 64, 64, 64);
+        let plan = plan_windows(200, 120, m, 512, 1);
+        assert_order(&plan);
+        assert!(!plan.is_empty());
+        let (seen, full) = replay(200, 120, m, 512, &plan);
+        assert!(full);
+        // Every window still runs with real context, and the side windows cover the whole source.
+        assert!(seen.iter().all(|&n| n > 0));
+        for win in plan.iter().filter(|w| !w.corner) {
+            assert!(win.x <= 64 && win.x + 512 >= 264 && win.y <= 64 && win.y + 512 >= 184);
+        }
+    }
+
+    /// Deterministic pseudo-random numbers in `0..n` (LCG).
+    fn lcg(s: &mut u32, n: u32) -> u32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*s >> 8) % n
+    }
+
+    #[test]
+    fn plan_properties_large_source() {
+        // Source at least one window span on both sides: every window is at least half known.
+        let mut s = 7;
+        for _ in 0..300 {
+            let (window, k) = (2 * (1 + lcg(&mut s, 8)), 1 + lcg(&mut s, 3));
+            let span = window * k;
+            let (w, h) = (span + lcg(&mut s, 40), span + lcg(&mut s, 40));
+            let m = px(
+                lcg(&mut s, 4 * w + 1) * lcg(&mut s, 2),
+                lcg(&mut s, 4 * h + 1) * lcg(&mut s, 2),
+                lcg(&mut s, 4 * w + 1) * lcg(&mut s, 2),
+                lcg(&mut s, 4 * h + 1) * lcg(&mut s, 2),
+            );
+            let plan = plan_windows(w, h, m, window, k);
+            assert_order(&plan);
+            let (seen, full) = replay(w, h, m, span, &plan);
+            let case = format!("{w}x{h} {m:?} window {window} k {k}");
+            assert!(full, "{case}: holes");
+            let area = u64::from(span) * u64::from(span);
+            for (win, &n) in plan.iter().zip(&seen) {
+                assert!(n * 2 >= area, "{case}: {win:?} saw {n} of {area}");
+            }
+            let (cw, ch) = (
+                i64::from(w + m.left + m.right),
+                i64::from(h + m.top + m.bottom),
+            );
+            let span = i64::from(span);
+            for win in &plan {
+                assert!(win.x >= 0 && win.y >= 0, "{case}: {win:?}");
+                assert!(win.x + span <= cw && win.y + span <= ch, "{case}: {win:?}");
+                // One ring adds at most half a span of depth.
+                assert!(
+                    i64::from(win.ring) * span / 2
+                        < i64::from(m.left.max(m.top).max(m.right).max(m.bottom))
+                );
+            }
+            // A side without margin gets no window; corners only where both sides have one.
+            for win in &plan {
+                if m.left == 0 && m.right == 0 {
+                    assert!(!win.corner && win.x >= 0, "{case}: {win:?}");
+                }
+                if m.top == 0 && m.bottom == 0 {
+                    assert!(!win.corner, "{case}: {win:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plan_properties_any_source() {
+        // Any source, including ones shorter than the window: the canvas is always fully covered.
+        let mut s = 11;
+        for _ in 0..400 {
+            let (window, k) = (2 + lcg(&mut s, 15), 1 + lcg(&mut s, 3));
+            let span = window * k;
+            let (w, h) = (1 + lcg(&mut s, 2 * span), 1 + lcg(&mut s, 2 * span));
+            let m = px(
+                lcg(&mut s, 4 * w + 1) * lcg(&mut s, 2),
+                lcg(&mut s, 4 * h + 1) * lcg(&mut s, 2),
+                lcg(&mut s, 4 * w + 1) * lcg(&mut s, 2),
+                lcg(&mut s, 4 * h + 1) * lcg(&mut s, 2),
+            );
+            let plan = plan_windows(w, h, m, window, k);
+            assert_order(&plan);
+            let (seen, full) = replay(w, h, m, span, &plan);
+            let case = format!("{w}x{h} {m:?} window {window} k {k}");
+            assert!(full, "{case}: holes");
+            assert!(
+                seen.iter().all(|&n| n > 0),
+                "{case}: a window without context"
+            );
+        }
+    }
+
+    /// Paints every unknown pixel pure green, and records the known count of each call.
+    struct Paint {
+        window: u32,
+        calls: Mutex<Vec<usize>>,
+    }
+
+    impl Paint {
+        fn new(window: u32) -> Self {
+            Self {
+                window,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Inpainter for Paint {
+        fn window(&self) -> u32 {
+            self.window
+        }
+
+        fn fill(&self, rgb: &Image32, known: &[bool]) -> Result<Image32> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(known.iter().filter(|&&k| k).count());
+            let mut out = rgb.clone();
+            for (i, _) in known.iter().enumerate().filter(|(_, k)| !**k) {
+                let (x, y) = (i as u32 % rgb.width, i as u32 / rgb.width);
+                out.set(0, x, y, 0.0);
+                out.set(1, x, y, 1.0);
+                out.set(2, x, y, 0.0);
+            }
+            Ok(out)
+        }
+    }
+
+    fn run(model: &dyn Inpainter, img: &RgbaImage, m: Margins) -> Result<RgbaImage> {
+        outpaint(model, img, m, &mut |_| {}, &CancelToken::new())
+    }
+
+    #[test]
+    fn outpaint_keeps_known_and_fills_every_new_pixel() {
+        // k = 1 here (margins <= 192), so every new pixel comes straight from a window.
+        for (w, h, m) in [
+            (40, 30, px(0, 0, 9, 0)),
+            (40, 30, px(5, 7, 9, 3)),
+            (20, 20, px(30, 0, 30, 0)),
+            (5, 3, px(20, 12, 2, 1)),
+            (1, 1, px(4, 4, 4, 4)),
+            (40, 30, px(100, 0, 0, 120)),
+        ] {
+            let img = sample(w, h);
+            let model = Paint::new(16);
+            let out = run(&model, &img, m).unwrap();
+            assert_known_region(&out, &img, m);
+            for (x, y, p) in out.enumerate_pixels() {
+                if is_new(x, y, &img, m) {
+                    assert_eq!(*p, Rgba([0, 255, 0, 255]), "{w}x{h} {m:?} ({x},{y})");
+                }
+            }
+            assert!(!model.calls.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn outpaint_reflected_pixels_are_unknown() {
+        // A 4x3 source on a 6x5 canvas, window 16: the window overhangs the canvas on every side and
+        // its reflected pixels must reach the model as unknown. Only the 12 real pixels are known.
+        let model = Paint::new(16);
+        run(&model, &sample(4, 3), px(1, 1, 1, 1)).unwrap();
+        let calls = model.calls.lock().unwrap();
+        assert_eq!(calls[0], 12);
+    }
+
+    #[test]
+    fn outpaint_flat_colour_stays_flat() {
+        // Margins up to 400 px give context factors 1 to 3 with a 16 px window.
+        let img = RgbaImage::from_pixel(120, 100, Rgba([40, 120, 200, 255]));
+        for m in [px(16, 0, 0, 0), px(8, 300, 0, 0), px(0, 0, 400, 200)] {
+            let out = run(&MeanInpainter { window: 16 }, &img, m).unwrap();
+            assert_known_region(&out, &img, m);
+            assert!(
+                out.pixels().all(|p| *p == Rgba([40, 120, 200, 255])),
+                "{m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn outpaint_large_context_factor_keeps_known() {
+        // k = 3: windows of 48 source pixels go through a 16 px model.
+        let img = sample(60, 50);
+        let m = px(0, 0, 400, 30);
+        let out = run(&MeanInpainter { window: 16 }, &img, m).unwrap();
+        assert_known_region(&out, &img, m);
+        for (x, y, p) in out.enumerate_pixels() {
+            if is_new(x, y, &img, m) {
+                assert_eq!(p[3], 255, "({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn outpaint_zero_margins_return_input() {
+        let img = sample(5, 4);
+        let model = Paint::new(16);
+        assert_eq!(run(&model, &img, Margins::default()).unwrap(), img);
+        assert!(model.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn outpaint_model_errors_propagate() {
+        struct Broken(bool);
+        impl Inpainter for Broken {
+            fn window(&self) -> u32 {
+                16
+            }
+            fn fill(&self, rgb: &Image32, _: &[bool]) -> Result<Image32> {
+                if self.0 {
+                    Err(ScaleUpError::Model("boom".into()))
+                } else {
+                    Ok(Image32::new(rgb.width - 1, rgb.height))
+                }
+            }
+        }
+        let img = sample(20, 20);
+        assert!(matches!(
+            run(&Broken(true), &img, px(4, 0, 0, 0)),
+            Err(ScaleUpError::Model(m)) if m == "boom"
+        ));
+        assert!(matches!(
+            run(&Broken(false), &img, px(4, 0, 0, 0)),
+            Err(ScaleUpError::Model(_))
+        ));
+        assert!(matches!(
+            run(&MeanInpainter { window: 1 }, &img, px(4, 0, 0, 0)),
+            Err(ScaleUpError::InvalidOption(_))
+        ));
+        assert!(matches!(
+            run(
+                &MeanInpainter { window: 16 },
+                &RgbaImage::new(0, 3),
+                px(4, 0, 0, 0)
+            ),
+            Err(ScaleUpError::InvalidOption(_))
+        ));
+    }
+
+    #[test]
+    fn outpaint_progress_reports_every_window() {
+        let img = sample(40, 30);
+        for m in [px(5, 7, 9, 3), px(0, 0, 300, 0)] {
+            let model = MeanInpainter { window: 16 };
+            let total = plan_windows(40, 30, m, 16, context_factor(m, 4)).len() as u32;
+            assert!(total > 1);
+            let mut events = Vec::new();
+            outpaint(
+                &model,
+                &img,
+                m,
+                &mut |p| events.push(p),
+                &CancelToken::new(),
+            )
+            .unwrap();
+            let mut expected = vec![Progress::Phase(Phase::Extending)];
+            expected.extend((1..=total).map(|done| Progress::Tiles { done, total }));
+            assert_eq!(events, expected, "{m:?}");
+        }
+    }
+
+    #[test]
+    fn outpaint_cancel_after_first_window() {
+        let img = sample(40, 30);
+        let model = Paint::new(16);
+        let token = CancelToken::new();
+        let res = outpaint(
+            &model,
+            &img,
+            px(5, 7, 9, 3),
+            &mut |p| {
+                if let Progress::Tiles { done: 1, .. } = p {
+                    token.cancel();
+                }
+            },
+            &token,
+        );
+        assert!(matches!(res, Err(ScaleUpError::Cancelled)));
+        assert_eq!(model.calls.lock().unwrap().len(), 1);
+        // Already cancelled: no window runs.
+        let model = Paint::new(16);
+        let res = outpaint(&model, &img, px(5, 7, 9, 3), &mut |_| {}, &token);
+        assert!(matches!(res, Err(ScaleUpError::Cancelled)));
+        assert!(model.calls.lock().unwrap().is_empty());
     }
 }

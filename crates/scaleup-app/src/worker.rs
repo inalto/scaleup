@@ -311,6 +311,7 @@ fn preview_event(path: &Path, which: Which) -> Result<WorkerEvent> {
 fn phase_name(phase: Phase) -> &'static str {
     match phase {
         Phase::Loading => "Loading image",
+        Phase::Extending => "Extending",
         Phase::Upscaling => "Upscaling",
         Phase::Resizing => "Resizing",
         Phase::Saving => "Saving",

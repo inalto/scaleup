@@ -139,6 +139,21 @@ pub trait Model: Send + Sync {
     fn run(&self, tile: &Image32) -> Result<Image32>;
 }
 
+/// An inpainting network on a fixed square window: fills the unknown pixels of `rgb` from the known
+/// ones. Used by [`crate::extend::outpaint`] to invent new canvas.
+pub trait Inpainter: Send + Sync {
+    /// Side of the square window, in pixels.
+    fn window(&self) -> u32;
+    /// The largest context factor the driver may use: a window then covers `window·k` source
+    /// pixels per side, downsampled to `window`. Default 4.
+    fn max_context_factor(&self) -> u32 {
+        4
+    }
+    /// `rgb` is window×window, 0..1. `known` is window×window, row-major, true where the pixel is real.
+    /// Returns the whole window; the caller keeps its own pixels where `known`.
+    fn fill(&self, rgb: &Image32, known: &[bool]) -> Result<Image32>;
+}
+
 pub mod ort;
 
 pub use self::ort::OrtBackend;
