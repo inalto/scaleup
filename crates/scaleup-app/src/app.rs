@@ -251,7 +251,7 @@ impl eframe::App for App {
                 });
         }
 
-        let entries = self.registry.entries().to_vec();
+        let entries: Vec<_> = self.registry.upscalers().cloned().collect();
         let side = egui::Panel::left("sidebar")
             .exact_size(300.0)
             .resizable(false)

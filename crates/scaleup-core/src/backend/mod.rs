@@ -155,6 +155,7 @@ pub trait Inpainter: Send + Sync {
 }
 
 pub mod ort;
+mod ort_inpaint;
 
 pub use self::ort::OrtBackend;
 

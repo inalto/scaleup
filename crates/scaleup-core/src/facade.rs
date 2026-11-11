@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::backend::{
-    Backend, DeviceInfo, DevicePreference, Model, OrtBackend, create_backend, cross_preference,
-    extra_backend, is_extra_backend_model,
+    Backend, DeviceInfo, DevicePreference, Inpainter, Model, OrtBackend, create_backend,
+    cross_preference, extra_backend, is_extra_backend_model,
 };
 use crate::image32::Image32;
 use crate::io::{OutputFormat, load_image, save_image};
 use crate::pipeline::{CancelToken, Phase, Progress, UpscaleOptions, upscale};
-use crate::registry::{Registry, scale_from_name};
+use crate::registry::{ModelKind, Registry, scale_from_name};
 use crate::resize::{resize_rgba, target_size};
 use crate::tiling::{auto_tile_size, room_for_overlap, tile_grid};
 use crate::{Result, ScaleUpError};
@@ -65,6 +65,9 @@ pub struct Upscaler {
     pref: DevicePreference,
     /// Created on demand for model files the main backend cannot load.
     other_backend: OnceLock<Box<dyn Backend>>,
+    /// Runs inpainting models, which are always ONNX: the main backend's device when that is ONNX
+    /// Runtime, else an ONNX Runtime backend created on demand.
+    inpaint_backend: OnceLock<OrtBackend>,
     /// Device of the most recently loaded model.
     active: Mutex<DeviceInfo>,
 }
@@ -85,6 +88,7 @@ impl Upscaler {
             registry,
             pref,
             other_backend: OnceLock::new(),
+            inpaint_backend: OnceLock::new(),
         })
     }
 
@@ -136,6 +140,12 @@ impl Upscaler {
         download_progress: &mut dyn FnMut(u64, u64),
     ) -> Result<Box<dyn Model>> {
         let (path, scale, overlap) = match self.registry.get(model) {
+            Some(entry) if entry.kind == ModelKind::Inpaint => {
+                return Err(ScaleUpError::InvalidOption(format!(
+                    "'{model}' is an inpainting model for canvas extension, not an upscaler; \
+                     pass it with --extend-model"
+                )));
+            }
             Some(entry) => (
                 self.registry.ensure(model, download_progress)?,
                 Some(entry.scale),
@@ -156,6 +166,42 @@ impl Upscaler {
             }),
             None => model,
         })
+    }
+
+    /// Loads an inpainting model: a catalogue id of kind `inpaint` (downloading it if needed) or an
+    /// ONNX file path. It always runs on ONNX Runtime, on the main backend's device when that is
+    /// ONNX Runtime and otherwise on the device `pref` names there. An upscaling catalogue id, a
+    /// missing model or a graph of neither inpainting layout is an error.
+    pub fn load_inpainter(
+        &self,
+        id_or_path: &str,
+        download_progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<Box<dyn Inpainter>> {
+        let path = match self.registry.get(id_or_path) {
+            Some(entry) if entry.kind != ModelKind::Inpaint => {
+                let ids: Vec<&str> = self.registry.inpainters().map(|e| e.id.as_str()).collect();
+                return Err(ScaleUpError::InvalidOption(format!(
+                    "'{id_or_path}' is an upscaling model, not an inpainting model (inpainting \
+                     models: {})",
+                    ids.join(", ")
+                )));
+            }
+            Some(_) => self.registry.ensure(id_or_path, download_progress)?,
+            None => self.registry.resolve(id_or_path)?.path,
+        };
+        self.inpaint_backend()?.load_inpainter(&path)
+    }
+
+    fn inpaint_backend(&self) -> Result<&OrtBackend> {
+        if let Some(b) = self.inpaint_backend.get() {
+            return Ok(b);
+        }
+        let created = if self.backend.name() == "onnxruntime" {
+            OrtBackend::on_device(self.backend.device().clone())
+        } else {
+            OrtBackend::new(cross_preference(self.pref, false))?
+        };
+        Ok(self.inpaint_backend.get_or_init(|| created))
     }
 
     /// `requested`, or when it is 0 the device's default tile size, grown to leave room for `overlap`.
@@ -423,6 +469,7 @@ mod tests {
             notes: String::new(),
             format: "onnx".into(),
             source: "catalogue".into(),
+            kind: ModelKind::Upscale,
         };
         let registry = Registry::from_entries(vec![entry], dir.path().to_path_buf());
         std::fs::copy(fixture(), registry.local_path("span")).unwrap();
@@ -563,6 +610,136 @@ mod tests {
             .filter(|n| n.starts_with("cancelled"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    fn inpaint_entry(id: &str) -> crate::registry::ModelEntry {
+        crate::registry::ModelEntry {
+            id: id.into(),
+            name: id.into(),
+            arch: "LaMa".into(),
+            scale: 1,
+            license: "MIT".into(),
+            commercial: true,
+            size_bytes: 0,
+            url: String::new(),
+            sha256: String::new(),
+            tags: vec![],
+            notes: String::new(),
+            format: "onnx".into(),
+            source: "catalogue".into(),
+            kind: ModelKind::Inpaint,
+        }
+    }
+
+    fn inpaint_fixture() -> String {
+        format!(
+            "{}/../../tests/fixtures/inpaint_mean_lama.onnx",
+            env!("CARGO_MANIFEST_DIR")
+        )
+    }
+
+    #[test]
+    fn an_inpainting_model_is_not_loaded_as_an_upscaler() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::from_entries(vec![inpaint_entry("fill")], dir.path().into());
+        std::fs::copy(inpaint_fixture(), registry.local_path("fill")).unwrap();
+        let up = Upscaler::new(DevicePreference::Cpu, registry).unwrap();
+        let err = up.load("fill", &mut |_, _| {}).err().expect("refused");
+        assert!(matches!(err, ScaleUpError::InvalidOption(_)), "{err:?}");
+        assert!(err.to_string().contains("--extend-model"), "{err}");
+    }
+
+    #[test]
+    fn load_inpainter_takes_a_catalogue_id_or_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::from_entries(vec![inpaint_entry("fill")], dir.path().into());
+        std::fs::copy(inpaint_fixture(), registry.local_path("fill")).unwrap();
+        let up = Upscaler::new(DevicePreference::Cpu, registry).unwrap();
+        let by_id = up.load_inpainter("fill", &mut |_, _| {}).unwrap();
+        assert_eq!(by_id.window(), 16);
+        let by_path = up
+            .load_inpainter(&inpaint_fixture(), &mut |_, _| {})
+            .unwrap();
+        assert_eq!(by_path.window(), 16);
+    }
+
+    #[test]
+    fn load_inpainter_refuses_upscalers_and_missing_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let up = cpu_upscaler(dir.path());
+        // An upscaling catalogue model, without downloading it.
+        let err = up
+            .load_inpainter("realesr-general-x4v3", &mut |_, _| {})
+            .err()
+            .expect("refused");
+        assert!(matches!(err, ScaleUpError::InvalidOption(_)), "{err:?}");
+        // An upscaling model file: neither inpainting layout.
+        let err = up.load_inpainter(&fixture(), &mut |_, _| {}).err().unwrap();
+        assert!(matches!(err, ScaleUpError::Model(_)), "{err:?}");
+        // Nothing there: an error, never a quiet fallback.
+        let err = up
+            .load_inpainter("no-such-inpainter", &mut |_, _| {})
+            .err()
+            .unwrap();
+        assert!(matches!(err, ScaleUpError::Model(_)), "{err:?}");
+    }
+
+    #[test]
+    #[ignore = "downloads both inpainting models (~240 MB); run with: \
+                cargo test -p scaleup-core --lib real_inpainters -- --ignored --nocapture"]
+    fn real_inpainters_extend_a_photo() {
+        use crate::extend::{Margins, outpaint};
+        use std::time::Instant;
+        // SCALEUP_MODELS_DIR may point at a folder that already holds the files.
+        let up = Upscaler::new(DevicePreference::Auto, Registry::builtin()).unwrap();
+        println!("main device: {}", up.device().name);
+        let photo = format!(
+            "{}/../../tests/fixtures/images/photo_like_256x192.jpg",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let img = load_image(Path::new(&photo)).unwrap();
+        let (w, h) = img.dimensions();
+        let m = Margins {
+            left: 0,
+            top: 0,
+            right: 64,
+            bottom: 0,
+        };
+        for id in ["lama-512", "migan-512-places2"] {
+            let reg = up.registry();
+            let path = reg.ensure(id, &mut |_, _| {}).unwrap();
+            let sha = crate::registry::sha256_of(&mut fs::File::open(&path).unwrap()).unwrap();
+            assert_eq!(sha, reg.get(id).unwrap().sha256, "{id}: {}", path.display());
+            let t = Instant::now();
+            let model = up.load_inpainter(id, &mut |_, _| {}).unwrap();
+            let load = t.elapsed().as_secs_f32();
+            let t = Instant::now();
+            let out = outpaint(model.as_ref(), &img, m, &mut |_| {}, &CancelToken::new()).unwrap();
+            let run = t.elapsed().as_secs_f32();
+            assert_eq!(out.dimensions(), (w + 64, h));
+            for y in 0..h {
+                for x in 0..w {
+                    assert_eq!(out.get_pixel(x, y), img.get_pixel(x, y), "{id} at {x},{y}");
+                }
+            }
+            let luma: Vec<f64> = (0..h)
+                .flat_map(|y| (w..w + 64).map(move |x| (x, y)))
+                .map(|(x, y)| {
+                    let p = out.get_pixel(x, y);
+                    0.299 * f64::from(p[0]) + 0.587 * f64::from(p[1]) + 0.114 * f64::from(p[2])
+                })
+                .collect();
+            let mean = luma.iter().sum::<f64>() / luma.len() as f64;
+            let sd =
+                (luma.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / luma.len() as f64).sqrt();
+            println!(
+                "{id}: window {}, k max {}, load {load:.1} s, extend {run:.1} s, \
+                 new strip luma mean {mean:.1} sd {sd:.1}",
+                model.window(),
+                model.max_context_factor()
+            );
+            assert!(sd > 2.0, "{id}: the new strip is flat (sd {sd:.2})");
+        }
     }
 
     #[test]

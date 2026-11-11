@@ -65,6 +65,17 @@ fn read_overlay(dir: &Path) -> Vec<ModelEntry> {
     })
 }
 
+/// What a catalogue model does.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelKind {
+    /// Super-resolution: the models of the upscale pickers.
+    #[default]
+    Upscale,
+    /// Inpainting, for canvas extension (`--extend-model`); never offered as an upscaler.
+    Inpaint,
+}
+
 /// One model in the catalogue.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct ModelEntry {
@@ -89,6 +100,9 @@ pub struct ModelEntry {
     /// Where the entry comes from: `"catalogue"` (built in or imported) or `"openmodeldb"`.
     #[serde(default = "default_source")]
     pub source: String,
+    /// Upscaler (the default when the manifest does not say) or inpainter.
+    #[serde(default)]
+    pub kind: ModelKind,
 }
 
 impl ModelEntry {
@@ -206,6 +220,7 @@ impl Registry {
                 },
                 format: m.format,
                 source: SOURCE_HUB.into(),
+                kind: ModelKind::Upscale,
             });
             self.hub_files.insert(m.id, m.file);
         }
@@ -255,6 +270,7 @@ impl Registry {
                 notes: format!("imported from {}", dir.display()),
                 format: NCNN_FORMAT.into(),
                 source: default_source(),
+                kind: ModelKind::Upscale,
             };
             overlay.retain(|e| e.id != id);
             overlay.push(entry.clone());
@@ -306,6 +322,7 @@ impl Registry {
             notes: format!("imported from {}", file.display()),
             format: default_format(),
             source: default_source(),
+            kind: ModelKind::Upscale,
         };
         let mut overlay = read_overlay(&self.models_dir);
         overlay.retain(|e| e.id != id);
@@ -337,6 +354,16 @@ impl Registry {
 
     pub fn entries(&self) -> &[ModelEntry] {
         &self.entries
+    }
+
+    /// The upscaling models: what every upscale-model listing shows.
+    pub fn upscalers(&self) -> impl Iterator<Item = &ModelEntry> {
+        self.entries.iter().filter(|e| e.kind == ModelKind::Upscale)
+    }
+
+    /// The inpainting models, for canvas extension.
+    pub fn inpainters(&self) -> impl Iterator<Item = &ModelEntry> {
+        self.entries.iter().filter(|e| e.kind == ModelKind::Inpaint)
     }
 
     pub fn models_dir(&self) -> &Path {
@@ -686,6 +713,7 @@ mod tests {
             notes: String::new(),
             format: "onnx".into(),
             source: default_source(),
+            kind: ModelKind::Upscale,
         }
     }
 
@@ -819,10 +847,90 @@ mod tests {
     }
 
     #[test]
-    fn every_catalogue_model_names_its_overlap() {
+    fn every_catalogue_upscaler_names_its_overlap() {
         let dir = tempfile::tempdir().unwrap();
-        for e in Registry::with_dir(dir.path().to_path_buf()).entries() {
+        for e in Registry::with_dir(dir.path().to_path_buf()).upscalers() {
             assert!(e.preferred_overlap().is_some(), "{}", e.id);
+        }
+    }
+
+    #[test]
+    fn kind_defaults_to_upscale_and_reads_inpaint() {
+        let json = r#"{"version":1,"models":[
+            {"id":"a","name":"A","arch":"x","scale":4,"license":"MIT","commercial":true,
+             "size_bytes":1,"url":"","sha256":""},
+            {"id":"b","name":"B","arch":"x","scale":1,"license":"MIT","commercial":true,
+             "size_bytes":1,"url":"","sha256":"","kind":"inpaint"}]}"#;
+        let entries = parse_manifest(json).unwrap();
+        assert_eq!(entries[0].kind, ModelKind::Upscale);
+        assert_eq!(entries[1].kind, ModelKind::Inpaint);
+        assert_eq!(ModelKind::default(), ModelKind::Upscale);
+        let back = serde_json::to_value(&entries[1]).unwrap();
+        assert_eq!(back["kind"], "inpaint");
+        let bad = json.replace("\"inpaint\"", "\"denoise\"");
+        assert!(parse_manifest(&bad).is_err());
+    }
+
+    #[test]
+    fn upscalers_and_inpainters_split_the_catalogue() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        let ids = |it: Vec<&ModelEntry>| it.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+        let inpainters = ids(reg.inpainters().collect());
+        assert_eq!(inpainters, ["lama-512", "migan-512-places2"]);
+        let upscalers = ids(reg.upscalers().collect());
+        assert_eq!(upscalers.len() + inpainters.len(), reg.entries().len());
+        assert!(upscalers.iter().all(|id| !inpainters.contains(id)));
+        assert!(reg.upscalers().all(|e| e.kind == ModelKind::Upscale));
+    }
+
+    #[test]
+    fn inpainting_entries_follow_the_spike() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        let lama = reg.get("lama-512").unwrap();
+        assert_eq!(
+            (lama.name.as_str(), lama.license.as_str(), lama.size_bytes),
+            ("LaMa (512)", "Apache-2.0", 208_044_816)
+        );
+        assert_eq!(
+            lama.sha256,
+            "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6"
+        );
+        assert_eq!(lama.tags, ["extend", "default"]);
+        assert!(lama.url.starts_with(
+            "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/"
+        ));
+        let migan = reg.get("migan-512-places2").unwrap();
+        assert_eq!(
+            (migan.license.as_str(), migan.size_bytes),
+            ("MIT", 29_546_882)
+        );
+        assert_eq!(
+            migan.sha256,
+            "593eba0b7e04730f1b61c0a3cbca68d97d8d6a7ff5c6a44a7b9d7fcd880fc5ae"
+        );
+        assert_eq!(migan.tags, ["extend", "fast"]);
+        assert!(migan.url.starts_with(
+            "https://huggingface.co/andraniksargsyan/migan/resolve/406830d0fa60666da0071c342ad2fbc8f30c5c64/"
+        ));
+        for e in [lama, migan] {
+            assert_eq!(e.kind, ModelKind::Inpaint);
+            assert_eq!(
+                (e.scale, e.commercial, e.format.as_str()),
+                (1, true, "onnx")
+            );
+        }
+    }
+
+    #[test]
+    fn every_catalogue_model_has_its_license_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let licenses = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../models/licenses");
+        for e in Registry::with_dir(dir.path().to_path_buf()).entries() {
+            let text = std::fs::read_to_string(licenses.join(format!("{}.txt", e.id)))
+                .unwrap_or_else(|err| panic!("{}: {err}", e.id));
+            assert!(text.starts_with(&format!("Model: {} — ", e.id)), "{}", e.id);
         }
     }
 
@@ -830,14 +938,18 @@ mod tests {
     fn manifest_parses_and_has_default_tag() {
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::with_dir(dir.path().to_path_buf());
-        assert_eq!(reg.entries().len(), 8);
-        let defaults: Vec<_> = reg
-            .entries()
-            .iter()
-            .filter(|e| e.tags.iter().any(|t| t == "default"))
-            .collect();
-        assert_eq!(defaults.len(), 1);
-        assert_eq!(defaults[0].id, "realesr-general-x4v3");
+        assert_eq!(reg.entries().len(), 10);
+        let defaults = |it: Vec<&ModelEntry>| {
+            it.into_iter()
+                .filter(|e| e.tags.iter().any(|t| t == "default"))
+                .map(|e| e.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            defaults(reg.upscalers().collect()),
+            ["realesr-general-x4v3"]
+        );
+        assert_eq!(defaults(reg.inpainters().collect()), ["lama-512"]);
         assert!(
             reg.entries().iter().all(|e| e.format == "onnx"
                 && e.commercial != e.tags.iter().any(|t| t == "noncommercial"))

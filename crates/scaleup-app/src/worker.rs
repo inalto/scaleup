@@ -1136,6 +1136,7 @@ mod tests {
             notes: String::new(),
             format: "onnx".into(),
             source: "catalogue".into(),
+            kind: Default::default(),
         };
         let reg = Registry::from_entries(vec![entry], d.path().join("models"));
         let h = spawn(reg, "cpu");

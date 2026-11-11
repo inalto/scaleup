@@ -126,6 +126,42 @@
         "noncommercial"
       ],
       "notes": "by Foolhardy; non-commercial use only"
+    },
+    {
+      "id": "lama-512",
+      "name": "LaMa (512)",
+      "arch": "LaMa",
+      "scale": 1,
+      "kind": "inpaint",
+      "license": "Apache-2.0",
+      "commercial": true,
+      "size_bytes": 208044816,
+      "url": "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/lama_fp32.onnx",
+      "sha256": "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6",
+      "format": "onnx",
+      "tags": [
+        "extend",
+        "default"
+      ],
+      "notes": "advimman/lama, ONNX export by Carve/LaMa-ONNX; fixed 512x512 window; runs on the CPU"
+    },
+    {
+      "id": "migan-512-places2",
+      "name": "MI-GAN Places2 (512, fast)",
+      "arch": "MI-GAN",
+      "scale": 1,
+      "kind": "inpaint",
+      "license": "MIT",
+      "commercial": true,
+      "size_bytes": 29546882,
+      "url": "https://huggingface.co/andraniksargsyan/migan/resolve/406830d0fa60666da0071c342ad2fbc8f30c5c64/migan.onnx",
+      "sha256": "593eba0b7e04730f1b61c0a3cbca68d97d8d6a7ff5c6a44a7b9d7fcd880fc5ae",
+      "format": "onnx",
+      "tags": [
+        "extend",
+        "fast"
+      ],
+      "notes": "Picsart-AI-Research/MI-GAN; fast but less reliable: may invent objects beyond small one-sided extensions"
     }
   ]
 }

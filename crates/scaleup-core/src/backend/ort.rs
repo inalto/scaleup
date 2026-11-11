@@ -15,7 +15,7 @@ use crate::backend::{Backend, DeviceInfo, DeviceKind, DevicePreference, Model};
 use crate::image32::Image32;
 use crate::{Result, ScaleUpError};
 
-fn backend_err(e: impl std::fmt::Display) -> ScaleUpError {
+pub(crate) fn backend_err(e: impl std::fmt::Display) -> ScaleUpError {
     ScaleUpError::Backend(e.to_string())
 }
 
@@ -63,7 +63,7 @@ fn gpu_candidates() -> &'static [DeviceKind] {
     }
 }
 
-fn cpu_device() -> DeviceInfo {
+pub(crate) fn cpu_device() -> DeviceInfo {
     DeviceInfo {
         kind: DeviceKind::Cpu,
         index: 0,
@@ -109,7 +109,7 @@ fn device_name(kind: DeviceKind, index: u32) -> String {
 }
 
 /// Fresh session builder with the provider for `device` registered and its required options set.
-fn builder_for(device: &DeviceInfo) -> Result<SessionBuilder> {
+pub(crate) fn builder_for(device: &DeviceInfo) -> Result<SessionBuilder> {
     let mut builder = Session::builder(environment()?).map_err(backend_err)?;
     if device.kind == DeviceKind::DirectMl {
         // DirectML does not support memory patterns or parallel execution.
@@ -175,6 +175,12 @@ impl OrtBackend {
         };
         tracing::info!("ONNX Runtime device: {}", device.name);
         Ok(Self { device })
+    }
+
+    /// A backend on `device` as it is, without probing: for a device another `OrtBackend` already
+    /// verified.
+    pub(crate) fn on_device(device: DeviceInfo) -> Self {
+        Self { device }
     }
 }
 

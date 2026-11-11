@@ -30,7 +30,7 @@ pub use facade::{FileJob, Upscaler};
 pub use image32::Image32;
 pub use io::{OutputFormat, load_image, save_image};
 pub use pipeline::{CancelToken, Phase, Progress, UpscaleOptions, upscale};
-pub use registry::{ModelEntry, Registry, ResolvedModel, scale_from_name};
+pub use registry::{ModelEntry, ModelKind, Registry, ResolvedModel, scale_from_name};
 
 /// Compiles the README example as a doctest.
 #[cfg(doctest)]

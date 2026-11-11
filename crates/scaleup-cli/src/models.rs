@@ -40,6 +40,8 @@ licenses!(
     "4xNomosUni_span_multijpg",
     "4xRealWebPhoto_v4_dat2",
     "4x_foolhardy_Remacri",
+    "lama-512",
+    "migan-512-places2",
     "realesr-animevideov3",
     "realesr-general-x4v3",
     "realesrgan-x2plus",
@@ -79,8 +81,7 @@ pub fn run_models(cmd: &ModelsCmd, cancel: &CancelToken) -> Result<i32, ScaleUpE
     match cmd {
         ModelsCmd::List => {
             let rows = reg
-                .entries()
-                .iter()
+                .upscalers()
                 .map(|e| {
                     vec![
                         e.id.clone(),

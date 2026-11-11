@@ -381,12 +381,20 @@ mod tests {
         .save(dir.path())
         .unwrap();
         let reg = scaleup_core::Registry::with_dir(dir.path().to_path_buf());
-        let [free, nc, hub] = groups(reg.entries());
+        // The picker lists the upscalers, as the app passes them.
+        let upscalers: Vec<ModelEntry> = reg.upscalers().cloned().collect();
+        let [free, nc, hub] = groups(&upscalers);
         let ids = |g: &[&ModelEntry]| g.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(&hub), ["h-free", "h-nc"]);
         assert!(free.iter().chain(&nc).all(|e| e.source != SOURCE_HUB));
         assert!(free.iter().all(|e| e.commercial) && nc.iter().all(|e| !e.commercial));
-        assert_eq!(free.len() + nc.len(), reg.entries().len() - 2);
+        assert_eq!(free.len() + nc.len(), upscalers.len() - 2);
+        assert!(reg.inpainters().count() > 0);
+        assert!(
+            free.iter()
+                .chain(&nc)
+                .all(|e| e.kind == scaleup_core::ModelKind::Upscale)
+        );
     }
 
     #[test]

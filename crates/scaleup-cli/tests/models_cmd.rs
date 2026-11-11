@@ -6,13 +6,15 @@ use std::net::TcpListener;
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
-fn manifest_ids() -> Vec<String> {
+/// Ids of the manifest's upscaling (`inpaint == false`) or inpainting models.
+fn manifest_ids(inpaint: bool) -> Vec<String> {
     let text = std::fs::read_to_string(format!("{ROOT}/../../models/manifest.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     v["models"]
         .as_array()
         .unwrap()
         .iter()
+        .filter(|m| (m["kind"] == "inpaint") == inpaint)
         .map(|m| m["id"].as_str().unwrap().to_string())
         .collect()
 }
@@ -53,16 +55,29 @@ fn models_list_table() {
     let mut lines = text.lines();
     let head: Vec<_> = lines.next().unwrap().split_whitespace().collect();
     assert_eq!(head, ["ID", "SCALE", "LICENSE", "COMMERCIAL", "DOWNLOADED"]);
-    let ids = manifest_ids();
+    let ids = manifest_ids(false);
     let rows: Vec<_> = lines.collect();
     assert_eq!(rows.len(), ids.len());
+    let listed = |id: &str| rows.iter().any(|r| r.split_whitespace().next() == Some(id));
     for id in ids {
-        assert!(
-            rows.iter()
-                .any(|r| r.split_whitespace().next() == Some(id.as_str())),
-            "{id}"
-        );
+        assert!(listed(&id), "{id}");
     }
+    // Inpainting models are not upscalers.
+    let inpainters = manifest_ids(true);
+    assert!(!inpainters.is_empty());
+    for id in inpainters {
+        assert!(!listed(&id), "{id}");
+    }
+}
+
+#[test]
+fn models_info_of_an_inpainting_model_prints_its_license() {
+    scaleup()
+        .args(["models", "info", "lama-512"])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("scale:       1x"))
+        .stdout(predicate::str::contains("Model: lama-512"));
 }
 
 #[test]
