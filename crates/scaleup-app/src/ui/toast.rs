@@ -58,7 +58,7 @@ impl Toasts {
             return;
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
-        egui::Area::new(egui::Id::new("toasts"))
+        egui::Area::new(egui::Id::unique("toasts"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -44.0])
             .interactable(false)

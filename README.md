@@ -116,7 +116,7 @@ whether it runs on this machine, download it and check its sha256. See the
 
 ## Build from source
 
-Rust 1.88 or newer (edition 2024, let chains, `as_chunks`). On Linux install the GTK and xdo development packages first:
+Rust 1.95 or newer (required by egui 0.37). On Linux install the GTK and xdo development packages first:
 
 ```bash
 sudo apt-get install libgtk-3-dev libxdo-dev
