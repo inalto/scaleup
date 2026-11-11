@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Canvas extension: `scaleup extend` adds canvas around an image or a folder without upscaling, and
+  `scaleup upscale` takes the same options (`--extend`, `--aspect`, `--extend-fill`,
+  `--extend-model`). The new area is filled by an inpainting model or by a plain fill (`mirror`,
+  `edge`, `transparent` or `#rrggbb`). The app's sidebar has an **Extend canvas** section with the
+  same options. Two inpainting models are in the catalogue: `lama-512` (default, LaMa, Apache-2.0,
+  runs on the CPU) and `migan-512-places2` (MI-GAN, MIT, fast, may invent objects in the new area).
+
 ## [0.2.1] - 2026-11-05
 
 First published release: everything listed under 0.2.0 and 0.1.0 below, with updated dependencies.

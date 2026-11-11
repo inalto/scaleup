@@ -85,6 +85,90 @@ Existing outputs are skipped unless `--overwrite` is given. `--jobs N` processes
 exit code is non-zero only if every file failed. With `-o <file>` a single input is written exactly
 there.
 
+## Extending the canvas
+
+`scaleup extend` adds pixels around an image, so the output is wider or taller than the original.
+`scaleup upscale` takes the same options and extends the image before it upscales. The new area
+is filled by an inpainting model, or by a plain fill that needs no model. The extension is made at
+the source resolution, before the upscale, and original pixels are never changed.
+
+| Flag | Meaning | Example |
+|---|---|---|
+| `--extend <SPEC>` | `64` (all sides), `l,t,r,b`, `20%` or `l%,t%,r%,b%`; pixels and percentages are of the source image | `--extend 0,0,128,0` |
+| `--aspect <W:H>` | grow, centred, to this ratio; never crops. Conflicts with `--extend` | `--aspect 16:9` |
+| `--extend-fill <FILL>` | `ai` (default), `mirror`, `edge`, `transparent` or `#rrggbb` | `--extend-fill "#202020"` |
+| `--extend-model <ID\|PATH>` | inpainting model for the `ai` fill: `lama-512` (default) or `migan-512-places2`, or a path to an `.onnx` file | `--extend-model migan-512-places2` |
+
+`scaleup extend` needs `--extend` or `--aspect`. The inpainting model is downloaded and loaded once
+per run, and only for the `ai` fill. `scaleup models list --kind inpaint` shows the inpainting
+models.
+
+```bash
+scaleup extend -i photo.jpg -o wide.png --aspect 16:9
+scaleup upscale -i photo.jpg -o out/ --extend 10% --extend-fill mirror
+```
+
+Output names get `_ext`: `photo_scaleup_ext_4x_<model>.png` when upscaling, and
+`photo_scaleup_ext_<fill>.png` with `scaleup extend`, where `<fill>` is `ai`, `mirror`, `edge`,
+`transparent` or the colour as `rrggbb`.
+
+**In the app**, the section is called **Extend canvas** in the sidebar. Tick **Add canvas before
+upscaling** to turn it on. Choose **Pixels**, **Percent** or **Aspect**. Pixels and percent take
+one value for all sides (**Same on every side**) or one value per side. Aspect offers 1:1, 4:3,
+3:2, 16:9 and 9:16, or a custom ratio. **Fill** offers AI (inpainting), Mirror, Edge pixels,
+Colour and Transparent. The AI fill shows the model picker. When the chosen inpainting model is
+not downloaded yet, the Start button says **Download and start**.
+
+### Fills
+
+| Fill | What it does | Needs a model |
+|---|---|---|
+| `ai` (default) | the inpainting model invents the new pixels | yes |
+| `mirror` | reflects the nearest pixels across the border | no |
+| `edge` | repeats the nearest border pixel | no |
+| `#rrggbb` | a solid colour, opaque | no |
+| `transparent` | fully transparent new pixels | no |
+
+Formats without transparency (JPEG) show the transparent area as white.
+
+### Inpainting models
+
+| Model | Licence | Download | Runs on | Use it for |
+|---|---|---|---|---|
+| `lama-512` (default) | Apache-2.0 | about 198 MB (208,044,816 bytes) | CPU only; the device setting does not apply | modest extensions of photos with soft or plain backgrounds |
+| `migan-512-places2` | MIT | about 28 MB (29,546,882 bytes) | the device of the run (GPU when one is used) | small one-sided extensions of simple backgrounds |
+
+The weights are under the licences above; the licence texts are in `models/licenses/lama-512.txt`
+and `models/licenses/migan-512-places2.txt`. The licences of the training data were not checked.
+
+On the CPU, LaMa takes about 2 s per 512 px window, and loading the model takes about 19 s. In a
+test with a 3000 × 2000 photo and a 192 px right margin, LaMa on the CPU took about 14 s and
+MI-GAN on the GPU about 1 s.
+
+### What the models do well and badly
+
+These statements come from six test images with margins of 64, 128 and 256 px, judged by eye at
+small size. Seams at full size were not checked. The results are in `docs/OUTPAINT_SPIKE.md`.
+
+- **LaMa** gives acceptable results for extensions up to about 128 px per side, on photos with
+  soft or plain backgrounds such as a wall or a sky. Beyond that the new area becomes blurry or
+  flat; at 256 px it is mostly a plain or blurred fill. It does not continue busy textures: on a
+  gravel image the new area became a smooth slab with a visible seam. It does not continue a
+  person or an object cut by the frame: with 128 px on all four sides of a portrait, the sleeves
+  were lost in dark smudges. It did not invent objects in these tests.
+- **MI-GAN** is reliable only for small one-sided extensions of simple backgrounds. On the other
+  test images it invented objects, faces, text-like marks and repeated patterns, some already at
+  64 px. Use it only for small extensions, and check the result.
+- **Not tested:** anime and illustration images, and text at the edge of the frame.
+
+Both models were trained for hole filling, not for extending a picture. For larger extensions,
+use a plain fill and check the result.
+
+### Limits
+
+Each margin is at most 4 times the side it extends, and the extended canvas is at most 16384 px per
+side. Larger values are refused before any work starts.
+
 ## Using your own models
 
 - Any ONNX super-resolution model with input `input` float32 NCHW RGB 0..1 and a single output:
@@ -167,6 +251,7 @@ known.
 | Download hangs or fails | check the proxy settings; `SCALEUP_MODELS_DIR` can point at a folder you filled manually from the Releases page. |
 | Output looks blurry | the model ran at its native scale and was downscaled: use a 2× model for 2×, or raise the output size. |
 | Seams or a grid in the output | report it with the image, model and `-t` value; tiles overlap by the model's own amount (16 to 64 px) and should be invisible, except for RealPLKSR models without layer norm (see OpenModelDB). |
+| Invented objects, faces or patterns in the new area | use `lama-512` (the default) or a plain fill (`mirror` or `edge`). `migan-512-places2` is only reliable for small one-sided extensions. |
 | App window opens blank or crashes at start on Linux | install `libgtk-3-0` and a Vulkan driver (`mesa-vulkan-drivers`), or run the CLI. |
 
 Run with `-v` (or open the app's log panel) to see the device, model and phases.

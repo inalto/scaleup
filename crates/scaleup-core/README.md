@@ -44,6 +44,9 @@ model (`None`), `run_file` only extends. Name such outputs with `Upscaler::outpu
 ## Notes
 
 - Every model must take `[1,3,H,W]` float32 RGB in `0..1` and return `[1,3,H*s,W*s]`.
+- Inpainting models (catalogue entries with `"kind": "inpaint"`) are not upscalers: `Upscaler::load` refuses them.
+  They are loaded with `Upscaler::load_inpainter` and implement the `Inpainter` trait, which fills one
+  fixed square window from its known pixels.
 - WebP output is always lossless (pure-Rust encoder); `quality` applies to JPEG and PNG compression.
 - Tests run on CPU only; GPU checks are `#[ignore]`: `cargo test -p scaleup-core -- --ignored`.
 - `tests/fixtures/nearest2x.onnx` is regenerated with `python -I tools/make_test_model.py` (needs `onnx`).
