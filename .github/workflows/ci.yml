@@ -20,7 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Both Ubuntu images by name: `ubuntu-latest` is moving from 24.04 to 26.04.
+        os: [ubuntu-24.04, ubuntu-26.04, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
 
