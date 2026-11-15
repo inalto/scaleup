@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-15
+
 ### Changed
 
 - App: one colour and spacing scheme for every window, the brand blue on the Upscale button and the
@@ -102,6 +104,7 @@ Not published as a release; its content shipped in 0.2.0.
 - Model registry: embedded catalogue (`models/manifest.json`), sha256-verified cancellable
   downloads, bundled license texts, import of ncnn model folders.
 
-[Unreleased]: https://github.com/inalto/scaleup/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/inalto/scaleup/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/inalto/scaleup/releases/tag/v0.3.1
 [0.3.0]: https://github.com/inalto/scaleup/releases/tag/v0.3.0
 [0.2.1]: https://github.com/inalto/scaleup/releases/tag/v0.2.1
