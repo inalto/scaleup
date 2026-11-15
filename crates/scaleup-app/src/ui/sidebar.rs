@@ -7,6 +7,7 @@ use scaleup_core::registry::SOURCE_HUB;
 use scaleup_core::{DeviceInfo, DeviceKind, Fill, ModelEntry, Registry};
 
 use crate::state::{AppState, ExtendMode, Mode, Settings};
+use crate::ui::theme;
 
 /// What the user asked for this frame.
 #[derive(Default)]
@@ -45,13 +46,28 @@ pub fn pick_image() -> Option<PathBuf> {
 }
 
 fn nc_badge(ui: &mut egui::Ui) {
-    ui.label(
-        egui::RichText::new(" NC ")
-            .small()
-            .strong()
-            .color(egui::Color32::WHITE)
-            .background_color(egui::Color32::from_rgb(190, 40, 40)),
-    );
+    theme::badge(ui, "NC", theme::DANGER).on_hover_text("Not for commercial use");
+}
+
+/// The label of a control row: every row's control starts at the same place.
+fn row_label(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.add_sized(
+        [LABEL_WIDTH, ui.spacing().interact_size.y],
+        egui::Label::new(text).halign(egui::Align::Min),
+    )
+}
+
+const LABEL_WIDTH: f32 = 56.0;
+/// Space between two groups of controls; rows inside a group sit closer.
+const SECTION_GAP: f32 = 10.0;
+
+/// The name shown for an output format.
+fn format_label(format: &str) -> &'static str {
+    match format {
+        "jpg" => "JPEG",
+        "webp" => "WebP",
+        _ => "PNG",
+    }
 }
 
 fn model_row(ui: &mut egui::Ui, selected: &mut String, entry: &ModelEntry) {
@@ -92,10 +108,36 @@ fn groups(entries: &[ModelEntry]) -> [Vec<&ModelEntry>; 3] {
     out
 }
 
-fn model_picker(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) {
+/// A combo box as wide as the space left in the row.
+fn fill_width(ui: &egui::Ui) -> f32 {
+    ui.available_width() - 2.0 * ui.spacing().button_padding.x
+}
+
+fn model_picker(
+    ui: &mut egui::Ui,
+    st: &mut AppState,
+    entries: &[ModelEntry],
+    out: &mut SidebarOutput,
+) {
     let s = &mut st.settings;
+    ui.add_space(4.0);
+    let title = ui
+        .horizontal(|ui| {
+            let title = ui.strong("Model");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .link("Manage…")
+                    .on_hover_text("Download or delete the models of the catalogue")
+                    .clicked()
+                {
+                    out.open_models = true;
+                }
+            });
+            title
+        })
+        .inner;
     egui::ComboBox::from_id_salt("model")
-        .width(ui.available_width())
+        .width(fill_width(ui))
         .selected_text(model_title(&s.model_id, entries))
         .height(420.0)
         .show_ui(ui, |ui| {
@@ -124,9 +166,17 @@ fn model_picker(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) {
                     model_row(ui, &mut s.model_id, e);
                 }
             }
-        });
+        })
+        .response
+        .labelled_by(title.id);
     ui.horizontal(|ui| {
-        if ui.small_button("Custom model file…").clicked()
+        if ui.link("Browse OpenModelDB…").clicked() {
+            out.open_hub = true;
+        }
+        if ui
+            .link("Custom file…")
+            .on_hover_text("Use a model file from this computer (.onnx or .param)")
+            .clicked()
             && let Some(p) = rfd::FileDialog::new()
                 .add_filter("Model", &["onnx", "param"])
                 .pick_file()
@@ -146,36 +196,41 @@ fn model_picker(ui: &mut egui::Ui, st: &mut AppState, entries: &[ModelEntry]) {
 
 fn output_options(ui: &mut egui::Ui, st: &mut AppState) {
     let s = &mut st.settings;
+    theme::section(ui, "Output");
     ui.add_enabled_ui(!s.use_width, |ui| {
         ui.horizontal(|ui| {
-            ui.label("Scale");
+            row_label(ui, "Scale");
             for v in [2, 3, 4] {
                 ui.radio_value(&mut s.scale, v, format!("{v}×"));
             }
         });
     });
     ui.horizontal(|ui| {
-        ui.checkbox(&mut s.use_width, "Custom width");
-        ui.add_enabled(
-            s.use_width,
-            egui::DragValue::new(&mut s.width)
-                .range(16..=32768)
-                .suffix(" px"),
-        );
+        row_label(ui, "Width");
+        ui.checkbox(&mut s.use_width, "Custom");
+        let width = egui::DragValue::new(&mut s.width)
+            .range(16..=32768)
+            .suffix(" px");
+        ui.add_enabled(s.use_width, width)
+            .on_hover_text("Output width in pixels; the height follows the image.")
+            .on_disabled_hover_text("Tick Custom to set the output width instead of a scale.");
     });
     ui.horizontal(|ui| {
-        ui.label("Format");
+        let label = row_label(ui, "Format");
         egui::ComboBox::from_id_salt("format")
-            .selected_text(s.format.as_str())
+            .selected_text(format_label(&s.format))
             .show_ui(ui, |ui| {
                 for f in ["png", "jpg", "webp"] {
-                    ui.selectable_value(&mut s.format, f.to_string(), f);
+                    ui.selectable_value(&mut s.format, f.to_string(), format_label(f));
                 }
-            });
+            })
+            .response
+            .labelled_by(label.id);
     });
     ui.horizontal(|ui| {
-        ui.label("Quality");
+        let label = row_label(ui, "Quality");
         ui.add(egui::Slider::new(&mut s.quality, 1..=100))
+            .labelled_by(label.id)
             .on_hover_text("JPEG and WebP quality. For PNG, higher means smaller and slower.");
     });
 }
@@ -205,25 +260,28 @@ fn advanced(ui: &mut egui::Ui, st: &mut AppState, out: &mut SidebarOutput) {
     let s = &mut st.settings;
     egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label("Tile size");
+            let label = row_label(ui, "Tile size");
             egui::ComboBox::from_id_salt("tile")
                 .selected_text(if s.tile == 0 {
                     "Auto".to_string()
                 } else {
-                    s.tile.to_string()
+                    format!("{} px", s.tile)
                 })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut s.tile, 0, "Auto");
                     for t in [128, 256, 512, 1024] {
-                        ui.selectable_value(&mut s.tile, t, t.to_string());
+                        ui.selectable_value(&mut s.tile, t, format!("{t} px"));
                     }
-                });
+                })
+                .response
+                .labelled_by(label.id)
+                .on_hover_text("Smaller tiles need less GPU memory and run slower.");
         });
         ui.horizontal(|ui| {
-            ui.label("GPU");
+            let label = row_label(ui, "Device");
             let before = s.gpu.clone();
             egui::ComboBox::from_id_salt("gpu")
-                .width(ui.available_width())
+                .width(fill_width(ui))
                 .selected_text(gpu_label(&s.gpu, &devices))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut s.gpu, "auto".to_string(), "Auto");
@@ -231,7 +289,9 @@ fn advanced(ui: &mut egui::Ui, st: &mut AppState, out: &mut SidebarOutput) {
                     for d in devices.iter().filter(|d| d.kind.is_gpu()) {
                         ui.selectable_value(&mut s.gpu, gpu_value(d), &d.name);
                     }
-                });
+                })
+                .response
+                .labelled_by(label.id);
             out.device_changed = s.gpu != before;
         });
         ui.checkbox(&mut s.tta, "Test-time augmentation (8× slower)");
@@ -287,7 +347,8 @@ fn fill_label(fill: &str) -> &'static str {
     }
 }
 
-fn side_value(ui: &mut egui::Ui, v: &mut f32, mode: ExtendMode) {
+fn side_value(ui: &mut egui::Ui, name: &str, v: &mut f32, mode: ExtendMode) {
+    let label = ui.label(name);
     let drag = match mode {
         ExtendMode::Percent => egui::DragValue::new(v)
             .range(0.0..=400.0)
@@ -300,7 +361,7 @@ fn side_value(ui: &mut egui::Ui, v: &mut f32, mode: ExtendMode) {
             .fixed_decimals(0)
             .suffix(" px"),
     };
-    ui.add(drag);
+    ui.add(drag).labelled_by(label.id);
 }
 
 const ASPECTS: [(u32, u32); 5] = [(1, 1), (4, 3), (3, 2), (16, 9), (9, 16)];
@@ -325,36 +386,33 @@ fn extend_section(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) {
                         }
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Custom");
-                        ui.add(egui::DragValue::new(&mut s.extend_aspect.0).range(1..=100));
+                        let label = row_label(ui, "Custom");
+                        ui.add(egui::DragValue::new(&mut s.extend_aspect.0).range(1..=100))
+                            .labelled_by(label.id);
                         ui.label(":");
-                        ui.add(egui::DragValue::new(&mut s.extend_aspect.1).range(1..=100));
+                        ui.add(egui::DragValue::new(&mut s.extend_aspect.1).range(1..=100))
+                            .labelled_by(label.id);
                     });
                 } else {
                     ui.checkbox(&mut s.extend_linked, "Same on every side");
                     let mode = s.extend_mode;
                     if s.extend_linked {
                         ui.horizontal(|ui| {
-                            ui.label("Each side");
-                            side_value(ui, &mut s.extend_left, mode);
+                            side_value(ui, "Each side", &mut s.extend_left, mode);
                         });
                     } else {
                         egui::Grid::new("extend_sides").show(ui, |ui| {
-                            ui.label("Left");
-                            side_value(ui, &mut s.extend_left, mode);
-                            ui.label("Top");
-                            side_value(ui, &mut s.extend_top, mode);
+                            side_value(ui, "Left", &mut s.extend_left, mode);
+                            side_value(ui, "Top", &mut s.extend_top, mode);
                             ui.end_row();
-                            ui.label("Right");
-                            side_value(ui, &mut s.extend_right, mode);
-                            ui.label("Bottom");
-                            side_value(ui, &mut s.extend_bottom, mode);
+                            side_value(ui, "Right", &mut s.extend_right, mode);
+                            side_value(ui, "Bottom", &mut s.extend_bottom, mode);
                             ui.end_row();
                         });
                     }
                 }
                 ui.horizontal(|ui| {
-                    ui.label("Fill");
+                    let label = row_label(ui, "Fill");
                     egui::ComboBox::from_id_salt("extend_fill")
                         .selected_text(fill_label(&s.extend_fill))
                         .show_ui(ui, |ui| {
@@ -366,7 +424,9 @@ fn extend_section(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) {
                                     s.extend_fill = value.into();
                                 }
                             }
-                        });
+                        })
+                        .response
+                        .labelled_by(label.id);
                     if let Ok(Fill::Color(mut rgb)) = Fill::parse(&s.extend_fill)
                         && ui.color_edit_button_srgb(&mut rgb).changed()
                     {
@@ -393,22 +453,24 @@ fn extend_section(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) {
 fn inpainter_picker(ui: &mut egui::Ui, selected: &mut String, registry: &Registry) {
     let entry = registry.get(selected);
     ui.horizontal(|ui| {
-        ui.label("Model");
+        let label = row_label(ui, "Model");
         egui::ComboBox::from_id_salt("extend_model")
-            .width(ui.available_width())
+            .width(fill_width(ui))
             .selected_text(entry.map_or(selected.as_str(), |e| e.name.as_str()))
             .show_ui(ui, |ui| {
                 for e in registry.inpainters() {
                     ui.selectable_value(selected, e.id.clone(), &e.name)
                         .on_hover_text(&e.notes);
                 }
-            });
+            })
+            .response
+            .labelled_by(label.id);
     });
-    ui.small("Suits modest extensions of soft or plain backgrounds.");
+    ui.weak("Suits modest extensions of soft or plain backgrounds.");
     if let Some(e) = entry
         && !registry.is_downloaded(&e.id)
     {
-        ui.small(format!(
+        ui.weak(format!(
             "Downloads {:.0} MB on first use.",
             e.size_bytes as f64 / (1024.0 * 1024.0)
         ));
@@ -431,28 +493,30 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) -> Sideba
             let size = egui::vec2(ui.available_width(), 40.0);
             if running {
                 let text = if st.stopping { "Stopping…" } else { "Stop" };
+                let button = egui::Button::new(egui::RichText::new(text).size(16.0).strong());
                 let enabled = !st.stopping;
                 if ui
-                    .add_enabled(enabled, |ui: &mut egui::Ui| {
-                        ui.add_sized(size, egui::Button::new(text))
-                    })
+                    .add_enabled(enabled, |ui: &mut egui::Ui| ui.add_sized(size, button))
+                    .on_hover_text("Stop the run (Esc)")
                     .clicked()
                 {
                     out.stop = true;
                 }
             } else {
                 let label = start_label(&st.settings, registry);
-                let text = egui::RichText::new(label).size(18.0).strong();
-                let button = egui::Button::new(text);
-                let resp = ui.add_enabled(
-                    st.mode.is_some() && invalid.is_none(),
-                    |ui: &mut egui::Ui| ui.add_sized(size, button),
-                );
-                if let Some(e) = &invalid {
-                    resp.clone()
-                        .on_disabled_hover_text(format!("Extend canvas: {e}"));
-                }
-                if resp.clicked() {
+                let enabled = st.mode.is_some() && invalid.is_none();
+                // The accent marks an action that can be taken; a disabled one stays neutral.
+                let button = if enabled {
+                    theme::primary_button(label)
+                } else {
+                    egui::Button::new(egui::RichText::new(label).size(16.0).strong())
+                };
+                let resp = ui.add_enabled(enabled, |ui: &mut egui::Ui| ui.add_sized(size, button));
+                let why = match &invalid {
+                    Some(e) => format!("Extend canvas: {e}"),
+                    None => "Select an image or a folder first".into(),
+                };
+                if resp.on_disabled_hover_text(why).clicked() {
                     out.start = true;
                 }
             }
@@ -462,13 +526,19 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) -> Sideba
     egui::CentralPanel::default().show(ui, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_enabled_ui(!running, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("Select Image").clicked()
+                theme::section(ui, "Image");
+                ui.columns(2, |cols| {
+                    let size = egui::vec2(cols[0].available_width(), 28.0);
+                    if cols[0]
+                        .add_sized(size, egui::Button::new("Select Image"))
+                        .clicked()
                         && let Some(p) = pick_image()
                     {
                         out.picked = Some(p);
                     }
-                    if ui.button("Select Folder").clicked()
+                    if cols[1]
+                        .add_sized(size, egui::Button::new("Select Folder"))
+                        .clicked()
                         && let Some(p) = rfd::FileDialog::new().pick_folder()
                     {
                         out.picked = Some(p);
@@ -477,26 +547,18 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) -> Sideba
                 match &st.mode {
                     Some(Mode::Single(p)) | Some(Mode::Batch(p)) => {
                         let full = p.to_string_lossy();
-                        ui.label(elide_middle(&full, 38))
+                        ui.label(elide_middle(&full, 40))
                             .on_hover_text(full.as_ref());
                     }
                     None => {
                         ui.weak("No image selected");
                     }
                 }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.strong("Model");
-                    if ui.small_button("Manage…").clicked() {
-                        out.open_models = true;
-                    }
-                    if ui.small_button("Browse OpenModelDB…").clicked() {
-                        out.open_hub = true;
-                    }
-                });
-                model_picker(ui, st, &entries);
-                ui.separator();
+                ui.add_space(SECTION_GAP);
+                model_picker(ui, st, &entries, &mut out);
+                ui.add_space(SECTION_GAP);
                 output_options(ui, st);
+                ui.add_space(SECTION_GAP);
                 ui.separator();
                 extend_section(ui, st, registry);
                 ui.separator();
@@ -632,7 +694,7 @@ mod tests {
             ..AppState::default()
         };
         let mut harness = egui_kittest::Harness::builder()
-            .with_size([300.0, 760.0])
+            .with_size([320.0, 760.0])
             .wgpu()
             .build_ui_state(
                 |ui, (st, reg): &mut (AppState, Registry)| {
@@ -650,7 +712,7 @@ mod tests {
         // The over-the-limit case: the reason in red and Start disabled.
         st.settings.extend_left = 2000.0;
         let mut harness = egui_kittest::Harness::builder()
-            .with_size([300.0, 760.0])
+            .with_size([320.0, 760.0])
             .wgpu()
             .build_ui_state(
                 |ui, (st, reg): &mut (AppState, Registry)| {

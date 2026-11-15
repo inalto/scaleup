@@ -15,6 +15,7 @@ use scaleup_core::hub::{
 };
 
 use crate::state::HubFilters;
+use crate::ui::theme;
 
 /// The scale chips.
 pub const SCALES: [u32; 5] = [1, 2, 3, 4, 8];
@@ -73,10 +74,11 @@ pub enum HubAction {
 /// comes with share-alike or copyleft duties, red when forbidden, grey when unknown.
 pub fn license_colour(class: LicenseClass) -> Color32 {
     match class {
-        LicenseClass::Permissive | LicenseClass::Attribution => Color32::from_rgb(28, 110, 60),
-        LicenseClass::ShareAlike | LicenseClass::Copyleft => Color32::from_rgb(180, 120, 10),
-        LicenseClass::NonCommercial => Color32::from_rgb(190, 40, 40),
-        LicenseClass::Unknown => Color32::from_rgb(110, 110, 110),
+        LicenseClass::Permissive | LicenseClass::Attribution => theme::SUCCESS,
+        // Dark enough for the white badge text.
+        LicenseClass::ShareAlike | LicenseClass::Copyleft => Color32::from_rgb(150, 95, 0),
+        LicenseClass::NonCommercial => theme::DANGER,
+        LicenseClass::Unknown => Color32::from_rgb(100, 100, 100),
     }
 }
 
@@ -93,15 +95,54 @@ fn license_words(class: LicenseClass) -> &'static str {
     }
 }
 
-/// Icon and name of a readiness state. Each of the five is distinct.
-pub fn readiness_label(r: Readiness) -> (&'static str, &'static str) {
+/// Name of a readiness state. Each of the five is distinct.
+pub fn readiness_label(r: Readiness) -> &'static str {
     match r {
-        Readiness::Installed => ("✔", "Installed"),
-        Readiness::Downloadable => ("⬇", "Downloadable"),
-        Readiness::ManualDownload => ("🌐", "Manual download"),
-        Readiness::NeedsConversion => ("⚙", "Needs conversion"),
-        Readiness::Unsupported => ("⛔", "Unsupported"),
+        Readiness::Installed => "Installed",
+        Readiness::Downloadable => "Downloadable",
+        Readiness::ManualDownload => "Manual download",
+        Readiness::NeedsConversion => "Needs conversion",
+        Readiness::Unsupported => "Unsupported",
     }
+}
+
+/// The mark of a readiness state, drawn (the fonts have no symbols): a shape and a colour per
+/// state, so the five differ without the colour too.
+fn readiness_mark(ui: &mut egui::Ui, r: Readiness) -> egui::Response {
+    use egui::{Shape, Stroke, vec2};
+    let (rect, resp) = ui.allocate_exact_size(vec2(12.0, 12.0), egui::Sense::hover());
+    let (c, colour) = (rect.center(), readiness_colour(r));
+    let line = Stroke::new(2.0, colour);
+    let painter = ui.painter();
+    let filled = |points: Vec<egui::Pos2>| Shape::convex_polygon(points, colour, Stroke::NONE);
+    match r {
+        Readiness::Installed => {
+            painter.circle_filled(c, 5.0, colour);
+        }
+        Readiness::Downloadable => {
+            painter.add(filled(vec![
+                c + vec2(-5.0, -4.0),
+                c + vec2(5.0, -4.0),
+                c + vec2(0.0, 5.0),
+            ]));
+        }
+        Readiness::ManualDownload => {
+            painter.circle_stroke(c, 4.0, line);
+        }
+        Readiness::NeedsConversion => {
+            painter.add(filled(vec![
+                c + vec2(0.0, -5.5),
+                c + vec2(5.5, 0.0),
+                c + vec2(0.0, 5.5),
+                c + vec2(-5.5, 0.0),
+            ]));
+        }
+        Readiness::Unsupported => {
+            painter.line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], line);
+            painter.line_segment([c + vec2(-4.0, 4.0), c + vec2(4.0, -4.0)], line);
+        }
+    }
+    resp
 }
 
 fn readiness_colour(r: Readiness) -> Color32 {
@@ -178,16 +219,8 @@ fn cut(s: &str, max: usize) -> String {
 
 fn license_badge(ui: &mut egui::Ui, card: &ModelCard) {
     let class = card.license_class();
-    ui.label(
-        egui::RichText::new(format!(
-            " {} ",
-            card.license.as_deref().unwrap_or("unknown")
-        ))
-        .small()
-        .color(Color32::WHITE)
-        .background_color(license_colour(class)),
-    )
-    .on_hover_text(license_words(class));
+    let text = card.license.as_deref().unwrap_or("unknown");
+    theme::badge(ui, text, license_colour(class)).on_hover_text(license_words(class));
 }
 
 /// The page to open for a model whose file the user downloads by hand (`https` only).
@@ -538,7 +571,7 @@ impl HubDialog {
             ui.checkbox(&mut f.runnable_only, "Runnable on this machine")
                 .on_hover_text("Installed, or runs here without conversion");
             ui.separator();
-            ui.label("Architecture");
+            let label = ui.label("Architecture");
             egui::ComboBox::from_id_salt("hub_arch")
                 .selected_text(f.arch.as_deref().unwrap_or("Any"))
                 .height(360.0)
@@ -547,7 +580,9 @@ impl HubDialog {
                     for a in &self.archs {
                         ui.selectable_value(&mut f.arch, Some(a.clone()), a);
                     }
-                });
+                })
+                .response
+                .labelled_by(label.id);
         });
     }
 
@@ -599,9 +634,7 @@ impl HubDialog {
     ) {
         ui.horizontal(|ui| {
             ui.set_height(ROW_HEIGHT);
-            let (icon, name) = readiness_label(r);
-            ui.label(egui::RichText::new(icon).color(readiness_colour(r)))
-                .on_hover_text(name);
+            readiness_mark(ui, r).on_hover_text(readiness_label(r));
             let selected = self.selected.as_deref() == Some(card.id.as_str());
             if ui
                 .selectable_label(selected, cut(&card.name, 34))
@@ -631,7 +664,7 @@ impl HubDialog {
     ) {
         match r {
             Readiness::Installed => {
-                ui.add_enabled(false, egui::Button::new("Installed ✓"));
+                ui.add_enabled(false, egui::Button::new("Installed"));
             }
             Readiness::Downloadable => {
                 if ui
@@ -796,10 +829,9 @@ impl HubDialog {
         busy: bool,
         actions: &mut Vec<HubAction>,
     ) {
-        let (icon, name) = readiness_label(r);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(icon).color(readiness_colour(r)));
-            ui.strong(name);
+            readiness_mark(ui, r);
+            ui.strong(readiness_label(r));
         });
         ui.label(readiness_help(r));
         match r {
@@ -808,7 +840,7 @@ impl HubDialog {
                     if !m.verified {
                         ui.colored_label(
                             WARN,
-                            "⚠ Not verified: OpenModelDB lists no sha256 for this file.",
+                            "Not verified: OpenModelDB lists no sha256 for this file.",
                         );
                     }
                     ui.label(
@@ -954,14 +986,23 @@ impl HubDialog {
                 egui::Grid::new("hub_recommend_ask")
                     .num_columns(2)
                     .show(ui, |ui| {
-                        ui.label("What is in the image?");
-                        pick(ui, "rec_content", &mut self.rec.content, &CONTENTS);
+                        pick(
+                            ui,
+                            "What is in the image?",
+                            "rec_content",
+                            &mut self.rec.content,
+                            &CONTENTS,
+                        );
                         ui.end_row();
-                        ui.label("What should happen?");
-                        pick(ui, "rec_goal", &mut self.rec.goal, &GOALS);
+                        pick(
+                            ui,
+                            "What should happen?",
+                            "rec_goal",
+                            &mut self.rec.goal,
+                            &GOALS,
+                        );
                         ui.end_row();
-                        ui.label("Speed");
-                        pick(ui, "rec_speed", &mut self.rec.speed, &SPEEDS);
+                        pick(ui, "Speed", "rec_speed", &mut self.rec.speed, &SPEEDS);
                         ui.end_row();
                     });
                 ui.horizontal(|ui| {
@@ -994,11 +1035,10 @@ impl HubDialog {
                 }
                 let mut picked = None;
                 for (n, rec) in self.rec.results.iter().enumerate() {
-                    let (icon, ready) = readiness_label(rec.readiness);
                     ui.horizontal(|ui| {
                         ui.strong(format!("{}. {}", n + 1, rec.card.name));
-                        ui.label(egui::RichText::new(icon).color(readiness_colour(rec.readiness)))
-                            .on_hover_text(ready);
+                        readiness_mark(ui, rec.readiness)
+                            .on_hover_text(readiness_label(rec.readiness));
                         ui.weak(format!("{}× {}", rec.card.scale, rec.card.architecture));
                         if ui.small_button("Select").clicked() {
                             picked = Some(rec.card.id.clone());
@@ -1014,8 +1054,15 @@ impl HubDialog {
     }
 }
 
-/// A combo box over `choices`.
-fn pick<T: Copy + PartialEq>(ui: &mut egui::Ui, id: &str, value: &mut T, choices: &[(T, &str)]) {
+/// A label and, named by it, a combo box over `choices`.
+fn pick<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    label: &str,
+    id: &str,
+    value: &mut T,
+    choices: &[(T, &str)],
+) {
+    let label = ui.label(label);
     let current = choices
         .iter()
         .find(|(v, _)| v == value)
@@ -1026,7 +1073,9 @@ fn pick<T: Copy + PartialEq>(ui: &mut egui::Ui, id: &str, value: &mut T, choices
             for (v, label) in choices {
                 ui.selectable_value(value, *v, *label);
             }
-        });
+        })
+        .response
+        .labelled_by(label.id);
 }
 
 #[cfg(test)]
@@ -1176,18 +1225,14 @@ mod tests {
         ];
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {
-                assert_ne!(readiness_label(*a).0, readiness_label(*b).0);
-                assert_ne!(readiness_label(*a).1, readiness_label(*b).1);
+                assert_ne!(readiness_label(*a), readiness_label(*b));
                 assert_ne!(readiness_colour(*a), readiness_colour(*b));
                 assert_ne!(readiness_help(*a), readiness_help(*b));
             }
         }
         // Only Installed reads as ready.
         for r in all {
-            assert_eq!(
-                readiness_label(r).1 == "Installed",
-                r == Readiness::Installed
-            );
+            assert_eq!(readiness_label(r) == "Installed", r == Readiness::Installed);
         }
     }
 

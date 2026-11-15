@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- App: one colour and spacing scheme for every window, the brand blue on the Upscale button and the
+  progress bar, section titles and an aligned label column in the sidebar, a drop target while a file
+  is held over the window, a zoom readout, a header row in the Models window, and screen-reader names
+  for every dropdown.
+
+### Fixed
+
+- App: symbols that the fonts of egui 0.37 cannot draw showed as empty boxes: the arrows in the Extend
+  section's resulting-size line (now `256×192 to 512×448 to 2048×1792`) and the readiness icons of
+  the OpenModelDB window (now drawn shapes).
+- App: the model row and the model dropdown no longer run past the edge of the sidebar.
+
 ## [0.3.0] - 2026-11-11
 
 ### Added

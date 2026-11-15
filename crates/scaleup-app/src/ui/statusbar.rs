@@ -3,6 +3,7 @@
 use eframe::egui;
 
 use crate::state::{AppState, Status};
+use crate::ui::theme;
 
 /// The bar position for the current status, if a bar applies.
 fn fraction(status: &Status) -> Option<f32> {
@@ -17,17 +18,20 @@ fn fraction(status: &Status) -> Option<f32> {
 pub fn show(ui: &mut egui::Ui, st: &AppState, log_open: &mut bool) -> bool {
     let mut open_folder = false;
     ui.horizontal(|ui| {
-        ui.toggle_value(log_open, "Log");
+        ui.toggle_value(log_open, "Log")
+            .on_hover_text("Show or hide the messages of the runs");
         if st.device_name.is_empty() {
             ui.weak("Detecting device…");
         } else {
-            ui.weak(&st.device_name);
+            ui.weak(&st.device_name)
+                .on_hover_text("The device runs use. Change it under Advanced.");
         }
         ui.separator();
         match &st.status {
             Status::Error(_) => {
                 let text = egui::RichText::new(st.status_line()).color(ui.visuals().error_fg_color);
-                ui.add(egui::Label::new(text).truncate());
+                ui.add(egui::Label::new(text).truncate())
+                    .on_hover_text(st.status_line());
             }
             Status::Done(path) => {
                 ui.label(st.status_line())
@@ -42,7 +46,19 @@ pub fn show(ui: &mut egui::Ui, st: &AppState, log_open: &mut bool) -> bool {
                 open_folder = true;
             }
             if let Some(f) = fraction(&st.status) {
-                ui.add(egui::ProgressBar::new(f).show_percentage());
+                // White on the accent while the bar is under the number, the text colour after.
+                let color = if f > 0.08 {
+                    egui::Color32::WHITE
+                } else {
+                    ui.visuals().text_color()
+                };
+                let percent = egui::RichText::new(format!("{:.0}%", f * 100.0)).color(color);
+                ui.add(
+                    egui::ProgressBar::new(f)
+                        .text(percent)
+                        .desired_height(18.0)
+                        .fill(theme::ACCENT),
+                );
             }
         });
     });

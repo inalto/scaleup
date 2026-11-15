@@ -178,8 +178,8 @@ impl Settings {
     }
 
     /// The "resulting size" line of the Extend section, `None` when extension is off. With the
-    /// source size: `1200×800 ➡ 1600×800 ➡ 6400×3200`; without it (a folder, where every file has
-    /// its own size) the rule, `+64 px each side ➡ 4×`. `Err` holds why the settings cannot be used,
+    /// source size: `1200×800 to 1600×800 to 6400×3200`; without it (a folder, where every file has
+    /// its own size) the rule, `+64 px each side, then 4×`. `Err` holds why the settings cannot be used,
     /// for this image when its size is known.
     pub fn extend_summary(&self, source: Option<[u32; 2]>) -> Option<Result<String, String>> {
         let ext = match self.to_extend_options() {
@@ -202,7 +202,7 @@ impl Settings {
             } else {
                 format!("{factor}×")
             };
-            return Some(Ok(format!("{} ➡ {upscale}", margin_rule(&ext.margins))));
+            return Some(Ok(format!("{}, then {upscale}", margin_rule(&ext.margins))));
         };
         Some(
             ext.margins
@@ -214,7 +214,7 @@ impl Settings {
                     } else {
                         (cw * factor, ch * factor)
                     };
-                    Ok(format!("{w}×{h} ➡ {cw}×{ch} ➡ {ow}×{oh}"))
+                    Ok(format!("{w}×{h} to {cw}×{ch} to {ow}×{oh}"))
                 })
                 .map_err(reason),
         )
@@ -876,39 +876,42 @@ mod tests {
         s.extend_linked = false;
         assert_eq!(
             s.extend_summary(Some([1200, 800])),
-            Some(Ok("1200×800 ➡ 1600×800 ➡ 6400×3200".into()))
+            Some(Ok("1200×800 to 1600×800 to 6400×3200".into()))
         );
         assert_eq!(
             s.extend_summary(None),
-            Some(Ok("+200/0/200/0 px (L/T/R/B) ➡ 4×".into()))
+            Some(Ok("+200/0/200/0 px (L/T/R/B), then 4×".into()))
         );
         s.extend_linked = true;
         s.extend_left = 64.0;
         assert_eq!(
             s.extend_summary(None),
-            Some(Ok("+64 px each side ➡ 4×".into()))
+            Some(Ok("+64 px each side, then 4×".into()))
         );
         s.double = true;
         assert_eq!(
             s.extend_summary(None),
-            Some(Ok("+64 px each side ➡ 16×".into()))
+            Some(Ok("+64 px each side, then 16×".into()))
         );
         s.use_width = true;
         assert_eq!(
             s.extend_summary(Some([100, 100])),
-            Some(Ok("100×100 ➡ 228×228 ➡ 1920×1920".into()))
+            Some(Ok("100×100 to 228×228 to 1920×1920".into()))
         );
         assert_eq!(
             s.extend_summary(None),
-            Some(Ok("+64 px each side ➡ 1920 px wide".into()))
+            Some(Ok("+64 px each side, then 1920 px wide".into()))
         );
         let mut s = extending(ExtendMode::Percent, [12.5; 4], "ai");
         assert_eq!(
             s.extend_summary(None),
-            Some(Ok("+12.5% each side ➡ 4×".into()))
+            Some(Ok("+12.5% each side, then 4×".into()))
         );
         s.extend_mode = ExtendMode::Aspect;
-        assert_eq!(s.extend_summary(None), Some(Ok("grow to 4:3 ➡ 4×".into())));
+        assert_eq!(
+            s.extend_summary(None),
+            Some(Ok("grow to 4:3, then 4×".into()))
+        );
         // Over the limits for this image: the core's reason, without the error-kind prefix.
         let s = extending(ExtendMode::Pixels, [500.0; 4], "ai");
         let Some(Err(e)) = s.extend_summary(Some([100, 100])) else {

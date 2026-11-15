@@ -2,6 +2,8 @@
 
 use eframe::egui;
 
+use crate::ui::theme;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToastKind {
     Success,
@@ -60,18 +62,22 @@ impl Toasts {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
         egui::Area::new(egui::Id::unique("toasts"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -44.0])
+            .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -52.0])
             .interactable(false)
             .show(ctx, |ui| {
                 ui.set_max_width(420.0);
                 for (toast, _) in &self.active {
                     let fill = match toast.kind {
-                        ToastKind::Success => egui::Color32::from_rgb(28, 110, 60),
-                        ToastKind::Error => egui::Color32::from_rgb(160, 40, 40),
+                        ToastKind::Success => theme::SUCCESS,
+                        ToastKind::Error => theme::DANGER,
                     };
-                    egui::Frame::popup(ui.style()).fill(fill).show(ui, |ui| {
-                        ui.label(egui::RichText::new(&toast.text).color(egui::Color32::WHITE));
-                    });
+                    egui::Frame::popup(ui.style())
+                        .fill(fill)
+                        .stroke(egui::Stroke::NONE)
+                        .inner_margin(egui::Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new(&toast.text).color(egui::Color32::WHITE));
+                        });
                 }
             });
     }

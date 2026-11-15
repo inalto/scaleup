@@ -6,6 +6,8 @@ use eframe::egui;
 use scaleup_core::registry::SOURCE_HUB;
 use scaleup_core::{ModelEntry, ModelKind, Registry};
 
+use crate::ui::theme;
+
 include!(concat!(env!("OUT_DIR"), "/licenses.rs"));
 
 /// What the user asked for this frame.
@@ -46,20 +48,12 @@ fn size_label(bytes: u64) -> String {
 }
 
 fn license_badge(ui: &mut egui::Ui, entry: &ModelEntry) {
-    let (fill, text) = if entry.commercial {
-        (egui::Color32::from_rgb(28, 110, 60), entry.license.clone())
+    if entry.commercial {
+        theme::badge(ui, &entry.license, theme::SUCCESS).on_hover_text("Free for any use");
     } else {
-        (
-            egui::Color32::from_rgb(190, 40, 40),
-            format!("NC {}", entry.license),
-        )
-    };
-    ui.label(
-        egui::RichText::new(format!(" {text} "))
-            .small()
-            .color(egui::Color32::WHITE)
-            .background_color(fill),
-    );
+        theme::badge(ui, &format!("NC {}", entry.license), theme::DANGER)
+            .on_hover_text("Not for commercial use");
+    }
 }
 
 impl ModelsDialog {
@@ -74,14 +68,20 @@ impl ModelsDialog {
         let mut open = self.open;
         egui::Window::new("Models")
             .open(&mut open)
-            .default_width(640.0)
+            .default_width(680.0)
             .default_height(460.0)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     egui::Grid::new("models_grid")
                         .striped(true)
                         .num_columns(6)
                         .show(ui, |ui| {
+                            for title in ["Model", "Type", "License", "Size", "", ""] {
+                                ui.strong(title);
+                            }
+                            ui.end_row();
                             for e in registry.entries() {
                                 self.row(ui, registry, e, busy, &mut action);
                                 ui.end_row();
@@ -112,10 +112,12 @@ impl ModelsDialog {
         ui.label(&e.name).on_hover_text(&e.id);
         ui.label(kind_label(e));
         license_badge(ui, e);
-        ui.label(size_label(e.size_bytes));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(size_label(e.size_bytes));
+        });
         if registry.is_downloaded(&e.id) {
             ui.horizontal(|ui| {
-                ui.label("Downloaded");
+                ui.weak("Downloaded");
                 if ui.add_enabled(!busy, egui::Button::new("Delete")).clicked() {
                     *action = Some(delete_action(e));
                 }
@@ -126,7 +128,13 @@ impl ModelsDialog {
         {
             *action = Some(DialogAction::Download(e.id.clone()));
         }
-        if ui.small_button("Show license").clicked() && !self.expanded.remove(&e.id) {
+        let shown = self.expanded.contains(&e.id);
+        let text = if shown {
+            "Hide license"
+        } else {
+            "Show license"
+        };
+        if ui.link(text).clicked() && !self.expanded.remove(&e.id) {
             self.expanded.insert(e.id.clone());
         }
     }

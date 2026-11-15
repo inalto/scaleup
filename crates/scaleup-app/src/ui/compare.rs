@@ -216,19 +216,17 @@ impl CompareView {
             );
         };
         if self.after.is_some() && self.before.is_some() {
-            let stroke = egui::Stroke::new(2.0_f32, egui::Color32::WHITE);
-            painter.line_segment(
-                [
-                    egui::pos2(split_x, rect.top()),
-                    egui::pos2(split_x, rect.bottom()),
-                ],
-                stroke,
-            );
-            painter.circle_filled(
-                egui::pos2(split_x, rect.center().y),
-                7.0,
-                egui::Color32::WHITE,
-            );
+            // A dark edge under the white line and knob: they stay visible on a bright picture.
+            let edge = egui::Color32::from_black_alpha(110);
+            let line = [
+                egui::pos2(split_x, rect.top()),
+                egui::pos2(split_x, rect.bottom()),
+            ];
+            let knob = egui::pos2(split_x, rect.center().y);
+            painter.line_segment(line, egui::Stroke::new(4.0_f32, edge));
+            painter.circle_filled(knob, 10.0, edge);
+            painter.line_segment(line, egui::Stroke::new(2.0_f32, egui::Color32::WHITE));
+            painter.circle_filled(knob, 8.0, egui::Color32::WHITE);
             if resp
                 .hover_pos()
                 .is_some_and(|p| (p.x - split_x).abs() < 8.0)
@@ -249,21 +247,41 @@ impl CompareView {
             label(
                 rect.left_top() + vec2(12.0, 12.0),
                 egui::Align2::LEFT_TOP,
-                "Before",
+                "Original",
             );
         }
 
-        let toolbar = Rect::from_min_size(rect.left_bottom() + vec2(8.0, -32.0), vec2(90.0, 24.0));
+        let toolbar =
+            Rect::from_min_size(rect.left_bottom() + vec2(12.0, -40.0), vec2(220.0, 28.0));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(toolbar));
+        let ppp = ui.ctx().pixels_per_point();
         child.horizontal(|ui| {
-            if ui.button("Fit").clicked() {
+            if ui
+                .button("Fit")
+                .on_hover_text("Show the whole image")
+                .clicked()
+            {
                 self.zoom = 1.0;
                 self.pan = Vec2::ZERO;
             }
-            if ui.button("1:1").clicked() {
-                self.zoom = one_to_one_zoom(native, rect.size(), ui.ctx().pixels_per_point());
+            if ui
+                .button("1:1")
+                .on_hover_text("One image pixel per screen pixel")
+                .clicked()
+            {
+                self.zoom = one_to_one_zoom(native, rect.size(), ppp);
                 self.pan = Vec2::ZERO;
             }
+            // Image pixels per screen pixel, as a percentage.
+            let percent = 100.0 * self.zoom / one_to_one_zoom(native, rect.size(), ppp);
+            let text = egui::RichText::new(format!("{percent:.0}%")).color(egui::Color32::WHITE);
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(140))
+                .corner_radius(4)
+                .inner_margin(egui::Margin::symmetric(6, 3))
+                .show(ui, |ui| ui.add(egui::Label::new(text).selectable(false)))
+                .response
+                .on_hover_text("Zoom: scroll to change, right-drag to move");
         });
     }
 }

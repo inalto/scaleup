@@ -5,4 +5,5 @@ pub mod hub_dialog;
 pub mod models_dialog;
 pub mod sidebar;
 pub mod statusbar;
+pub mod theme;
 pub mod toast;

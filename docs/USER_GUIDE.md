@@ -189,7 +189,7 @@ side. Larger values are refused before any work starts.
 
   which prints the ids it added. They then show up in `scaleup models list` and in the app's
   dropdown.
-- The app's "Custom model file" button does the same for one file.
+- The app's "Custom file…" link under the model list does the same for one file.
 - PyTorch weights (`.pth`, `.safetensors`) of the ESRGAN, ESRGAN+, Compact (SRVGGNet), SPAN and
   RealPLKSR architectures run on the `wgpu` backend as they are: `-n path/to/model.pth`. The
   architecture is read from the file. RealPLKSR files with the DySample upsampler and models that
@@ -210,7 +210,7 @@ state:
 
 | State | Button |
 |---|---|
-| Installed | Installed ✓ (Remove in the details) |
+| Installed | Installed (Remove in the details) |
 | Downloadable | **Install**: download, check the sha256, add to the list. ESRGAN, ESRGAN+, Compact, SPAN and RealPLKSR models run from their PyTorch file, others from an ONNX file |
 | Manual download | **Open download page**, save the file, then **Import file…**; it is checked against the catalogue's sha256 |
 | Needs conversion | **Convert**: download the PyTorch file and convert it to ONNX with Python |
