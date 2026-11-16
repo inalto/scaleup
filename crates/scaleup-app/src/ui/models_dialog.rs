@@ -1,7 +1,5 @@
 //! The "Models" window: the catalogue with licenses, downloads and deletion.
 
-use std::collections::HashSet;
-
 use eframe::egui;
 use scaleup_core::registry::SOURCE_HUB;
 use scaleup_core::{ModelEntry, ModelKind, Registry};
@@ -31,8 +29,8 @@ fn delete_action(e: &ModelEntry) -> DialogAction {
 #[derive(Default)]
 pub struct ModelsDialog {
     pub open: bool,
-    /// Rows with their license text expanded.
-    expanded: HashSet<String>,
+    /// The model whose license text shows under the list.
+    license_of: Option<String>,
 }
 
 /// What a model does: its scale for an upscaler, "Extend" for an inpainting model (scale 1).
@@ -72,30 +70,55 @@ impl ModelsDialog {
             .default_height(460.0)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.content_rect().center())
+            .collapsible(false)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::Grid::new("models_grid")
-                        .striped(true)
-                        .num_columns(6)
-                        .show(ui, |ui| {
-                            for title in ["Model", "Type", "License", "Size", "", ""] {
-                                ui.strong(title);
-                            }
-                            ui.end_row();
-                            for e in registry.entries() {
-                                self.row(ui, registry, e, busy, &mut action);
+                let shown = self
+                    .license_of
+                    .as_ref()
+                    .and_then(|id| registry.get(id))
+                    .cloned();
+                // With a license open the list keeps the upper part, the text the rest.
+                let list_height = if shown.is_some() {
+                    (ui.available_height() * 0.45).max(120.0)
+                } else {
+                    f32::INFINITY
+                };
+                egui::ScrollArea::vertical()
+                    .id_salt("models_list")
+                    .max_height(list_height)
+                    .show(ui, |ui| {
+                        egui::Grid::new("models_grid")
+                            .striped(true)
+                            .num_columns(6)
+                            .show(ui, |ui| {
+                                for title in ["Model", "Type", "License", "Size", "", ""] {
+                                    ui.strong(title);
+                                }
                                 ui.end_row();
-                                if self.expanded.contains(&e.id) {
-                                    ui.label("");
-                                    let text = license_text(&e.id).unwrap_or("No license text.");
-                                    ui.add(
-                                        egui::Label::new(egui::RichText::new(text).small()).wrap(),
-                                    );
+                                for e in registry.entries() {
+                                    self.row(ui, registry, e, busy, &mut action);
                                     ui.end_row();
                                 }
+                            });
+                    });
+                if let Some(e) = shown {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.strong(format!("License of {}", e.name));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.link("Hide").clicked() {
+                                self.license_of = None;
                             }
                         });
-                });
+                    });
+                    let text = license_text(&e.id).unwrap_or("No license text.");
+                    egui::ScrollArea::vertical()
+                        .id_salt("models_license")
+                        .auto_shrink(false)
+                        .show(ui, |ui| {
+                            ui.add(egui::Label::new(text).wrap());
+                        });
+                }
             });
         self.open = open;
         action
@@ -128,14 +151,14 @@ impl ModelsDialog {
         {
             *action = Some(DialogAction::Download(e.id.clone()));
         }
-        let shown = self.expanded.contains(&e.id);
+        let shown = self.license_of.as_deref() == Some(e.id.as_str());
         let text = if shown {
             "Hide license"
         } else {
             "Show license"
         };
-        if ui.link(text).clicked() && !self.expanded.remove(&e.id) {
-            self.expanded.insert(e.id.clone());
+        if ui.link(text).clicked() {
+            self.license_of = (!shown).then(|| e.id.clone());
         }
     }
 }

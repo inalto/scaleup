@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- App: a model's license opens under the list of the Models window at full width; the output folder
+  has a Choose… button with the current folder under it; the OpenModelDB details show Markdown links
+  as links and file addresses on one line; the dialogs open centred and no longer collapse; hover
+  help on the advanced options.
+
 ## [0.3.1] - 2026-11-15
 
 ### Changed

@@ -258,7 +258,7 @@ fn gpu_value(d: &DeviceInfo) -> String {
 fn advanced(ui: &mut egui::Ui, st: &mut AppState, out: &mut SidebarOutput) {
     let devices = st.devices.clone();
     let s = &mut st.settings;
-    egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+    egui::CollapsingHeader::new(egui::RichText::new("Advanced").strong()).show(ui, |ui| {
         ui.horizontal(|ui| {
             let label = row_label(ui, "Tile size");
             egui::ComboBox::from_id_salt("tile")
@@ -294,26 +294,37 @@ fn advanced(ui: &mut egui::Ui, st: &mut AppState, out: &mut SidebarOutput) {
                 .labelled_by(label.id);
             out.device_changed = s.gpu != before;
         });
-        ui.checkbox(&mut s.tta, "Test-time augmentation (8× slower)");
-        ui.checkbox(&mut s.double, "Double upscale");
+        ui.checkbox(&mut s.tta, "Test-time augmentation (8× slower)")
+            .on_hover_text("Runs the model on eight flipped and rotated copies and averages them.");
+        ui.checkbox(&mut s.double, "Double upscale")
+            .on_hover_text("Runs the model twice: a 4× model gives 16×.");
         ui.checkbox(&mut s.overwrite, "Overwrite existing files");
-        ui.label("Output folder");
         ui.horizontal(|ui| {
-            let label = s
-                .output_dir
-                .as_ref()
-                .map_or("Same as input".to_string(), |d| {
-                    elide_middle(&d.to_string_lossy(), 22)
-                });
-            if ui.button(label).clicked()
+            row_label(ui, "Save to");
+            if ui.button("Choose…").clicked()
                 && let Some(d) = rfd::FileDialog::new().pick_folder()
             {
                 s.output_dir = Some(d);
             }
-            if s.output_dir.is_some() && ui.small_button("Same as input").clicked() {
+            if s.output_dir.is_some()
+                && ui
+                    .link("Reset")
+                    .on_hover_text("Save next to the input again")
+                    .clicked()
+            {
                 s.output_dir = None;
             }
         });
+        match &s.output_dir {
+            Some(d) => {
+                let full = d.to_string_lossy();
+                ui.label(elide_middle(&full, 36))
+                    .on_hover_text(full.as_ref());
+            }
+            None => {
+                ui.weak("The folder of the input");
+            }
+        }
     });
 }
 
@@ -369,7 +380,7 @@ const ASPECTS: [(u32, u32); 5] = [(1, 1), (4, 3), (3, 2), (16, 9), (9, 16)];
 fn extend_section(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) {
     let source = st.source_size;
     let s = &mut st.settings;
-    egui::CollapsingHeader::new("Extend canvas")
+    egui::CollapsingHeader::new(egui::RichText::new("Extend canvas").strong())
         .default_open(s.extend_enabled)
         .show(ui, |ui| {
             ui.checkbox(&mut s.extend_enabled, "Add canvas before upscaling");

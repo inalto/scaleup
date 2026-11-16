@@ -415,6 +415,7 @@ impl eframe::App for App {
 mod tests {
     use super::*;
     use crate::worker::Which;
+    use egui_kittest::kittest::Queryable;
     use scaleup_core::Margins;
 
     fn app(dir: &Path) -> App {
@@ -447,6 +448,18 @@ mod tests {
         name: &str,
         prep: impl Fn(&mut App, &egui::Context),
     ) {
+        render_then(app, size, theme, name, prep, |_| {});
+    }
+
+    /// Like [`render`], with something done to the window (a click, a held file) before the shot.
+    fn render_then(
+        app: App,
+        size: [f32; 2],
+        theme: egui::Theme,
+        name: &str,
+        prep: impl Fn(&mut App, &egui::Context),
+        act: impl Fn(&mut egui_kittest::Harness<'_, App>),
+    ) {
         let out = PathBuf::from(std::env::var_os("SCALEUP_RENDER_DIR").unwrap());
         let mut harness = egui_kittest::Harness::builder()
             .with_size(size)
@@ -456,6 +469,10 @@ mod tests {
         harness.ctx.set_theme(theme);
         let ctx = harness.ctx.clone();
         prep(harness.state_mut(), &ctx);
+        for _ in 0..6 {
+            harness.step();
+        }
+        act(&mut harness);
         for _ in 0..6 {
             harness.step();
         }
@@ -573,6 +590,56 @@ mod tests {
                 with_images(a, c, false);
                 a.models_dialog.open = true;
             });
+            render_then(
+                new(),
+                big,
+                theme,
+                &format!("advanced-{t}"),
+                |a, c| {
+                    with_images(a, c, false);
+                    a.state.status = Status::Stopped { done: 3, total: 12 };
+                    a.toasts.push(Toast::error(
+                        "Cannot open C:\\out: the folder does not exist",
+                    ));
+                },
+                |h| h.get_by_label("Advanced").click(),
+            );
+            render_then(
+                new(),
+                big,
+                theme,
+                &format!("picker-{t}"),
+                |a, c| with_images(a, c, false),
+                |h| h.get_by_label("Model").click(),
+            );
+            render(new(), big, theme, &format!("download-{t}"), |a, c| {
+                with_images(a, c, false);
+                a.state.status = Status::Downloading {
+                    done: 21 << 20,
+                    total: 64 << 20,
+                };
+            });
+            render_then(
+                new(),
+                big,
+                theme,
+                &format!("license-{t}"),
+                |a, _| a.models_dialog.open = true,
+                |h| h.get_all_by_label("Show license").next().unwrap().click(),
+            );
+            render_then(
+                new(),
+                big,
+                theme,
+                &format!("drop-{t}"),
+                |a, c| with_images(a, c, false),
+                |h| {
+                    h.input_mut().hovered_files.push(egui::HoveredFile {
+                        path: Some(PathBuf::from("a.png")),
+                        mime: String::new(),
+                    });
+                },
+            );
         }
     }
 }

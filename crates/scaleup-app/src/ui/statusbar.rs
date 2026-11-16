@@ -18,8 +18,13 @@ fn fraction(status: &Status) -> Option<f32> {
 pub fn show(ui: &mut egui::Ui, st: &AppState, log_open: &mut bool) -> bool {
     let mut open_folder = false;
     ui.horizontal(|ui| {
-        ui.toggle_value(log_open, "Log")
-            .on_hover_text("Show or hide the messages of the runs");
+        if ui
+            .add(egui::Button::new("Log").selected(*log_open))
+            .on_hover_text("Show or hide the messages of the runs")
+            .clicked()
+        {
+            *log_open = !*log_open;
+        }
         if st.device_name.is_empty() {
             ui.weak("Detecting device…");
         } else {

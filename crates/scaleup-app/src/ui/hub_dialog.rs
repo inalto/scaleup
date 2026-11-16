@@ -486,6 +486,9 @@ impl HubDialog {
             .min_width(room.x.min(600.0))
             .min_height(room.y.min(360.0))
             .max_size(room)
+            .collapsible(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
             .show(ctx, |ui| {
                 self.top_bar(ui, busy, &mut actions);
                 self.filter_row(ui, filters);
@@ -787,13 +790,13 @@ impl HubDialog {
                     ui.horizontal_wrapped(|ui| {
                         ui.weak("Tags");
                         for t in &card.tags {
-                            ui.label(egui::RichText::new(t).small());
+                            ui.label(t);
                         }
                     });
                 }
                 if !card.description.is_empty() {
                     ui.separator();
-                    ui.label(&card.description);
+                    description(ui, &card.description);
                 }
                 ui.separator();
                 ui.weak("Files");
@@ -815,7 +818,7 @@ impl HubDialog {
                         res.kind
                     ));
                     for url in &res.urls {
-                        ui.label(egui::RichText::new(url).small().weak());
+                        url_line(ui, url);
                     }
                 }
             });
@@ -888,7 +891,7 @@ impl HubDialog {
                             );
                         }
                     }
-                    ui.label(egui::RichText::new(url).small().weak());
+                    url_line(ui, url);
                 }
                 ui.horizontal(|ui| {
                     self.open_page_button(ui, card);
@@ -931,7 +934,7 @@ impl HubDialog {
                             );
                         }
                     }
-                    ui.label(egui::RichText::new(url).small().weak());
+                    url_line(ui, url);
                     ui.horizontal(|ui| {
                         self.open_page_button(ui, card);
                         self.import_button(ui, card, busy, actions);
@@ -982,6 +985,8 @@ impl HubDialog {
             .open(&mut open)
             .collapsible(false)
             .default_width(480.0)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
             .show(ctx, |ui| {
                 egui::Grid::new("hub_recommend_ask")
                     .num_columns(2)
@@ -1044,7 +1049,7 @@ impl HubDialog {
                             picked = Some(rec.card.id.clone());
                         }
                     });
-                    ui.label(egui::RichText::new(rec.reasons.join("; ")).small());
+                    ui.weak(rec.reasons.join("; "));
                 }
                 if let Some(id) = picked {
                     self.reveal(&id, f);
@@ -1052,6 +1057,75 @@ impl HubDialog {
             });
         self.rec.open = open;
     }
+}
+
+/// One piece of a description: plain text, or a link written `[text](url)`.
+#[derive(Debug, PartialEq, Eq)]
+enum Span<'a> {
+    Text(&'a str),
+    Link { text: &'a str, url: &'a str },
+}
+
+/// Splits Markdown links out of `s`. Only `http(s)` targets become links; anything else stays text.
+fn spans(s: &str) -> Vec<Span<'_>> {
+    // The link that starts at the `[` at `open`: its text, its address, and where it ends.
+    let link_at = |open: usize| -> Option<(&str, &str, usize)> {
+        let rest = &s[open + 1..];
+        let mid = rest.find("](")?;
+        let (text, after) = (&rest[..mid], &rest[mid + 2..]);
+        let close = after.find(')')?;
+        let url = &after[..close];
+        let web = url.starts_with("https://") || url.starts_with("http://");
+        (web && !text.is_empty() && !text.contains('[')).then_some((
+            text,
+            url,
+            open + 1 + mid + 2 + close + 1,
+        ))
+    };
+    let mut out = Vec::new();
+    let (mut text_start, mut from) = (0, 0);
+    while let Some(offset) = s[from..].find('[') {
+        let open = from + offset;
+        match link_at(open) {
+            Some((text, url, end)) => {
+                if open > text_start {
+                    out.push(Span::Text(&s[text_start..open]));
+                }
+                out.push(Span::Link { text, url });
+                (text_start, from) = (end, end);
+            }
+            // Not a link: the bracket stays text.
+            None => from = open + 1,
+        }
+    }
+    if text_start < s.len() {
+        out.push(Span::Text(&s[text_start..]));
+    }
+    out
+}
+
+/// A model's description, its Markdown links as links.
+fn description(ui: &mut egui::Ui, text: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for span in spans(text) {
+            match span {
+                Span::Text(t) => {
+                    ui.label(t);
+                }
+                Span::Link { text, url } => {
+                    ui.hyperlink_to(text, url).on_hover_text(url);
+                }
+            }
+        }
+    });
+}
+
+/// A file address on one line: cut at the end, whole on hover.
+fn url_line(ui: &mut egui::Ui, url: impl AsRef<str>) {
+    let url = url.as_ref();
+    ui.add(egui::Label::new(egui::RichText::new(url).weak()).truncate())
+        .on_hover_text(url);
 }
 
 /// A label and, named by it, a combo box over `choices`.
@@ -1362,6 +1436,35 @@ mod tests {
         assert_eq!(kept.scales, [4, 2]);
     }
 
+    #[test]
+    fn markdown_links_in_a_description_become_links() {
+        let link = |text, url| Span::Link { text, url };
+        assert_eq!(spans("plain text"), [Span::Text("plain text")]);
+        assert_eq!(
+            spans("see [the page](https://a.b/c?d=e) for more"),
+            [
+                Span::Text("see "),
+                link("the page", "https://a.b/c?d=e"),
+                Span::Text(" for more"),
+            ]
+        );
+        assert_eq!(
+            spans("[a](http://x)[b](https://y)"),
+            [link("a", "http://x"), link("b", "https://y")]
+        );
+        // Not links: no address, another scheme, an unclosed bracket.
+        for s in [
+            "[1] note",
+            "[x](file:///etc/passwd)",
+            "a [b",
+            "[](https://x)",
+            "é [ü",
+        ] {
+            assert_eq!(spans(s), [Span::Text(s)], "{s}");
+        }
+        assert_eq!(spans(""), []);
+    }
+
     /// Draws the window headless (egui_kittest + wgpu) into `$SCALEUP_RENDER_DIR/*.png` for a
     /// person to look at. Run with `-- --ignored`; skipped when the variable is unset.
     #[test]
@@ -1400,6 +1503,7 @@ mod tests {
                     },
                     (d, filters),
                 );
+            theme::apply(&harness.ctx);
             for _ in 0..4 {
                 harness.step();
             }
