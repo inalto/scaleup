@@ -7,6 +7,8 @@ Not shipped. It exists to produce the measurements in docs/OUTPAINT_SPIKE.md:
   sheets  contact sheets: image x margin (right / all four sides) x model
   kexp    context-factor experiment on a ~3000 px photo
   all     probe + timing + sheets + kexp
+  probe12   plan 12 candidates: sha256, opset, signatures, convention search, CPU/DML timing, sizes
+  sheets12  plan 12 contact sheets (8 images x +64/+192 x LaMa, MI-GAN and the new models)
 
 Setup (scratch folder outside the repo, default F:/Apps/ScaleUP/outpaint-spike):
   python -m venv venv; venv/Scripts/pip install onnxruntime-directml numpy pillow scikit-image
@@ -34,6 +36,7 @@ SPIKE = os.environ.get("SPIKE_DIR", "F:/Apps/ScaleUP/outpaint-spike")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(SPIKE, "out")
 os.makedirs(OUT, exist_ok=True)
+os.makedirs(os.path.join(OUT, "plan12"), exist_ok=True)
 
 W = 512  # model window
 
@@ -68,6 +71,57 @@ class Model:
         m = (~known).astype(np.float32)[None, None]
         o = self.sess.run(None, {"image": np.ascontiguousarray(x), "mask": m})[0][0]
         return np.clip(np.rint(o.transpose(1, 2, 0)), 0, 255).astype(np.uint8)
+
+
+# --------------------------------------------------------------------------- plan 12 candidates
+# name -> (path under SPIKE, conventions found by probe12). Conventions are filled from the probe
+# result (docs/OUTPAINT_SPIKE.md, "Plan 12 candidates"); inp/out are (lo, hi) value ranges.
+P12 = {
+    "lama_manga": dict(path="models/lama_manga/lama-manga-dynamic.onnx", inp=(0, 1), hole1=True, out=(0, 1), prov="dml"),
+    # aot: the hole content matters (it is not composited or ignored), so the hole is set to mid grey
+    "aot": dict(path="models/aot_ogkalu/aot.onnx", inp=(-1, 1), hole1=True, out=(-1, 1), fill=128, prov="dml"),
+    "cv_lama": dict(path="models/opencv_lama/inpainting_lama_2025jan.onnx", inp=(0, 1), hole1=True, out=(0, 255), prov="cpu"),
+    "qc_lama": dict(path="models/qc_lama/lama_dilated-onnx-float/lama_dilated_onnx/lama_dilated.onnx", inp=(0, 1), hole1=True, out=(0, 1), prov="dml"),
+    "qc_aot": dict(path="models/qc_aotgan/aotgan-onnx-float/aotgan_onnx/aotgan.onnx", inp=(0, 1), hole1=True, out=(0, 1), prov="dml"),
+}
+
+
+def to255(o, rng):
+    lo, hi = rng
+    return np.clip(np.rint((o - lo) / (hi - lo) * 255.0), 0, 255)
+
+
+class Gen:
+    """A float32 NCHW image + mask model with the conventions in P12 (or given). known: HxW bool."""
+
+    def __init__(self, name, provider="cpu", conv=None, share=None):
+        import onnxruntime as ort
+
+        self.name, self.provider = name, provider
+        c = dict(P12[name])
+        c.update(conv or {})
+        self.c = c
+        if share is not None:  # reuse an already loaded session (a convention only changes how tensors are packed)
+            self.sess = share.sess
+        else:
+            so = ort.SessionOptions()
+            so.log_severity_level = 3
+            prov = {"cpu": "CPUExecutionProvider", "dml": "DmlExecutionProvider"}[provider]
+            self.sess = ort.InferenceSession(os.path.join(SPIKE, c["path"]), so, providers=[prov])
+        ins = self.sess.get_inputs()
+        self.n_img, self.n_mask = ins[0].name, ins[1].name
+
+    def raw(self, img, known, fill=None):
+        lo, hi = self.c["inp"]
+        x = img.astype(np.float32) / 255.0 * (hi - lo) + lo
+        if fill is not None:  # fill is a 0..255 grey for hole pixels, None = leave the prefill
+            x = np.where(known[..., None], x, np.float32(fill / 255.0 * (hi - lo) + lo))
+        m = (known if not self.c["hole1"] else ~known).astype(np.float32)[None, None]
+        xx = np.ascontiguousarray(x.transpose(2, 0, 1)[None], dtype=np.float32)
+        return self.sess.run(None, {self.n_img: xx, self.n_mask: m})[0][0].transpose(1, 2, 0)
+
+    def __call__(self, img, known):
+        return to255(self.raw(img, known, self.c.get("fill")), self.c["out"]).astype(np.uint8)
 
 
 # --------------------------------------------------------------------------- window walk
@@ -301,6 +355,139 @@ def probe():
         print("lama 256x256 REJECTED", str(e).splitlines()[0][:100])
 
 
+# --------------------------------------------------------------------------- plan 12 probe
+def sha256_of(path):
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def gt_case():
+    """A real photo (astronaut, 512x512) with a hidden right strip and a hidden interior square:
+    the hidden pixels have a ground truth, so every convention can be scored against it."""
+    import skimage.data as sd
+
+    g = np.ascontiguousarray(sd.astronaut()[..., :3])
+    hole = np.zeros((W, W), bool)
+    hole[:, 320:] = True
+    hole[100:230, 60:190] = True
+    return g, ~hole
+
+
+def probe12(only=None, quick=False):
+    import onnx
+    import onnxruntime as ort
+
+    g, known = gt_case()
+    garb = np.where(known[..., None], g, np.uint8([0, 255, 0]))  # hole = green garbage, never the truth
+    print("providers available:", ort.get_available_providers(), "onnxruntime", ort.__version__)
+    for name, c in P12.items():
+        if only and name not in only:
+            continue
+        path = os.path.join(SPIKE, c["path"])
+        print(f"\n===== {name}  {c['path']}")
+        print("bytes", os.path.getsize(path), "sha256", sha256_of(path))
+        data = os.path.splitext(path)[0] + ".data"
+        if os.path.exists(data):
+            print("external data", os.path.basename(data), os.path.getsize(data), sha256_of(data))
+        m = onnx.load(path, load_external_data=False)
+        print("opset", [(o.domain or "ai.onnx", o.version) for o in m.opset_import], "producer", m.producer_name, m.producer_version)
+        t = time.time()
+        gm = Gen(name, "cpu")
+        print(f"cpu session create {time.time() - t:.2f}s")
+        for i in gm.sess.get_inputs():
+            print("  input ", i.name, i.type, i.shape)
+        for o in gm.sess.get_outputs():
+            print("  output", o.name, o.type, o.shape)
+        # convention search: input range x mask polarity x hole content; output scored in three scales
+        print("  convention search (MAE vs ground truth in 0..255; known = visible part, hole = hidden part)")
+        rows = []
+        for rng in ((0, 1), (-1, 1), (0, 255)):
+            for hole1 in (True, False):
+                for fill in (None, 0, 128, 255):
+                    g2 = Gen(name, "cpu", dict(inp=rng, hole1=hole1), share=gm)
+                    try:
+                        o = g2.raw(garb, known, fill)
+                    except Exception as e:
+                        print("   ", rng, "hole=1" if hole1 else "hole=0", "FAILED", str(e).splitlines()[0][:80])
+                        continue
+                    for orng in ((0, 1), (-1, 1), (0, 255)):
+                        q = to255(o, orng)
+                        ek = float(np.abs(q[known] - g[known]).mean())
+                        eh = float(np.abs(q[~known] - g[~known]).mean())
+                        rows.append((ek + eh, rng, hole1, fill, orng, ek, eh, float(o.min()), float(o.max())))
+        rows.sort(key=lambda r: r[0])
+        for r in rows[:8]:
+            print(f"    best: in {r[1]} {'hole=1' if r[2] else 'known=1'} fill={'garbage' if r[3] is None else r[3]} out {r[4]}  known MAE {r[5]:.2f}  hole MAE {r[6]:.1f}  raw out {r[7]:.2f}..{r[8]:.2f}")
+        worst = rows[-1]
+        print(f"    worst: in {worst[1]} {'hole=1' if worst[2] else 'known=1'} out {worst[4]} known MAE {worst[5]:.1f} hole MAE {worst[6]:.1f}")
+        # compare to the plausible-but-wrong runner up of the best input convention
+        b = rows[0]
+        same_in = [r for r in rows if r[1] == b[1] and r[2] == b[2] and r[3] == b[3] and r[4] == b[4]]
+        print("    chosen:", b[1], "hole=1" if b[2] else "known=1", "out", b[4])
+        # hole content sensitivity with the chosen convention
+        gb = Gen(name, "cpu", dict(inp=b[1], hole1=b[2], out=b[4], fill=b[3]), share=gm)
+        o1 = gb.raw(garb, known, None)
+        o2 = gb.raw(garb, known, 0)
+        o3 = gb.raw(garb, known, 255)
+        print("    hole content sensitivity (max abs diff of raw outputs, garbage vs black vs white):",
+              round(float(np.abs(o1 - o2).max()), 4), round(float(np.abs(o1 - o3).max()), 4), "(output units)")
+        o1 = gb.raw(garb, known, b[3])
+        q = to255(o1, b[4])
+        print("    known pixels exactly preserved after rounding:", bool(np.array_equal(q[known].astype(np.uint8), g[known])),
+              " max known abs err", int(np.abs(q[known] - g[known]).max()))
+        Image.fromarray(np.concatenate([g, np.where(known[..., None], g, 0).astype(np.uint8), q.astype(np.uint8)], 1)).save(
+            os.path.join(SPIKE, "out", "plan12", f"probe_{name}.png"))
+        if quick:
+            continue
+        # non-512 sizes (the app feeds 512)
+        shp = gm.sess.get_inputs()[0].shape
+        dyn = not all(isinstance(v, int) for v in shp)
+        print("  spatial dims dynamic in graph:", dyn)
+        for hh, ww in ((256, 256), (384, 512), (640, 640), (500, 500)):
+            try:
+                gi = np.asarray(Image.fromarray(g).resize((ww, hh)))
+                kk = np.ones((hh, ww), bool)
+                kk[:, ww * 5 // 8 :] = False
+                r = gb.raw(gi, kk, b[3])
+                print(f"    {hh}x{ww}: ran, out {r.shape}")
+            except Exception as e:
+                print(f"    {hh}x{ww}: REJECTED {str(e).splitlines()[0][:110]}")
+        # timing
+        rng_ = np.random.default_rng(0)
+        img = rng_.integers(0, 255, (W, W, 3), dtype=np.uint8)
+        kn = np.zeros((W, W), bool)
+        kn[:, :256] = True
+        for prov in ("cpu", "dml"):
+            try:
+                t = time.time()
+                mm = Gen(name, prov, dict(inp=b[1], hole1=b[2], out=b[4], fill=b[3]))
+                load = time.time() - t
+                t = time.time()
+                mm(img, kn)
+                first = time.time() - t
+                mm(img, kn)
+                ts = []
+                for _ in range(5):
+                    t = time.time()
+                    mm(img, kn)
+                    ts.append(time.time() - t)
+                line = f"  timing {prov}: session create {load:.2f}s  first run {first:.2f}s  mean {np.mean(ts)*1000:.0f} ms (min {np.min(ts)*1000:.0f}, max {np.max(ts)*1000:.0f})"
+                if prov == "dml":  # is the DirectML output correct? compare with CPU on the photo
+                    od = mm.raw(garb, known, b[3])
+                    d = np.abs(to255(od, b[4]) - q)
+                    line += f"  | DML vs CPU on photo: mean abs diff {d.mean():.2f}, max {d.max():.0f}"
+                    ed = float(np.abs(to255(od, b[4])[~known] - g[~known]).mean())
+                    line += f", DML hole MAE {ed:.1f}"
+                print(line)
+            except Exception as e:
+                print(f"  timing {prov}: FAILED {str(e).splitlines()[0][:200]}")
+
+
 # --------------------------------------------------------------------------- timing
 def timing():
     rng = np.random.default_rng(0)
@@ -390,6 +577,68 @@ def sheets(provider_for=None, only=None):
             print(*r)
 
 
+# --------------------------------------------------------------------------- plan 12 sheets
+def load_images12():
+    """The six images of the first spike plus two illustration-like stand-ins that ship inside
+    scikit-image (no downloads): `logo` (flat-colour logo on white) and `horse` (black silhouette on
+    white). They are NOT anime or manga; no such image exists in the allowed offline set."""
+    import skimage.data as sd
+
+    imgs = load_images()
+    logo = np.asarray(sd.logo()).astype(np.float32)  # 500x500 RGBA, transparent background
+    a = logo[..., 3:4] / 255.0
+    imgs["logo_flat"] = np.ascontiguousarray((logo[..., :3] * a + 255 * (1 - a)).round().astype(np.uint8))
+    horse = np.asarray(sd.horse()).astype(bool)  # 328x400 silhouette; True = horse
+    imgs["horse_silhouette"] = np.ascontiguousarray(np.stack([np.where(horse, 0, 255).astype(np.uint8)] * 3, -1))
+    return imgs
+
+
+def sheets12(only=None, margins_list=(64, 192), modes=("right", "all4")):
+    out12 = os.path.join(OUT, "plan12")
+    os.makedirs(out12, exist_ok=True)
+    names = ["lama", "migan"] + list(P12)
+    models = {}
+    for n in names:
+        if n == "lama":
+            models[n] = Model("lama", "cpu")
+        elif n == "migan":
+            models[n] = Model("migan", "dml")
+        else:
+            models[n] = Gen(n, P12[n].get("prov", "cpu"))
+    groups = {"a": ["lama", "migan", "lama_manga", "cv_lama"], "b": ["lama", "qc_lama", "aot", "qc_aot"]}
+    images = load_images12()
+    log = open(os.path.join(out12, "sheets12_log.txt"), "a")
+    for iname, src in images.items():
+        if only and iname not in only:
+            continue
+        for mode in modes:
+            res = {}
+            for mg in margins_list:
+                mgn = (0, 0, mg, 0) if mode == "right" else (mg, mg, mg, mg)
+                for mn in names:
+                    f = os.path.join(out12, f"{iname}_{mode}_{mg}_{mn}.png")
+                    st = {}
+                    t = time.time()
+                    o = outpaint(src, mgn, models[mn], 1, st)
+                    dt = time.time() - t
+                    Image.fromarray(o).save(f)
+                    res[(mg, mn)] = (o, dt, st.get("windows", 0))
+                    log.write("\t".join(map(str, (iname, mode, mg, mn, st.get("windows", 0), st.get("relaxed", 0), round(dt, 1)))) + "\n")
+                    log.flush()
+            for gk, gn in groups.items():
+                rows = []
+                tw = 400
+                for mg in margins_list:
+                    mgn = (0, 0, mg, 0) if mode == "right" else (mg, mg, mg, mg)
+                    base = np.pad(src, ((mgn[1], mgn[3]), (mgn[0], mgn[2]), (0, 0)), mode="reflect")
+                    row = [tile(base, tw, f"{iname} +{mg} {mode}: mirror prefill")]
+                    for mn in gn:
+                        o, dt, nw = res[(mg, mn)]
+                        row.append(tile(o, tw, f"{mn} ({models[mn].provider}) {dt:.1f}s {nw}w"))
+                    rows.append(row)
+                sheet(os.path.join(out12, f"sheet_{iname}_{mode}_{gk}.png"), len(rows), 1 + len(gn), rows, tw)
+
+
 # --------------------------------------------------------------------------- k experiment
 def big_photo(width=3000):
     """No 3000 px photo exists in the allowed offline set. Lanczos-upsample a bundled photo
@@ -430,6 +679,12 @@ def kexp(provider_for=None):
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if cmd in ("probe12", "conv12"):
+        probe12(sys.argv[2:] or None, quick=(cmd == "conv12"))
+        sys.exit(0)
+    if cmd == "sheets12":
+        sheets12(sys.argv[2:] or None)
+        sys.exit(0)
     if cmd in ("probe", "all"):
         probe()
     if cmd in ("timing", "all"):

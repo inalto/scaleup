@@ -179,3 +179,154 @@ and was **not verified** at 1:1.
 - **Open items, unverified:** anime frames not tested; seams at 1:1 not inspected; no feathering tried (only unknown
   pixels written as specified; no obvious seam was visible at sheet scale except the gravel/LaMa band); LaMa fp16
   and CUDA provider not tried; training-data licence questions in section 1.
+
+
+---
+
+## Plan 12 candidates (2026-11-24)
+
+Five more inpainting candidates for the canvas-studio plan (D5, D6, D7), measured with the same method as
+above. Code: `tools/outpaint_spike.py` (new commands `probe12`, `conv12`, `sheets12`). Scratch folder (outside the
+repository): models in `outpaint-spike/models/<name>/`, outputs in `outpaint-spike/out/plan12/`
+(`sheet_<image>_<right|all4>_<a|b>.png`, `probe12.txt`, `conv12.txt`, `sheets12_log.txt`). onnxruntime-directml
+1.24.4, Windows 11, GTX 1660 SUPER. Licence statements below are "declared by the uploader; weights and
+training-data terms not verified".
+
+### Verdicts first
+
+| Model | Verdict | One line |
+|---|---|---|
+| `lama_manga` (ogkalu LaMa manga, dynamic) | **ADD** | Clean on flat colour and silhouettes, never invented an object, runs on DirectML (298 ms vs 2.2 s CPU) with the same result as CPU. |
+| `cv_lama` (OpenCV LaMa) | SKIP | Same network family as the LaMa already shipped, smaller, but CPU only and drifts to a dark teal/green cast from +192. |
+| `aot` (ogkalu AOT-GAN) | SKIP | Small and fast (112 ms DirectML), fine on flat shapes and at +64, but smears, white strips and hard edges at +192 on photos. |
+| `qc_lama` (Qualcomm LaMa-Dilated zip) | SKIP | Invents human faces at +192 (three different images). GPU works but is no reason to add zip support. |
+| `qc_aot` (Qualcomm AOT-GAN zip) | SKIP | Colour-smear garbage strips from +64 on some images, worse at +192. |
+
+D7 (Qualcomm zips): **not justified.** Both zips do run on DirectML (about 150 ms per window against 1.3 to 2.3 s on CPU),
+but the better result is `lama_manga`, a plain single `.onnx` that also runs on DirectML. No zip or
+external-data support is needed in the registry.
+
+### Sources, sizes, hashes (all sizes equal the expected ones)
+
+| Key | URL (pinned commit) | Bytes | sha256 | Declared licence |
+|---|---|---|---|---|
+| `lama_manga` | `huggingface.co/ogkalu/lama-manga-onnx-dynamic` @ `ee4ed4a8447b6730fc41d34f90876b6c48af925a`, `lama-manga-dynamic.onnx` | 206,291,843 | `de31ffa5ba26916b8ea35319f6c12151ff9654d4261bccf0583a69bb095315f9` | Apache-2.0, declared by the uploader; weights and training-data terms not verified |
+| `aot` | `huggingface.co/ogkalu/aot-inpainting` @ `42ffc84ff1bd46dd95f1c5a41e83ee7e98f39189`, `aot.onnx` | 23,068,213 | `ffd39ed8e2a275869d3b49180d030f0d8b8b9c2c20ed0e099ecd207201f0eada` | MIT tag, declared by the uploader; weights and training-data terms not verified |
+| `cv_lama` | `huggingface.co/opencv/inpainting_lama` @ `aee6d22f0a13e5e35af1c9a1c3afd62841fc6f3f`, `inpainting_lama_2025jan.onnx` | 92,591,623 | `7df918ac3921d3daf0aae1d219776cf0dc4e4935f035af81841b40adcf74fdf2` | Apache, declared by the uploader; weights and training-data terms not verified |
+| `qc_lama` zip | `qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/lama_dilated/releases/v0.67.0/lama_dilated-onnx-float.zip` | 169,631,704 | `516c324a61cf70bc210ee38ada4c2a2361c6f1afc422e144bdec85c4d9b2da07` | not read |
+| inside it | `lama_dilated.onnx` / `lama_dilated.data` (plus `metadata.json`) | 1,044,115 / 182,568,704 | `199f4e84695b7bf9afba3c803fb8ba341b459d9e699f90b66b8f6df4bfab5d2f` / `689b3d1a87b906cb0ff9a42394c187a86ceae369061384175df821976b5b7d9b` | |
+| `qc_aot` zip | `.../models/aotgan/releases/v0.67.0/aotgan-onnx-float.zip` | 56,621,001 | `aed3349473be5dc525eefdc63547b5708fe29a5fe6bec0090a869f60f257e9a2` | not read |
+| inside it | `aotgan.onnx` / `aotgan.data` (plus `metadata.json`) | 659,913 / 60,793,600 | `97891cada506ddd4fc46cd3ff9fad2b5e6622319baa0a08314cecf40c277f378` / `9a5fb31bff02a111e16979ef8a463e3d919688343fac1a8268c2c5b2241f05f3` | |
+
+Zips were unzipped with Python `zipfile` into their own folders; only the `.onnx` files were loaded (the `.data` file by
+ONNX Runtime as external data). Nothing else was run.
+
+### Facts
+
+| | `lama_manga` | `aot` | `cv_lama` | `qc_lama` | `qc_aot` |
+|---|---|---|---|---|---|
+| Opset (ai.onnx) | 18 | 18 | 21 | 21 | 21 |
+| Input `image` | float32 `[batch,3,h,w]` | float32 `[batch,3,h,w]` | float32 `[batch,3,512,512]` | float32 `[1,3,512,512]` | float32 `[1,3,512,512]` |
+| Input `mask` | float32 `[batch,1,h,w]` | float32 `[batch,1,h,w]` | float32 `[batch,1,512,512]` | float32 `[1,1,512,512]` | float32 `[1,1,512,512]` |
+| Output | `inpainted` float32 `[batch,3,h,w]` | `inpainted` float32 `[batch,3,h,w]` | `output` float32 `[batch,3,512,512]` | `painted_image` float32 `[1,3,512,512]` | `painted_image` float32 `[1,3,512,512]` |
+| Size | dynamic | dynamic | fixed 512 | fixed 512 | fixed 512 |
+| Input range | 0..1 | **-1..1** | 0..1 | 0..1 | 0..1 |
+| Mask polarity | 1 = hole | 1 = hole | 1 = hole | 1 = hole | 1 = hole |
+| Output range | 0..1 | -1..1 | **0..255** | 0..1 | 0..1 |
+| Channel order | RGB | RGB | RGB | RGB | RGB |
+| Hole pixels in `image` | ignored (identical output for garbage, black, white) | **used**: must be mid grey (0.0 in -1..1); garbage green gave known MAE 22, grey 4.5 | ignored | ignored | ignored |
+| Known pixels in output | returned exactly | **changed** (known-area MAE 4.5): composite the original back | returned exactly | returned exactly | returned exactly |
+
+How range and polarity were found (`conv12`): a real photo (`astronaut`, 512x512) with the right 192 columns and an interior
+130x130 square hidden, so the hidden pixels have a ground truth. Every combination of input range (0..1, -1..1,
+0..255) x polarity (hole=1, known=1) x hole content (green garbage, black, mid grey, white) was run and the output
+was scored on three output scales against the original (mean absolute error on the visible part and on the hidden part).
+Winners: `lama_manga` 0..1 / hole=1 gives known 0.00 and hidden 49.7 (the same model fed -1..1 scores 87.3 on the hidden
+part, the inverted mask 70.3 on the visible part, i.e. it repaints it); `cv_lama` 0..1 / hole=1 with output 0..255 gives
+0.00 / 55.8 (raw output range 0..255 observed); `qc_lama` 0..1 / hole=1 gives 0.00 / 50.9; `qc_aot` 0..1 / hole=1 gives
+0.00 / 60.6; `aot` -1..1 / hole=1 / grey hole gives 4.47 / 52.8 (best of 24; 0..1 input with a black hole is second at
+6.78 / 57.8 and is rejected because its raw output only spans -0.40..1.00 and looks washed out). The vendor
+`metadata.json` of both Qualcomm zips says 0..1 RGB in and out; the experiment agrees, the mask polarity is not stated
+there and came from the experiment. A first version of the probe left the true pixels in the hole of the test image
+and so flattered `aot` and `qc_aot`; it was fixed (hole = green garbage) and re-run before the numbers above were taken
+(first run kept as `probe12_run1_leaky.txt`; its timings are still valid and are used below).
+
+### Timing, one 512x512 window (half known), 5 runs after warm-up
+
+| Model | CPU load | CPU window | DirectML load | DirectML first run | DirectML window | DirectML result |
+|---|---|---|---|---|---|---|
+| `lama_manga` | 19.5 s | 2195 ms (2013 to 2446) | 16.4 s | 5.8 s | **298 ms** | same as CPU (mean abs diff 0.00, max 1 of 255) |
+| `aot` | 0.8 s | 1057 ms | 0.7 s | 1.7 s | **112 ms** | same as CPU (0.00, max 1) |
+| `cv_lama` | 21.8 s | 2916 ms | n/a | n/a | **fails** (MatMul `/generator/model/model.5/conv1/ffc/convg2g/fu/rttn/MatMul_5`, the same node that stops the Carve LaMa) | n/a |
+| `qc_lama` | 1.1 s | 1335 ms | 1.3 s | 0.4 s | **151 ms** | same as CPU (0.00, max 1) |
+| `qc_aot` | 0.3 s | 2286 ms | 4.6 s | 0.4 s | **149 ms** | same as CPU (0.00, max 1) |
+
+Load times of the two big graphs (`lama_manga`, `cv_lama`) are 16 to 22 s every start (the first spike saw 19 s for LaMa), so the
+app should create the session once and keep it. Other window sizes (app feeds 512; `conv12` and `probe12`):
+`lama_manga` ran at 256x256, 384x512 and 640x640 but **rejected 500x500** (a Mul node, 500 against 504, so sizes need
+to be a multiple of 8); `aot` ran at all four sizes including 500x500; `cv_lama`, `qc_lama`, `qc_aot` accept 512x512 only.
+
+### Contact sheets
+
+Eight images, +64 and +192 px, one side (right) and four sides, `outpaint()` unchanged, k=1, `lama` on CPU, `migan` on
+DirectML, new models on DirectML except `cv_lama` (CPU): 32 sheets in `out/plan12/`. Images: the six of the first spike
+plus two **stand-ins** for illustration from scikit-image's bundled data (no downloads): `logo_flat` (the scikit-image
+logo on white, flat colour with fine line work) and `horse_silhouette` (black shape on white, inverted to a white horse on
+black; 328x400). They are **not** anime or manga. Judged by eye on tiles downscaled to 400 px wide, so seams at 1:1 were
+**not** inspected.
+
+| Image / case | `lama_manga` | `cv_lama` | `aot` | `qc_lama` | `qc_aot` | (LaMa, for reference) |
+|---|---|---|---|---|---|---|
+| `rocket_sky` right +64 / +192 | clean; at +192 darkens to a flat dark blue | clean at +64, like LaMa | clean at +64; at +192 a translucent patch | small dark smear at +64 and a blotch at +192 | dirty smear at +64, white smear at +192 | clean, fades dark |
+| `chelsea_cat` right +64 / +192 | +64 clean; +192 a grey-beige textured slab | +64 ok; +192 greenish grey slab | +64 ok; +192 pale smear | +64 ok; +192 slight blotch | +64 ok; +192 blocky | smooth pink slab |
+| `coffee_wall` all four +192 | smooth orange blur frame, no objects | strong teal/grey colour frame, white halo | lavender-white frame, hard bands | **invents a dark human face** at the left, orange blob | garbled bands | grey-brown vignette, best of the set |
+| `astronaut_cut` right +192 | wall fades to dark red-brown, no edge | wall goes green-grey | **hard black wall edge** | dark band | coloured streak strip | clean fade |
+| `astronaut_cut` all four +192 | dark red-brown vignette, flag blurred, no people | green-grey cast | not viewed | not viewed | not viewed | blue-grey, flag blurred |
+| `gravel_texture` right +64 / +192 | faint regular hatch pattern, not gravel | thin pale line at +64, dark green slab at +192 | dark band, then a white strip | blurry grey band | orange smear | flat grey slab, visible seam |
+| `logo_flat` right +192 | stays white, faint warm tint at the far edge | dark grey-green cloud blob | stays white, **cleanest** | pale grey cloud | brown smear | stays white |
+| `logo_flat` all four +192 | white, faint yellow patches | teal frame with a white halo | not viewed | not viewed | not viewed | white, faint haze |
+| `horse_silhouette` all four +64 / +192 | black, no artefacts | dark green haze at +192 | black, clean (best here with `lama_manga`) | **dark human face** at +192, grey haze | white/colour garbage at +192 | black, one pink pixel |
+| `screenshot_text` all four +192 | white top with pink cast, dark sides | dark teal frame | white top, black sides, grey smudge | **two faces** at the top-left | colour garbage | white top, black sides, blur |
+
+Failure modes: `lama_manga` fails by smoothing and a warm cast (like LaMa, never inventing); `cv_lama` fails by colour
+drift to teal; `aot` fails by sharp unrelated bands; `qc_lama` fails by inventing faces; `qc_aot` fails by garbage. Not every
+cell above was viewed for all eight images: `astronaut_cut` all four was viewed for `lama_manga` and `cv_lama` only, `logo_flat`
+all four for `lama_manga` and `cv_lama` only, and the remaining sheets (`rocket_sky` and `chelsea_cat` four sides,
+`coffee_wall` right, `screenshot_text` right, `horse_silhouette` right) were generated but not looked at.
+
+### Per model
+
+**ADD `lama_manga`.** Rust side needs: file `lama-manga-dynamic.onnx` (206,291,843 bytes); inputs `image` float32
+`[N,3,H,W]` RGB 0..1 and `mask` float32 `[N,1,H,W]` with **1.0 = hole**, 0.0 = known; output `inpainted` float32 `[N,3,H,W]`
+RGB **0..1** (multiply by 255, clip, round; today's `Layout::LaMa` assumes 0..255, so it needs an output-scale field or a
+third layout); dynamic spatial size, feed 512x512 (sizes must be multiples of 8); hole content ignored; known pixels
+returned unchanged; **GPU-capable** (DirectML, 298 ms against 2195 ms on CPU, same output); keep the session alive (16 to
+20 s load). Good for (user text): "Illustrations, logos and flat-colour images; also fast on the GPU." Honest limits: the
+"illustration" claim rests on two stand-ins, no real anime or manga was tested; on photos it is about as good as LaMa but
+carries a warm red-brown cast at +192 on four sides; textures (gravel) fail.
+
+**SKIP `cv_lama`.** Same family and the same convention as the shipped LaMa (0..1 in, hole=1, output 0..255, fixed 512,
+fits the existing `Layout::LaMa`), 93 MB against 208 MB, but CPU only (the same MatMul fails on DirectML), 2.9 s per
+window, and a visible teal/green colour drift at +192 on `astronaut_cut`, `coffee_wall`, `chelsea_cat`, `gravel_texture`,
+`logo_flat` and `horse_silhouette`. It does not differ usefully from LaMa except for being worse and smaller.
+
+**SKIP `aot`** (owner may reverse for a "small and quick" slot). Convention if added: `image` -1..1 with the hole set
+to 0.0 (mid grey), `mask` 1 = hole, output -1..1, known pixels not preserved (composite them back), dynamic size, GPU
+capable (112 ms). It is clean on flat shapes and at +64, but at +192 on photos it produced pale smears, a hard black edge
+and a white strip; provenance of the weights is unclear (MIT tag declared by the uploader). Not different enough in a
+good way to earn a catalogue slot.
+
+**SKIP `qc_lama`.** Float 0..1, hole=1, output 0..1, fixed 512, external `.data` file, GPU-capable (151 ms against 1335 ms
+CPU, same result). It invented a recognisable human face in three separate images (`coffee_wall`, `horse_silhouette`,
+`screenshot_text`, all at +192), which a canvas extender must not do. D7: the zip support is not justified.
+
+**SKIP `qc_aot`.** Float 0..1, hole=1, output 0..1, fixed 512, external `.data` file, GPU-capable (149 ms). Output quality is
+the worst of the set: coloured smears at the borders from +64 on `rocket_sky` and `gravel_texture`, garbage frames at
++192. D7: not justified.
+
+### Not tested
+
+Real anime or manga frames (only the two stand-ins above); seams at 1:1; the k > 1 context factor for any new model;
+text on the frame edge; CUDA or other execution providers; fp16 variants; DirectML on any GPU other than the
+GTX 1660 SUPER; non-Windows platforms; the Qualcomm licence and every model's weights and training-data terms (only the
+uploaders' declarations are recorded); several sheets listed above as generated but not viewed; memory use.
