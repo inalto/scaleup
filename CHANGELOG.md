@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-24
+
 ### Added
 
 - App: the Extend canvas section has handles on the border of the picture. Drag a side or a corner outward to
@@ -149,7 +151,8 @@ Not published as a release; its content shipped in 0.2.0.
 - Model registry: embedded catalogue (`models/manifest.json`), sha256-verified cancellable
   downloads, bundled license texts, import of ncnn model folders.
 
-[Unreleased]: https://github.com/inalto/scaleup/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/inalto/scaleup/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/inalto/scaleup/releases/tag/v0.4.0
 [0.3.2]: https://github.com/inalto/scaleup/releases/tag/v0.3.2
 [0.3.1]: https://github.com/inalto/scaleup/releases/tag/v0.3.1
 [0.3.0]: https://github.com/inalto/scaleup/releases/tag/v0.3.0

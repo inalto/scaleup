@@ -3981,7 +3981,7 @@ dependencies = [
 
 [[package]]
 name = "scaleup-app"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "arboard",
  "eframe",
@@ -3999,7 +3999,7 @@ dependencies = [
 
 [[package]]
 name = "scaleup-cli"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -4016,7 +4016,7 @@ dependencies = [
 
 [[package]]
 name = "scaleup-core"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "dirs",
  "image",
@@ -4033,7 +4033,7 @@ dependencies = [
 
 [[package]]
 name = "scaleup-wgpu"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "bytemuck",
  "half",
