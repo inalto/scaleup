@@ -5,7 +5,7 @@
 use eframe::egui::{self, Rect, TextureHandle, TextureOptions, Vec2, vec2};
 use scaleup_core::{Margins, Registry};
 
-use crate::state::Settings;
+use crate::state::{self, Settings};
 use crate::ui::canvas_view::{self, EditInput, EditView, ExtendKey, Stage, StageFacts};
 use crate::ui::theme;
 use crate::worker::Which;
@@ -109,6 +109,8 @@ pub struct StageInput<'a> {
     pub running: bool,
     /// The history step on screen, as its chip names it; `None` when the picture is not a step.
     pub step: Option<String>,
+    /// The settings that history step was made with: "Adjust canvas" puts its extension back.
+    pub step_settings: Option<&'a Settings>,
 }
 
 /// Zooms about the pointer with the scroll wheel, between the view's limits.
@@ -315,6 +317,11 @@ impl CompareView {
                         .on_hover_text("Change the added canvas and run again")
                         .clicked()
                 {
+                    // A history step goes on from its own fill and margins, which may not be the
+                    // sidebar's (after Try several, or Back to an older step).
+                    if let Some(step) = input.step_settings {
+                        *input.settings = state::with_extend_of(input.settings, step);
+                    }
                     self.editing = true;
                     changed = true;
                 }

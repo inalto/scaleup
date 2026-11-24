@@ -789,7 +789,32 @@ impl AppState {
             ..step.settings.clone()
         })
     }
+}
 
+/// "Adjust canvas" on a history step: `settings` with the extension `step` (the step's settings)
+/// was made with: its mode, the four side values, linked, aspect, fill and inpainting model. The
+/// edit stage then previews, and the next run makes, the fill on screen rather than the one in the
+/// sidebar. Everything else stays: Extend on or off, the scale, the format, the upscaling model.
+/// A step that did not extend has no extension to give, so `settings` comes back as it is.
+pub fn with_extend_of(settings: &Settings, step: &Settings) -> Settings {
+    if !step.extend_enabled {
+        return settings.clone();
+    }
+    Settings {
+        extend_mode: step.extend_mode,
+        extend_left: step.extend_left,
+        extend_top: step.extend_top,
+        extend_right: step.extend_right,
+        extend_bottom: step.extend_bottom,
+        extend_linked: step.extend_linked,
+        extend_aspect: step.extend_aspect,
+        extend_fill: step.extend_fill.clone(),
+        extend_model: step.extend_model.clone(),
+        ..settings.clone()
+    }
+}
+
+impl AppState {
     /// The status bar text.
     pub fn status_line(&self) -> String {
         if self.stopping {
@@ -1790,6 +1815,41 @@ mod tests {
         assert_eq!(restored.scale, None);
         assert!(!restored.hub.commercial_only && !restored.show_nc_models);
         assert_eq!(st.restore_settings(1), None);
+    }
+
+    #[test]
+    fn with_extend_of_takes_the_steps_extension_and_nothing_else() {
+        let mut step = extending(ExtendMode::Percent, [5.0, 6.0, 7.0, 8.0], "ai");
+        step.extend_linked = false;
+        step.extend_aspect = (4, 3);
+        step.extend_model = "migan-512-places2".into();
+        step.scale = None;
+        step.format = "webp".into();
+        step.model_id = "realesrgan-x4plus".into();
+        let now = Settings {
+            extend_enabled: true,
+            extend_fill: "mirror".into(),
+            scale: Some(2),
+            ..Settings::default()
+        };
+        let s = with_extend_of(&now, &step);
+        assert_eq!(s.extend_mode, ExtendMode::Percent);
+        assert_eq!(s.extend_sides(), [5.0, 6.0, 7.0, 8.0]);
+        assert!(!s.extend_linked);
+        assert_eq!(s.extend_aspect, (4, 3));
+        assert_eq!(s.extend_fill, "ai");
+        assert_eq!(s.extend_model, "migan-512-places2");
+        // The rest is the sidebar's.
+        assert!(s.extend_enabled);
+        assert_eq!(s.scale, Some(2));
+        assert_eq!(s.format, "png");
+        assert_eq!(s.model_id, now.model_id);
+        // A step that did not extend gives nothing.
+        let upscaled = Settings {
+            extend_fill: "edge".into(),
+            ..Settings::default()
+        };
+        assert_eq!(with_extend_of(&now, &upscaled), now);
     }
 
     #[test]

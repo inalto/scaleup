@@ -656,6 +656,12 @@ impl App {
                         single,
                         running: self.state.status.is_running(),
                         step: history::shown_text(&self.state.history),
+                        step_settings: self
+                            .state
+                            .history
+                            .shown()
+                            .and_then(|at| self.state.history.steps().get(at))
+                            .map(|step| &step.settings),
                     },
                 );
                 // The sidebar was drawn before the image area: draw the frame again, so its fields
@@ -977,6 +983,34 @@ mod tests {
         assert!(!state.fill_queue);
         // The list keeps its ticks for the next try.
         assert!(!disabled(&harness, "Try 2 fills"));
+    }
+
+    /// After a Try several queue, "Adjust canvas" on an earlier step edits that step's fill, not
+    /// the one still in the sidebar.
+    #[test]
+    fn adjust_canvas_on_a_step_puts_its_fill_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = try_harness(dir.path());
+        // Mirror and Edge pixels, not the LaMa fill of the sidebar.
+        click(&mut harness, "LaMa (512)");
+        click(&mut harness, "Mirror");
+        click(&mut harness, "Edge pixels");
+        click(&mut harness, "Try 2 fills");
+        assert!(wait_for(&mut harness, |a| {
+            !a.state.status.is_running() && a.state.history.steps().len() == 2
+        }));
+        assert_eq!(harness.state().state.settings.extend_fill, "ai");
+        harness.get_by_label("Back").click();
+        settle(&mut harness);
+        assert_eq!(harness.state().state.history.shown(), Some(0));
+        click(&mut harness, "Adjust canvas");
+        assert!(harness.state().compare.edit_layout().is_some());
+        let s = &harness.state().state.settings;
+        assert_eq!(s.extend_fill, "mirror");
+        assert_eq!(s.extend_left, 4.0);
+        assert_eq!(s.scale, None);
+        let fill = harness.get_by_label("Fill").value().unwrap_or_default();
+        assert_eq!(fill, "Mirror");
     }
 
     #[test]

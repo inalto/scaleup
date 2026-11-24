@@ -151,7 +151,9 @@ hatched tint labelled with the model, for example `AI fill · LaMa (512)`.
 After a run, the image area shows the before and after pictures. Changing the extension shows the planned
 canvas again. **Adjust canvas** returns to the planned canvas, **Show result** returns to the last result,
 and **Extend canvas…**, shown while Extend is off and an image is loaded, turns Extend on and shows the
-planned canvas. A folder has no picture to drag, so it has no canvas to edit.
+planned canvas. On a history step, **Adjust canvas** first puts that step's extension back into the sidebar
+(its margins, fill and inpainting model, not its scale or format), so the planned canvas and the next run
+continue from the step on screen. A folder has no picture to drag, so it has no canvas to edit.
 
 ### Trying several fills
 

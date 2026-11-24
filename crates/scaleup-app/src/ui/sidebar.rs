@@ -1159,6 +1159,7 @@ mod tests {
                             single: true,
                             running: false,
                             step: None,
+                            step_settings: None,
                         },
                     );
                 },
