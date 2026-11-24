@@ -20,6 +20,8 @@ pub const HIT_SIZE: f32 = 24.0;
 /// this many times the side it extends, and the canvas at most `MAX_CANVAS_SIDE` per side.
 const MAX_MARGIN_FACTOR: i64 = 4;
 const MAX_CANVAS_SIDE: i64 = 16384;
+/// A drag is bounded to this many source pixels, far beyond any limit, before it is used.
+const PIXEL_BOUND: f64 = 2_147_483_648.0;
 
 // ------------------------------------------------------------------------------------- layout
 
@@ -180,12 +182,24 @@ pub fn handles(canvas: Rect) -> [(Handle, Rect); 8] {
 
 /// The handle under `pos`, grabbed within a [`HIT_SIZE`] square around it. Where areas overlap a
 /// corner wins over a side; between two of a kind the nearer one wins (small canvases).
+///
+/// Along an edge a handle's area reaches at most a third of the edge's length each way, so on a
+/// canvas smaller than about 72 points the middle third of every side stays reachable: the
+/// corners' areas cannot swallow it.
 pub fn hit(pos: Pos2, canvas: Rect) -> Option<Handle> {
+    let half = HIT_SIZE / 2.0;
+    let along_x = half.min(canvas.width() / 3.0);
+    let along_y = half.min(canvas.height() / 3.0);
     Handle::ALL
         .into_iter()
         .filter_map(|h| {
             let at = h.position(canvas);
-            Rect::from_center_size(at, Vec2::splat(HIT_SIZE))
+            let reach = match h {
+                Handle::Left | Handle::Right => vec2(half, along_y),
+                Handle::Top | Handle::Bottom => vec2(along_x, half),
+                _ => vec2(along_x, along_y),
+            };
+            Rect::from_center_size(at, reach * 2.0)
                 .contains(pos)
                 .then(|| (!h.is_corner(), (pos - at).length_sq(), h))
         })
@@ -252,6 +266,10 @@ fn axis_max(start_low: i64, start_high: i64, low: bool, high: bool, side: i64) -
 /// others go on; the growth limit is shared, so the sides stay in step.
 ///
 /// `start` is expected to resolve already; if it does not, the result is cut back until it does.
+///
+/// `start` and `scale` must be the values frozen when the drag began, with `delta_screen` the
+/// pointer's total movement since then. The layout re-fits as the margins change, so the live
+/// margins and scale would feed back into the next frame's result.
 pub fn drag(
     handle: Handle,
     start: Margins,
@@ -262,7 +280,10 @@ pub fn drag(
 ) -> Margins {
     let to_pixels = |v: f32| {
         if scale.is_finite() && scale > 0.0 && v.is_finite() {
-            (f64::from(v) / f64::from(scale)).round() as i64
+            // Bounded so that negating it below can never overflow.
+            (f64::from(v) / f64::from(scale))
+                .round()
+                .clamp(-PIXEL_BOUND, PIXEL_BOUND) as i64
         } else {
             0
         }
@@ -683,6 +704,23 @@ mod tests {
     }
 
     #[test]
+    fn hit_keeps_every_side_reachable_on_small_canvases() {
+        for (w, h) in [
+            (200.0, 30.0),
+            (200.0, 20.0),
+            (30.0, 200.0),
+            (20.0, 200.0),
+            (30.0, 30.0),
+        ] {
+            let canvas = rect(100.0, 200.0, 100.0 + w, 200.0 + h);
+            for handle in Handle::ALL {
+                let at = handle.position(canvas);
+                assert_eq!(hit(at, canvas), Some(handle), "{w}x{h} {handle:?}");
+            }
+        }
+    }
+
+    #[test]
     fn hit_on_a_tiny_canvas_takes_the_nearest_of_a_kind() {
         // 8x8: every handle's area covers the whole canvas; corners win, nearest corner first.
         let tiny = rect(0.0, 0.0, 8.0, 8.0);
@@ -960,6 +998,51 @@ mod tests {
     }
 
     #[test]
+    fn drag_survives_absurd_deltas() {
+        let z = Margins::default();
+        let huge = [-3e38, 3e38, f32::MIN, f32::MAX];
+        let bad = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
+        let all = DragMods {
+            all_sides: true,
+            mirror: true,
+        };
+        for handle in Handle::ALL {
+            for mods in [no_mods(), all] {
+                for dx in huge.into_iter().chain(bad) {
+                    for dy in [dx, 0.0, 1e30] {
+                        for scale in [1.0, 1e-30, f32::MIN_POSITIVE] {
+                            let out = drag(handle, z, vec2(dx, dy), scale, mods, SRC);
+                            assert!(resolves(out, SRC), "{handle:?} {dx} {dy} {scale}: {out:?}");
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            go(Handle::Left, z, -3e38, 0.0, 1.0, no_mods()),
+            m(400, 0, 0, 0)
+        );
+        assert_eq!(go(Handle::Right, z, f32::NAN, 0.0, 1.0, no_mods()), z);
+    }
+
+    #[test]
+    fn shift_stops_everything_when_one_axis_is_already_at_its_limit() {
+        // Top and bottom are at 4x the height (200): the shared growth limit is 0, so a Shift drag
+        // that would widen the sides leaves all four margins as they were.
+        let all = DragMods {
+            all_sides: true,
+            mirror: false,
+        };
+        let start = m(0, 200, 0, 200);
+        assert_eq!(go(Handle::Right, start, 30.0, 0.0, 1.0, all), start);
+        // Shrinking still works: each side then gives way by the same amount.
+        assert_eq!(
+            go(Handle::Right, start, -30.0, 0.0, 1.0, all),
+            m(0, 170, 0, 170)
+        );
+    }
+
+    #[test]
     fn drag_on_a_tiny_source_always_resolves() {
         let tiny = [20, 20];
         let all = DragMods {
@@ -1040,6 +1123,20 @@ mod tests {
             };
             let scale = 0.1 + lcg(&mut s, 100) as f32 / 10.0;
             let out = drag(handle, start, delta, scale, mods, source);
+            if !mods.all_sides && !mods.mirror {
+                let moved = handle.sides();
+                let before = [start.left, start.top, start.right, start.bottom];
+                let after = [out.left, out.top, out.right, out.bottom];
+                for (i, moves) in [moved.left, moved.top, moved.right, moved.bottom]
+                    .into_iter()
+                    .enumerate()
+                {
+                    assert!(
+                        moves || before[i] == after[i],
+                        "{handle:?} moved side {i}: {start:?} to {out:?}"
+                    );
+                }
+            }
             assert!(
                 resolves(out, source),
                 "{source:?} {start:?} {handle:?} {delta:?} {mods:?} {scale} gave {out:?}"
