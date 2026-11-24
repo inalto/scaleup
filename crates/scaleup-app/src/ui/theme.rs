@@ -79,6 +79,53 @@ pub fn stage_fill(visuals: &egui::Visuals) -> Color32 {
     }
 }
 
+/// The translucent dark ground of labels and chips drawn on the picture; white text reads on it.
+pub const OVERLAY: Color32 = Color32::from_black_alpha(140);
+/// The dark edge under white marks on the picture (split line, knob, handles, outlines): they stay
+/// visible on a bright picture.
+pub const ON_IMAGE_EDGE: Color32 = Color32::from_black_alpha(110);
+
+/// The two squares of the checkerboard that stands for transparency: close in tone, so it stays
+/// quiet next to the picture.
+pub fn checker_colors(visuals: &egui::Visuals) -> [Color32; 2] {
+    if visuals.dark_mode {
+        [Color32::from_gray(52), Color32::from_gray(68)]
+    } else {
+        [Color32::from_gray(222), Color32::from_gray(242)]
+    }
+}
+
+/// The tint and the hatch lines of canvas that AI inpainting will fill: a faint grey over the
+/// stage, so it reads as "to be made" and not as a colour.
+pub fn hatch_colors(visuals: &egui::Visuals) -> (Color32, Color32) {
+    if visuals.dark_mode {
+        (Color32::from_white_alpha(10), Color32::from_white_alpha(26))
+    } else {
+        (Color32::from_black_alpha(14), Color32::from_black_alpha(30))
+    }
+}
+
+/// A chip on the picture: white text on the overlay ground, or on `fill` (`DANGER` for a problem).
+pub fn overlay_chip(ui: &mut egui::Ui, text: &str, fill: Color32) -> egui::Response {
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(6, 3))
+        .show(ui, |ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(text).color(Color32::WHITE)).selectable(false),
+            )
+        })
+        .response
+}
+
+/// A button on the picture, in the chips' look.
+pub fn overlay_button<'a>(text: &str) -> egui::Button<'a> {
+    egui::Button::new(egui::RichText::new(text).color(Color32::WHITE))
+        .fill(OVERLAY)
+        .stroke(Stroke::NONE)
+}
+
 /// A small label on a coloured, rounded ground (licence class, "NC").
 pub fn badge(ui: &mut egui::Ui, text: &str, fill: Color32) -> egui::Response {
     egui::Frame::new()

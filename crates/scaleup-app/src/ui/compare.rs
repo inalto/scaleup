@@ -1,8 +1,13 @@
-//! The before/after view: the result fills the area, the original shows left of a draggable split.
+//! The image area. It owns the previews, the zoom and the pan, and shows one of two stages: the
+//! before/after view (the result fills the area, the original shows left of a draggable split),
+//! or the edit stage of [`canvas_view`], where the border of the picture is dragged to add canvas.
 
 use eframe::egui::{self, Rect, TextureHandle, TextureOptions, Vec2, vec2};
-use scaleup_core::Margins;
+use scaleup_core::{Margins, Registry};
 
+use crate::state::Settings;
+use crate::ui::canvas_view::{self, EditInput, EditView, ExtendKey, Stage, StageFacts};
+use crate::ui::theme;
 use crate::worker::Which;
 
 const MIN_ZOOM: f32 = 0.1;
@@ -67,6 +72,12 @@ pub struct CompareView {
     split: f32,
     zoom: f32,
     pan: Vec2,
+    /// The edit stage's drag and layout.
+    edit: EditView,
+    /// The extend settings the shown result was made with, when known.
+    result_key: Option<ExtendKey>,
+    /// Since the result arrived the extension was changed or "Adjust canvas" pressed: show Edit.
+    editing: bool,
 }
 
 impl Default for CompareView {
@@ -78,7 +89,41 @@ impl Default for CompareView {
             split: 0.5,
             zoom: 1.0,
             pan: Vec2::ZERO,
+            edit: EditView::default(),
+            result_key: None,
+            editing: false,
         }
+    }
+}
+
+/// What the image area needs from the rest of the window each frame.
+pub struct StageInput<'a> {
+    /// The settings the edit stage reads and its handles write (the sidebar edits the same ones).
+    pub settings: &'a mut Settings,
+    pub registry: &'a Registry,
+    /// A single image is selected (not a folder).
+    pub single: bool,
+    /// A run or a download is in progress.
+    pub running: bool,
+}
+
+/// Zooms about the pointer with the scroll wheel, between the view's limits.
+pub fn wheel_zoom(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    rect: Rect,
+    zoom: &mut f32,
+    pan: &mut Vec2,
+) {
+    if !resp.hovered() {
+        return;
+    }
+    let delta = ui.input(|i| i.smooth_scroll_delta.y);
+    if delta != 0.0
+        && let Some(pos) = resp.hover_pos()
+    {
+        let target = (*zoom * (delta / 200.0).exp()).clamp(MIN_ZOOM, MAX_ZOOM);
+        (*zoom, *pan) = zoom_about(*zoom, *pan, rect.size(), pos - rect.min, target / *zoom);
     }
 }
 
@@ -120,32 +165,32 @@ impl CompareView {
             Which::After => {
                 self.after = Some(side);
                 self.margins = margins;
+                // A new result is shown as a result.
+                self.editing = false;
+                self.result_key = None;
+                self.edit.clear();
             }
         }
+    }
+
+    /// Remembers the settings the result just shown was made with: changing their extension later
+    /// goes back to the edit stage.
+    pub fn result_settings(&mut self, settings: &Settings) {
+        self.result_key = Some(ExtendKey::of(settings));
     }
 
     pub fn is_empty(&self) -> bool {
         self.before.is_none() && self.after.is_none()
     }
 
+    /// The layout the edit stage drew last, in screen coordinates (tests aim the pointer with it).
+    #[cfg(test)]
+    pub fn edit_layout(&self) -> Option<crate::ui::canvas_edit::CanvasLayout> {
+        self.edit.last_layout()
+    }
+
     fn handle_input(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: Rect) {
-        if resp.hovered() {
-            let delta = ui.input(|i| i.smooth_scroll_delta.y);
-            if delta != 0.0
-                && let Some(pos) = resp.hover_pos()
-            {
-                let target = (self.zoom * (delta / 200.0).exp()).clamp(MIN_ZOOM, MAX_ZOOM);
-                let (zoom, pan) = zoom_about(
-                    self.zoom,
-                    self.pan,
-                    rect.size(),
-                    pos - rect.min,
-                    target / self.zoom,
-                );
-                self.zoom = zoom;
-                self.pan = pan;
-            }
-        }
+        wheel_zoom(ui, resp, rect, &mut self.zoom, &mut self.pan);
         if resp.dragged_by(egui::PointerButton::Middle)
             || resp.dragged_by(egui::PointerButton::Secondary)
         {
@@ -158,12 +203,107 @@ impl CompareView {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) {
+    /// The stage the image area shows with these settings.
+    fn stage(&mut self, input: &StageInput<'_>) -> Stage {
+        if self.after.is_some()
+            && self
+                .result_key
+                .as_ref()
+                .is_some_and(|k| *k != ExtendKey::of(input.settings))
+        {
+            self.editing = true;
+        }
+        canvas_view::stage(StageFacts {
+            extend_on: input.settings.extend_enabled,
+            image: input.single && self.before.is_some(),
+            running: input.running,
+            has_result: self.after.is_some(),
+            editing: self.editing,
+        })
+    }
+
+    /// Draws the image area. Returns true when it changed the settings or the stage, so the rest
+    /// of the window can be drawn again with them.
+    pub fn show(&mut self, ui: &mut egui::Ui, input: StageInput<'_>) -> bool {
         let rect = ui.available_rect_before_wrap();
-        let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
-        let Some(native) = self.after.as_ref().or(self.before.as_ref()).map(|s| s.size) else {
-            return;
+        if self.stage(&input) == Stage::Edit
+            && let Some(before) = &self.before
+        {
+            let source = [before.size.x as u32, before.size.y as u32];
+            let changed = self.edit.show(
+                ui,
+                rect,
+                &mut self.zoom,
+                &mut self.pan,
+                EditInput {
+                    texture: &before.texture,
+                    source,
+                    settings: input.settings,
+                    registry: input.registry,
+                },
+            );
+            let native = EditView::canvas_pixels(input.settings, source);
+            let fit = EditView::fit_area(rect);
+            toolbar(ui, rect, fit, native, &mut self.zoom, &mut self.pan, |ui| {
+                match canvas_view::size_text(input.settings, source) {
+                    Ok(text) => theme::overlay_chip(ui, &text, theme::OVERLAY).on_hover_text(
+                        "Image size to canvas size. Drag the border to add canvas: \
+                         Shift moves every side, Alt the opposite side too.",
+                    ),
+                    Err(why) => theme::overlay_chip(ui, &why, theme::DANGER)
+                        .on_hover_text("These margins cannot be used for this image"),
+                };
+            });
+            return changed;
+        }
+        self.edit.clear();
+        let mut changed = false;
+        let image = input.single && self.before.is_some() && !input.running;
+        let adjust = image && input.settings.extend_enabled && self.after.is_some();
+        let offer = image && !input.settings.extend_enabled;
+        let Some(native) = self.show_result(ui, rect) else {
+            return false;
         };
+        toolbar(
+            ui,
+            rect,
+            rect,
+            native,
+            &mut self.zoom,
+            &mut self.pan,
+            |ui| {
+                if adjust
+                    && ui
+                        .add(theme::overlay_button("Adjust canvas"))
+                        .on_hover_text("Change the added canvas and run again")
+                        .clicked()
+                {
+                    self.editing = true;
+                    changed = true;
+                }
+                if offer
+                    && ui
+                        .add(theme::overlay_button("Extend canvas…"))
+                        .on_hover_text("Add canvas around the image by dragging its border")
+                        .clicked()
+                {
+                    input.settings.extend_enabled = true;
+                    self.editing = true;
+                    changed = true;
+                }
+            },
+        );
+        changed
+    }
+
+    /// The before/after view; returns the size of the image it fits, `None` with nothing to show.
+    fn show_result(&mut self, ui: &mut egui::Ui, rect: Rect) -> Option<Vec2> {
+        let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+        let native = self
+            .after
+            .as_ref()
+            .or(self.before.as_ref())
+            .map(|s| s.size)?;
         self.handle_input(ui, &resp, rect);
 
         let painter = ui.painter_at(rect);
@@ -202,11 +342,7 @@ impl CompareView {
                 egui::FontId::proportional(14.0),
                 egui::Color32::WHITE,
             );
-            painter.rect_filled(
-                galley_rect.expand(4.0),
-                4.0,
-                egui::Color32::from_black_alpha(140),
-            );
+            painter.rect_filled(galley_rect.expand(4.0), 4.0, theme::OVERLAY);
             painter.text(
                 pos,
                 align,
@@ -217,7 +353,7 @@ impl CompareView {
         };
         if self.after.is_some() && self.before.is_some() {
             // A dark edge under the white line and knob: they stay visible on a bright picture.
-            let edge = egui::Color32::from_black_alpha(110);
+            let edge = theme::ON_IMAGE_EDGE;
             let line = [
                 egui::pos2(split_x, rect.top()),
                 egui::pos2(split_x, rect.bottom()),
@@ -250,40 +386,50 @@ impl CompareView {
                 "Original",
             );
         }
-
-        let toolbar =
-            Rect::from_min_size(rect.left_bottom() + vec2(12.0, -40.0), vec2(220.0, 28.0));
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(toolbar));
-        let ppp = ui.ctx().pixels_per_point();
-        child.horizontal(|ui| {
-            if ui
-                .button("Fit")
-                .on_hover_text("Show the whole image")
-                .clicked()
-            {
-                self.zoom = 1.0;
-                self.pan = Vec2::ZERO;
-            }
-            if ui
-                .button("1:1")
-                .on_hover_text("One image pixel per screen pixel")
-                .clicked()
-            {
-                self.zoom = one_to_one_zoom(native, rect.size(), ppp);
-                self.pan = Vec2::ZERO;
-            }
-            // Image pixels per screen pixel, as a percentage.
-            let percent = 100.0 * self.zoom / one_to_one_zoom(native, rect.size(), ppp);
-            let text = egui::RichText::new(format!("{percent:.0}%")).color(egui::Color32::WHITE);
-            egui::Frame::new()
-                .fill(egui::Color32::from_black_alpha(140))
-                .corner_radius(4)
-                .inner_margin(egui::Margin::symmetric(6, 3))
-                .show(ui, |ui| ui.add(egui::Label::new(text).selectable(false)))
-                .response
-                .on_hover_text("Zoom: scroll to change, right-drag to move");
-        });
+        Some(native)
     }
+}
+
+/// The row of chips at the bottom of the view `rect`: Fit, 1:1 and the zoom of a `native`-sized image
+/// fitted in `fit`, then what `extra` adds (the stage's own chips).
+fn toolbar(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    fit: Rect,
+    native: Vec2,
+    zoom: &mut f32,
+    pan: &mut Vec2,
+    extra: impl FnOnce(&mut egui::Ui),
+) {
+    let bar = Rect::from_min_size(
+        rect.left_bottom() + vec2(12.0, -40.0),
+        vec2((rect.width() - 24.0).max(0.0), 28.0),
+    );
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bar));
+    let ppp = ui.ctx().pixels_per_point();
+    child.horizontal(|ui| {
+        if ui
+            .button("Fit")
+            .on_hover_text("Show the whole image")
+            .clicked()
+        {
+            *zoom = 1.0;
+            *pan = Vec2::ZERO;
+        }
+        if ui
+            .button("1:1")
+            .on_hover_text("One image pixel per screen pixel")
+            .clicked()
+        {
+            *zoom = one_to_one_zoom(native, fit.size(), ppp);
+            *pan = Vec2::ZERO;
+        }
+        // Image pixels per screen pixel, as a percentage.
+        let percent = 100.0 * *zoom / one_to_one_zoom(native, fit.size(), ppp);
+        theme::overlay_chip(ui, &format!("{percent:.0}%"), theme::OVERLAY)
+            .on_hover_text("Zoom: scroll to change, right-drag to move");
+        extra(ui);
+    });
 }
 
 #[cfg(test)]

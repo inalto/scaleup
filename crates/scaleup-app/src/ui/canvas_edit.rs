@@ -2,11 +2,8 @@
 //! writing margins back to the settings, and the texture rectangles of the mirror/edge previews.
 //! No window is needed: everything here is plain arithmetic under test.
 
-// The image view uses this module from Task 5 on; until then nothing calls it.
-#![allow(dead_code)]
-
 use eframe::egui::{CursorIcon, Modifiers, Pos2, Rect, Vec2, pos2, vec2};
-use scaleup_core::Margins;
+use scaleup_core::{MarginSpec, Margins};
 
 use crate::state::{ExtendMode, Settings};
 use crate::ui::compare::fit_rect;
@@ -407,6 +404,44 @@ pub fn current_margins(settings: &Settings, source: [u32; 2]) -> Option<Margins>
     options.margins.resolve(source[0], source[1]).ok()
 }
 
+/// The margins the edit view draws and a drag starts from: [`current_margins`] when the settings
+/// resolve, whether or not extension is on. Pixel and percent values over the limits are cut back
+/// to the limits, so the canvas still shows about what was asked (the size chip says why it
+/// cannot be used); an aspect that cannot be reached shows no margins.
+pub fn planned_margins(settings: &Settings, source: [u32; 2]) -> Margins {
+    let on = Settings {
+        extend_enabled: true,
+        ..settings.clone()
+    };
+    if let Some(m) = current_margins(&on, source) {
+        return m;
+    }
+    let spec = settings.margin_spec();
+    if let Ok(m) = spec.resolve(source[0], source[1]) {
+        // Resolves on its own: only the fill could not be read.
+        return m;
+    }
+    let px = |v: f32, side: u32| (f64::from(v.max(0.0)) * f64::from(side) / 100.0).round() as u32;
+    match spec {
+        MarginSpec::Pixels(m) => fit_limits(m, source),
+        MarginSpec::Percent {
+            left,
+            top,
+            right,
+            bottom,
+        } => fit_limits(
+            Margins {
+                left: px(left, source[0]),
+                top: px(top, source[1]),
+                right: px(right, source[0]),
+                bottom: px(bottom, source[1]),
+            },
+            source,
+        ),
+        MarginSpec::Aspect { .. } => Margins::default(),
+    }
+}
+
 /// Stores dragged pixel margins in the settings, the same fields the sidebar edits.
 ///
 /// Pixels mode stores pixels. Percent mode stores percent of the side each margin extends (left
@@ -514,7 +549,6 @@ pub fn preview_bands(source: Rect, canvas: Rect, kind: PreviewKind) -> Vec<(Rect
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scaleup_core::MarginSpec;
 
     fn m(left: u32, top: u32, right: u32, bottom: u32) -> Margins {
         Margins {
@@ -1315,6 +1349,35 @@ mod tests {
         s.extend_fill = "mirror".into();
         s.extend_enabled = false;
         assert_eq!(current_margins(&s, [200, 200]), None);
+    }
+
+    #[test]
+    fn planned_margins_follow_the_fields_even_when_they_cannot_be_used() {
+        let mut s = extending(ExtendMode::Pixels);
+        s.extend_linked = false;
+        [s.extend_left, s.extend_top, s.extend_right, s.extend_bottom] = [10.0, 20.0, 30.0, 40.0];
+        // Valid: the same as what a run would use, whether extension is on or not.
+        assert_eq!(planned_margins(&s, [300, 200]), m(10, 20, 30, 40));
+        s.extend_enabled = false;
+        assert_eq!(planned_margins(&s, [300, 200]), m(10, 20, 30, 40));
+        // An unreadable fill does not hide the margins.
+        s.extend_fill = "blur".into();
+        assert_eq!(planned_margins(&s, [300, 200]), m(10, 20, 30, 40));
+        // Over 4x the side: cut back to the limit, the rest untouched.
+        s.extend_left = 5000.0;
+        assert_eq!(planned_margins(&s, [100, 100]), m(400, 20, 30, 40));
+        // Percent over the limit: 1000% of 100 px is cut back to 400 px.
+        s.extend_mode = ExtendMode::Percent;
+        s.extend_left = 1000.0;
+        [s.extend_top, s.extend_right, s.extend_bottom] = [10.0, 0.0, 0.0];
+        assert_eq!(planned_margins(&s, [100, 200]), m(400, 20, 0, 0));
+        // Aspect resolves as current_margins says.
+        s.extend_mode = ExtendMode::Aspect;
+        s.extend_aspect = (2, 1);
+        s.extend_fill = "mirror".into();
+        assert_eq!(planned_margins(&s, [100, 100]), m(50, 0, 50, 0));
+        // An empty image cannot be extended at all.
+        assert_eq!(planned_margins(&s, [0, 0]), Margins::default());
     }
 
     // ------------------------------------------------------------------------- preview

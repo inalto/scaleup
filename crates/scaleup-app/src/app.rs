@@ -8,12 +8,12 @@ use scaleup_core::Registry;
 use crate::paste;
 use crate::state::Mode;
 use crate::state::{AppState, Settings, Status, apply_event, mode_from_path};
-use crate::ui::compare::CompareView;
+use crate::ui::compare::{CompareView, StageInput};
 use crate::ui::hub_dialog::{HubAction, HubDialog};
 use crate::ui::models_dialog::{DialogAction, ModelsDialog};
 use crate::ui::toast::{Toast, Toasts};
 use crate::ui::{sidebar, statusbar, theme};
-use crate::worker::{self, UiMsg, WorkerEvent, WorkerHandle};
+use crate::worker::{self, UiMsg, Which, WorkerEvent, WorkerHandle};
 
 const SETTINGS_KEY: &str = "settings";
 const SIDEBAR_WIDTH: f32 = 320.0;
@@ -125,6 +125,9 @@ impl App {
             } => {
                 self.state.note_preview(which, size);
                 self.compare.set(ctx, which, image, size, margins);
+                if which == Which::After {
+                    self.compare.result_settings(&self.state.settings);
+                }
                 return;
             }
             WorkerEvent::HubCatalog(cat) => {
@@ -364,7 +367,22 @@ impl App {
                 let (title, hint) = self.empty_text(&ctx);
                 empty_state(ui, &title, &hint);
             } else {
-                self.compare.show(ui);
+                let single = matches!(self.state.mode, Some(Mode::Single(_)));
+                let changed = self.compare.show(
+                    ui,
+                    StageInput {
+                        settings: &mut self.state.settings,
+                        registry: &self.registry,
+                        single,
+                        running: self.state.status.is_running(),
+                    },
+                );
+                // The sidebar was drawn before the image area: draw the frame again, so its fields
+                // show what a handle just did in the same frame.
+                if changed {
+                    ctx.request_discard("the image area changed the extend settings");
+                    ctx.request_repaint();
+                }
             }
             // A file held over the window: say that letting go opens it.
             if !busy_now && ctx.input(|i| !i.raw.hovered_files.is_empty()) {
@@ -413,7 +431,7 @@ impl eframe::App for App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worker::Which;
+    use crate::ui::canvas_edit::Handle;
     use egui_kittest::kittest::Queryable;
     use scaleup_core::Margins;
 
@@ -515,14 +533,158 @@ mod tests {
             extend_linked: false,
             ..Settings::default()
         };
-        let mut app = app_with(dir.path(), settings);
-        app.models_dialog.open = true;
+        // The Models window over the sidebar, then the edit stage of an image with Extend on.
+        for edit in [false, true] {
+            let mut app = app_with(dir.path(), settings.clone());
+            app.models_dialog.open = !edit;
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size([1200.0, 800.0])
+                .build_ui_state(|ui, app: &mut App| app.frame(ui), app);
+            if edit {
+                let ctx = harness.ctx.clone();
+                with_images(harness.state_mut(), &ctx, false);
+            }
+            for _ in 0..4 {
+                harness.step();
+            }
+            harness.check_accessibility();
+            if edit {
+                assert!(harness.state().compare.edit_layout().is_some());
+                for handle in Handle::ALL {
+                    harness.get_by_label(handle.name());
+                }
+            }
+        }
+    }
+
+    /// An app on the edit stage of the fixture photo (256×192) with 32 px on every side.
+    fn edit_harness(dir: &Path) -> egui_kittest::Harness<'static, App> {
+        let settings = Settings {
+            extend_enabled: true,
+            extend_linked: false,
+            extend_left: 32.0,
+            extend_top: 32.0,
+            extend_right: 32.0,
+            extend_bottom: 32.0,
+            extend_fill: "mirror".into(),
+            ..Settings::default()
+        };
+        let app = app_with(dir, settings);
         let mut harness = egui_kittest::Harness::builder()
             .with_size([1200.0, 800.0])
             .build_ui_state(|ui, app: &mut App| app.frame(ui), app);
-        for _ in 0..4 {
+        let ctx = harness.ctx.clone();
+        with_images(harness.state_mut(), &ctx, false);
+        for _ in 0..3 {
             harness.step();
         }
+        harness
+    }
+
+    fn sides(s: &Settings) -> [f32; 4] {
+        [s.extend_left, s.extend_top, s.extend_right, s.extend_bottom]
+    }
+
+    #[test]
+    fn dragging_the_right_handle_adds_canvas_on_the_right() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = edit_harness(dir.path());
+        let layout = harness.state().compare.edit_layout().unwrap();
+        let at = Handle::Right.position(layout.canvas);
+        let to = at + egui::vec2(40.0, 0.0);
+        harness.hover_at(at);
+        harness.drag_at(at);
+        harness.hover_at(to);
+        harness.step();
+        let grown = 32.0 + (40.0 / layout.scale).round();
+        // Mid-drag the sidebar already shows the new value: it was drawn again in the same frame.
+        let s = &harness.state().state.settings;
+        assert_eq!(sides(s), [32.0, 32.0, grown, 32.0]);
+        let field = harness.get_by_label("Right").value().unwrap_or_default();
+        assert!(field.contains(&format!("{grown}")), "{field}");
+        // With the scale frozen, the edge is under the pointer.
+        let mid = harness.state().compare.edit_layout().unwrap();
+        assert!((mid.canvas.max.x - to.x).abs() <= layout.scale / 2.0 + 0.01);
+        harness.drop_at(to);
+        harness.step();
+        let s = &harness.state().state.settings;
+        assert_eq!(sides(s), [32.0, 32.0, grown, 32.0]);
+        assert!(!s.extend_linked);
+        assert_eq!(s.extend_mode, crate::state::ExtendMode::Pixels);
+        // Released: the wider canvas is fitted again, so it is drawn smaller.
+        let after = harness.state().compare.edit_layout().unwrap();
+        assert!(after.scale < layout.scale);
+    }
+
+    #[test]
+    fn a_focused_handle_moves_with_the_arrow_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = edit_harness(dir.path());
+        harness.get_by_label("Right edge").focus();
+        harness.step();
+        harness.key_press(egui::Key::ArrowRight);
+        harness.step();
+        assert_eq!(
+            sides(&harness.state().state.settings),
+            [32.0, 32.0, 33.0, 32.0]
+        );
+        harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowLeft);
+        harness.step();
+        assert_eq!(
+            sides(&harness.state().state.settings),
+            [32.0, 32.0, 23.0, 32.0]
+        );
+        // Up and down are across the right edge: nothing moves, and focus stays.
+        harness.key_press(egui::Key::ArrowUp);
+        harness.step();
+        assert_eq!(
+            sides(&harness.state().state.settings),
+            [32.0, 32.0, 23.0, 32.0]
+        );
+        assert!(harness.get_by_label("Right edge").is_focused());
+    }
+
+    #[test]
+    fn the_chips_switch_between_result_and_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        // Extend off, an image loaded: a quiet offer to extend, which opens the edit stage.
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([1200.0, 800.0])
+            .build_ui_state(|ui, app: &mut App| app.frame(ui), app(dir.path()));
+        let ctx = harness.ctx.clone();
+        with_images(harness.state_mut(), &ctx, true);
+        harness.step();
+        assert!(harness.query_by_label("Adjust canvas").is_none());
+        harness.get_by_label("Extend canvas…").click();
+        harness.step();
+        harness.step();
+        assert!(harness.state().state.settings.extend_enabled);
+        assert!(harness.state().compare.edit_layout().is_some());
+        assert!(harness.query_by_label("Extend canvas…").is_none());
+        // A new result shows as a result, with the way back to Edit.
+        let photo = egui::ColorImage::filled([4, 3], egui::Color32::GRAY);
+        let none = scaleup_core::Margins::default();
+        harness
+            .state_mut()
+            .compare
+            .set(&ctx, Which::After, photo, [4, 3], none);
+        harness.step();
+        assert!(harness.state().compare.edit_layout().is_none());
+        harness.get_by_label("Adjust canvas").click();
+        harness.step();
+        harness.step();
+        assert!(harness.state().compare.edit_layout().is_some());
+    }
+
+    #[test]
+    fn no_offer_to_extend_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([1200.0, 800.0])
+            .build_ui_state(|ui, app: &mut App| app.frame(ui), app(dir.path()));
+        harness.state_mut().state.mode = Some(Mode::Batch(dir.path().to_path_buf()));
+        harness.step();
+        assert!(harness.query_by_label("Extend canvas…").is_none());
     }
 
     /// Draws the whole window in its main states, dark and light, into `$SCALEUP_RENDER_DIR/*.png`
@@ -583,6 +745,99 @@ mod tests {
                     );
                     a.log_open = true;
                     a.state.log = (0..6).map(|i| format!("tile {i}/24 done")).collect();
+                },
+            );
+            // The edit stage with each fill, 96 px on every side.
+            for (fill, name) in [
+                ("ai", "ai"),
+                ("mirror", "mirror"),
+                ("edge", "edge"),
+                ("#d8c8a8", "colour"),
+                ("transparent", "transparent"),
+            ] {
+                let s = Settings {
+                    extend_enabled: true,
+                    extend_left: 96.0,
+                    extend_fill: fill.into(),
+                    ..Settings::default()
+                };
+                render(
+                    app_with(dir.path(), s),
+                    big,
+                    theme,
+                    &format!("edit-{name}-{t}"),
+                    |a, c| with_images(a, c, false),
+                );
+            }
+            let uneven = Settings {
+                extend_enabled: true,
+                extend_linked: false,
+                extend_left: 160.0,
+                extend_top: 24.0,
+                extend_right: 48.0,
+                extend_bottom: 96.0,
+                ..Settings::default()
+            };
+            render(
+                app_with(dir.path(), uneven.clone()),
+                big,
+                theme,
+                &format!("edit-uneven-{t}"),
+                |a, c| with_images(a, c, false),
+            );
+            let mirror = Settings {
+                extend_fill: "mirror".into(),
+                ..uneven.clone()
+            };
+            render(
+                app_with(dir.path(), mirror.clone()),
+                [900.0, 600.0],
+                theme,
+                &format!("edit-small-{t}"),
+                |a, c| with_images(a, c, false),
+            );
+            render_then(
+                app_with(dir.path(), mirror.clone()),
+                big,
+                theme,
+                &format!("edit-hover-{t}"),
+                |a, c| with_images(a, c, false),
+                |h| {
+                    let l = h.state().compare.edit_layout().unwrap();
+                    h.hover_at(Handle::Right.position(l.canvas));
+                },
+            );
+            let invalid = Settings {
+                extend_left: 2000.0,
+                ..mirror.clone()
+            };
+            render(
+                app_with(dir.path(), invalid),
+                big,
+                theme,
+                &format!("edit-invalid-{t}"),
+                |a, c| with_images(a, c, false),
+            );
+            let aspect = Settings {
+                extend_mode: crate::state::ExtendMode::Aspect,
+                extend_aspect: (16, 9),
+                ..mirror.clone()
+            };
+            render(
+                app_with(dir.path(), aspect),
+                big,
+                theme,
+                &format!("edit-aspect-{t}"),
+                |a, c| with_images(a, c, false),
+            );
+            render(
+                app_with(dir.path(), mirror),
+                big,
+                theme,
+                &format!("result-adjust-{t}"),
+                |a, c| {
+                    with_images(a, c, true);
+                    a.state.status = Status::Done(PathBuf::from(r"C:\out\harbour at night_4x.png"));
                 },
             );
             render(new(), big, theme, &format!("models-{t}"), |a, c| {

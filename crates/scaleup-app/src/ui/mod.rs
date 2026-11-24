@@ -1,6 +1,7 @@
 //! Widgets. Logic that needs no window lives in `crate::state` or next to its widget, under test.
 
 pub mod canvas_edit;
+pub mod canvas_view;
 pub mod compare;
 pub mod hub_dialog;
 pub mod models_dialog;

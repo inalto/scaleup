@@ -821,19 +821,38 @@ mod tests {
         let (before, before_size) = color(&photo);
         let (after, after_size) = color(&result);
         assert_eq!(after_size, [(256 + 256) * 4, (192 + 256) * 4]);
+        let settings = Settings {
+            extend_enabled: true,
+            extend_left: 128.0,
+            extend_fill: "mirror".into(),
+            ..Settings::default()
+        };
+        let registry = Registry::with_dir(dir.path().to_path_buf());
         let mut harness = egui_kittest::Harness::builder()
             .with_size([900.0, 700.0])
             .wgpu()
             .build_ui_state(
-                |ui, view: &mut CompareView| view.show(ui),
-                CompareView::default(),
+                |ui, (view, settings): &mut (CompareView, Settings)| {
+                    view.show(
+                        ui,
+                        crate::ui::compare::StageInput {
+                            settings,
+                            registry: &registry,
+                            single: true,
+                            running: false,
+                        },
+                    );
+                },
+                (CompareView::default(), settings),
             );
         let ctx = harness.ctx.clone();
         harness
             .state_mut()
+            .0
             .set(&ctx, Which::Before, before, before_size, Margins::default());
         harness
             .state_mut()
+            .0
             .set(&ctx, Which::After, after, after_size, margins);
         for _ in 0..4 {
             harness.step();
