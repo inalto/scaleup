@@ -6,7 +6,8 @@ ScaleUP is an AI image upscaler written in Rust: a command line (`scaleup`) and 
 ncnn `.param`/`.bin` models and PyTorch `.pth`/`.safetensors` weights directly, with a CPU fallback.
 It can browse and install the models of [OpenModelDB](https://openmodeldb.info). It can also add canvas
 around an image, filling the new area with an inpainting network or a plain fill (see the
-[user guide](docs/USER_GUIDE.md#extending-the-canvas)). It is a rebuild
+[user guide](docs/USER_GUIDE.md#extending-the-canvas)). The desktop app can also drag the picture's border to
+add canvas, try several fills on one extension and walk back through the session's results. It is a rebuild
 inspired by
 [Upscayl](https://github.com/upscayl/upscayl): the command line accepts the same flags as
 `upscayl-bin`, so existing scripts keep working. Licensed under the AGPL-3.0-or-later.
@@ -103,9 +104,11 @@ models. They are not upscalers and do not appear in the upscale model list.
 |---|---|---|---|
 | `lama-512` (default) | Apache-2.0 | about 198 MB | CPU only |
 | `migan-512-places2` | MIT | about 28 MB | the device of the run |
+| `lama-manga` | Apache-2.0, declared by the uploader | about 197 MB | the device of the run; CPU if the GPU cannot load it |
 
-Plain fills (`mirror`, `edge`, `#rrggbb`, `transparent`) need no model. See the
-[user guide](docs/USER_GUIDE.md#extending-the-canvas) for what each model does well and badly.
+Plain fills (`mirror`, `edge`, `#rrggbb`, `transparent`) need no model. `lama-manga` suits illustrations and
+flat colour. See the [user guide](docs/USER_GUIDE.md#extending-the-canvas) for what each model is good for and
+how each does.
 
 ### OpenModelDB
 

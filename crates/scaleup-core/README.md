@@ -40,14 +40,20 @@ For in-memory images use `scaleup_core::upscale(model, &rgba, &opts, &mut progre
 To add canvas before upscaling, set `FileJob::extend` (margins and a fill); an AI fill needs an
 inpainter from `Upscaler::load_inpainter` (its download reports progress and stops on the
 `CancelToken` it is given), passed as `run_file`'s second argument. With no upscale
-model (`None`), `run_file` only extends. Name such outputs with `Upscaler::output_name_for`.
+model (`None`), `run_file` only extends. Name such outputs with `Upscaler::output_name_for`, passing the
+inpainting model id for an AI fill: the name then carries it, as in `_ext_ai-lama-512`.
 
 ## Notes
 
 - Every model must take `[1,3,H,W]` float32 RGB in `0..1` and return `[1,3,H*s,W*s]`.
 - Inpainting models (catalogue entries with `"kind": "inpaint"`) are not upscalers: `Upscaler::load` refuses them.
-  They are loaded with `Upscaler::load_inpainter` and implement the `Inpainter` trait, which fills one
-  fixed square window from its known pixels.
+  They are loaded with `Upscaler::load_inpainter` and implement the `Inpainter` trait, which fills one square
+  window from its known pixels. The window is fixed (512 px) for LaMa and MI-GAN; `lama-manga` has a dynamic
+  size and the driver feeds it 512 px windows.
+- An inpainting entry in `models/manifest.json` may carry a `layout` object with three keys: `output` (`"0..1"`
+  or `"0..255"`, the range of the model's output), `gpu` (`true` or `false`, whether the model runs on the GPU)
+  and `max_context_factor` (a whole number, the largest context factor the model is run with). An absent key
+  takes the default of the layout the graph shows. Every inpainting entry also has a `good_for` line.
 - WebP output is always lossless (pure-Rust encoder); `quality` applies to JPEG and PNG compression.
 - Tests run on CPU only; GPU checks are `#[ignore]`: `cargo test -p scaleup-core -- --ignored`.
 - `tests/fixtures/nearest2x.onnx` is regenerated with `python -I tools/make_test_model.py` (needs `onnx`).

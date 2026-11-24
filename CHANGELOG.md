@@ -7,6 +7,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- App: the Extend canvas section has handles on the border of the picture. Drag a side or a corner outward to
+  add canvas; Shift moves all four sides, Alt moves the opposite side too, and the arrow keys move a focused
+  handle by 1 px (10 px with Shift). The new area previews its fill.
+- App: **Try several fills** runs a list of fills on one extension, one after another: the inpainting models,
+  Mirror and Edge pixels. Each finished fill becomes a history step.
+- App: a history strip under the image area keeps the session's single-image results (30 steps at most), with
+  Back and Forward, the shortcuts Alt+Left, Alt+Right, Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y, and the actions Use as
+  input, Open folder, Restore settings and Remove. Removing a step keeps its file.
+- App: Scale **None** extends the canvas without upscaling.
+- Inpainting model `lama-manga` (LaMa Manga, for illustrations and flat colour; Apache-2.0 as declared by its
+  uploader). It runs on the GPU and falls back to the CPU when the GPU cannot load it.
+- `scaleup models list --kind inpaint` (and `--kind all`) shows a GOOD FOR column, and `models info` prints the
+  good-for line of an inpainting model.
+
+### Changed
+
+- Extended outputs always name their fill, also when they are upscaled: `_ext_mirror_4x_<model>`,
+  `_ext_ai-lama-512_4x_<model>` and so on. Files extended and upscaled with 0.3.x keep the old names, which
+  carry no fill.
+- App: a single-image run with **Overwrite existing files** off writes the next free name (`-2`, `-3`, ...)
+  instead of reusing an existing file. Folder runs still skip existing outputs.
+- App: the inpainting picker shows each model's licence and what it is good for; the Models window shows the
+  same line for inpainting models.
+- `scaleup-core` API: `Upscaler::output_name_for` takes the inpainting model id for an AI fill, and
+  `ModelEntry` gained `good_for` and an optional `layout`, described by the new `InpaintLayout` and
+  `OutputRange` types.
+
 ## [0.3.2] - 2026-11-16
 
 ### Changed

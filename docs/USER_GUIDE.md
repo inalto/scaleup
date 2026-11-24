@@ -85,6 +85,11 @@ Existing outputs are skipped unless `--overwrite` is given. `--jobs N` processes
 exit code is non-zero only if every file failed. With `-o <file>` a single input is written exactly
 there.
 
+In the app, a single image never reuses an existing file while **Overwrite existing files** is off: its
+result gets the next free name, `-2`, `-3` and so on before the extension, for example
+`photo_scaleup_4x_realesrgan-x4plus-2.png`. A folder run in the app still skips existing outputs. The
+command line keeps the rules above.
+
 ## Extending the canvas
 
 `scaleup extend` adds pixels around an image, so the output is wider or taller than the original.
@@ -97,11 +102,11 @@ the source resolution, before the upscale, and original pixels are never changed
 | `--extend <SPEC>` | `64` (all sides), `l,t,r,b`, `20%` or `l%,t%,r%,b%`; pixels and percentages are of the source image | `--extend 0,0,128,0` |
 | `--aspect <W:H>` | grow, centred, to this ratio; never crops. Conflicts with `--extend` | `--aspect 16:9` |
 | `--extend-fill <FILL>` | `ai` (default), `mirror`, `edge`, `transparent` or `#rrggbb` | `--extend-fill "#202020"` |
-| `--extend-model <ID\|PATH>` | inpainting model for the `ai` fill: `lama-512` (default) or `migan-512-places2`, or a path to an `.onnx` file | `--extend-model migan-512-places2` |
+| `--extend-model <ID\|PATH>` | inpainting model for the `ai` fill: `lama-512` (default), `migan-512-places2` or `lama-manga`, or a path to an `.onnx` file | `--extend-model migan-512-places2` |
 
 `scaleup extend` needs `--extend` or `--aspect`. The inpainting model is downloaded and loaded once
 per run, and only for the `ai` fill. `scaleup models list --kind inpaint` shows the inpainting
-models.
+models and what each is good for.
 
 ```bash
 scaleup extend -i photo.jpg -o wide.png --aspect 16:9
@@ -119,7 +124,70 @@ upscaling** to turn it on. Choose **Pixels**, **Percent** or **Aspect**. Pixels 
 one value for all sides (**Same on every side**) or one value per side. Aspect offers 1:1, 4:3,
 3:2, 16:9 and 9:16, or a custom ratio. **Fill** offers AI (inpainting), Mirror, Edge pixels,
 Colour and Transparent. The AI fill shows the model picker. When the chosen inpainting model is
-not downloaded yet, the Start button says **Download and start**.
+not downloaded yet, the Start button says **Download and start**, or **Download and extend** when nothing is
+upscaled. Under **Output**, the **Scale** row has a **None** choice: the image is only extended, nothing is
+upscaled, and the Start button reads **Extend**.
+
+### Editing the canvas in the app
+
+With **Add canvas before upscaling** on and one image loaded, the image area shows the planned canvas: the
+picture at its place, the new area showing its fill, and eight handles on the sides and corners of the new
+canvas. A chip under the canvas gives the size before and after, for example `256×192 to 512×448`, or asks
+for a handle to be dragged while no canvas is added. If the margins cannot be used for the image, the chip
+says why and Start is disabled.
+
+Drag a side handle outward to add canvas on that side, or a corner handle to add on two sides. Dragging
+inward takes canvas away and stops at 0. Outward drags stop at the limits in [Limits](#limits). Shift moves
+all four sides by the same amount, and Alt moves the opposite side by the same amount as well. Each drag
+writes the same settings as the sidebar fields, and the fields follow at once. A drag in **Aspect** mode
+switches the mode to **Pixels**; in **Percent** mode it writes percentages.
+
+Click a handle to select it, then the arrow keys move it by 1 px, or by 10 px with Shift.
+
+The new area previews the fill: the colour for **Colour**, a checkerboard for **Transparent**, the picture
+reflected across its border for **Mirror**, its border pixels stretched for **Edge pixels**, and for AI a
+hatched tint labelled with the model, for example `AI fill · LaMa (512)`.
+
+After a run, the image area shows the before and after pictures. Changing the extension shows the planned
+canvas again. **Adjust canvas** returns to the planned canvas, **Show result** returns to the last result,
+and **Extend canvas…**, shown while Extend is off and an image is loaded, turns Extend on and shows the
+planned canvas. A folder has no picture to drag, so it has no canvas to edit.
+
+### Trying several fills
+
+**Try several fills** is a list under the Fill and Model rows of the Extend canvas section, closed until it
+is opened. It offers each inpainting model, with its licence and what it is good for, and then **Mirror** and
+**Edge pixels**. Tick the fills to try and press the button, which says how many fills it will run: **Try 3
+fills**, or **Download and try 3 fills** when a ticked model is not downloaded yet. Until you change a tick,
+the list follows the fill chosen above it.
+
+Trying needs a single image, Extend canvas turned on, and at least two fills ticked. The fills run one after
+another on the same extension, and the status line says `Fill 2 of 3`. Each finished fill is a step in the
+history. A fill that repeats an earlier one writes a new file, with `-2` added before the extension, unless
+**Overwrite existing files** is on, when the file is replaced. **Stop** ends the queue: the fills that
+finished keep their steps. A fill whose inpainting model cannot be loaded is reported by name, and the
+others still run.
+
+### History
+
+Each finished single-image run in the app is a step in a history, and so is each fill of a **Try several
+fills** list. The steps appear as a strip of thumbnails under the image area, with the step's label on hover,
+for example `Extend +128 px · LaMa (512) · 4×`. The step on screen has an accent outline.
+
+- **Back** and **Forward** show the previous or next step, with its result against its own source. The count
+  beside them reads `2 of 3`, or `3 steps` while the image on screen is not a step.
+- The shortcuts are `Alt+Left` for back and `Alt+Right` for forward, and also `Ctrl+Z` for back and
+  `Ctrl+Shift+Z` or `Ctrl+Y` for forward. On macOS, Option replaces Alt and Command replaces Ctrl. They do
+  nothing when there is no step, while a run is in progress, while a text field has the keyboard (Ctrl+Z is
+  then the field's own undo), or while a canvas handle has focus, because its arrows move the handle.
+- The step actions are **Use as input**, **Open folder**, **Restore settings** and **Remove**. **Use as
+  input** makes the step's result the selected image, so an extension can be upscaled next. **Restore
+  settings** puts the step's settings back into the sidebar. **Remove** takes the step out of the history and
+  keeps its file: removing a step never deletes a file. The actions need a step on screen.
+- The history lasts for the session, so closing the app clears it. It holds up to 30 steps, and the oldest is
+  dropped when a new one is added to a full history. It covers single images only; a folder run adds no
+  steps. A step whose file has been deleted stays in the history, and the image area says that it cannot be
+  shown.
 
 ### Fills
 
@@ -139,20 +207,25 @@ a transparent border, use the `transparent` or `edge` fill.
 
 ### Inpainting models
 
-| Model | Licence | Download | Runs on | Use it for |
+| Model | Licence | Download | Runs on | Good for |
 |---|---|---|---|---|
-| `lama-512` (default) | Apache-2.0 | about 198 MB (208,044,816 bytes) | CPU only; the device setting does not apply | modest extensions of photos with soft or plain backgrounds |
-| `migan-512-places2` | MIT | about 28 MB (29,546,882 bytes) | the device of the run (GPU when one is used) | small one-sided extensions of simple backgrounds |
+| `lama-512` (default) | Apache-2.0 | about 198 MB (208,044,816 bytes) | CPU only; the device setting does not apply | Photos: soft or plain backgrounds, modest margins. Runs on the CPU. |
+| `migan-512-places2` | MIT | about 28 MB (29,546,882 bytes) | the device of the run (GPU when one is used) | Photos, fast on the GPU. May invent objects in the new area. |
+| `lama-manga` | Apache-2.0, declared by the uploader | about 197 MB (206,291,843 bytes) | the device of the run (GPU when one is used); CPU if the GPU cannot load it | Illustrations and flat colour, fast on the GPU. Blurs photo detail on large margins. |
 
-The weights are under the licences above; the licence texts are in `models/licenses/lama-512.txt`
-and `models/licenses/migan-512-places2.txt`. The licences of the training data were not checked.
+The weights are under the licences above; the licence texts are in `models/licenses/lama-512.txt`,
+`models/licenses/migan-512-places2.txt` and `models/licenses/lama-manga.txt`. The licences of the
+training data were not checked. For `lama-manga`: License as declared by the uploader; the terms of the
+weights and of the training data were not verified.
 
 Timings were measured on one machine (with an NVIDIA GTX 1660 SUPER; the CPU model was not
 recorded) and will differ on other hardware. In a test run of a debug build, loading LaMa on the CPU
 took about 13 s, and extending a 256 × 192 image by 64 px on one side, a single 512 px window, took
 about 2 s. Loading MI-GAN took about 0.7 s. The feasibility spike, which ran in Python
 and not in the shipped build, measured about 14 s for LaMa on the CPU and about 1 s for MI-GAN on the
-GPU for a 3000 × 2000 photo with a 192 px right margin.
+GPU for a 3000 × 2000 photo with a 192 px right margin. The same spike measured one 512 px window of
+`lama-manga` at about 0.3 s on the GPU and about 2.2 s on the CPU; the model takes roughly 10 to 20 s to
+load.
 
 ### What the models do well and badly
 
@@ -168,9 +241,15 @@ small size. Seams at full size were not checked. The results are in `docs/OUTPAI
 - **MI-GAN** is reliable only for small one-sided extensions of simple backgrounds. On the other
   test images it invented objects, faces, text-like marks and repeated patterns, some already at
   64 px. Use it only for small extensions, and check the result.
-- **Not tested:** anime and illustration images, and text at the edge of the frame.
+- **LaMa Manga** (`lama-manga`) was judged on the same six test images and on two illustration-like stand-ins
+  from scikit-image's sample data (a flat logo and a black silhouette), with margins of 64 and 192 px. It gave
+  clean results on flat colour and silhouettes and invented no objects in these tests. It blurs photo detail
+  on large margins, puts a warm red-brown cast on photos at 192 px on four sides, and does not continue
+  textures such as gravel.
+- **Not tested:** real anime and manga images (`lama-manga` was tested on the two stand-ins only), and text at
+  the edge of the frame.
 
-Both models were trained for hole filling, not for extending a picture. For larger extensions,
+All three models were trained for hole filling, not for extending a picture. For larger extensions,
 use a plain fill and check the result.
 
 ### Limits
