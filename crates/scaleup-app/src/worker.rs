@@ -1980,7 +1980,7 @@ mod tests {
         let jobs = plan_jobs(&Mode::Single(d.path().join("a.png")), &s);
         assert_eq!(
             jobs[0].output.file_name().unwrap().to_str().unwrap(),
-            "a_scaleup_ext_2x_nearest2x.png"
+            "a_scaleup_ext_mirror_2x_nearest2x.png"
         );
         assert_eq!(jobs[0].extend, s.to_extend_options().unwrap());
         assert!(jobs[0].extend.is_some());
@@ -2552,7 +2552,8 @@ mod tests {
         let input = d.path().join("a.png");
         write_png(&input, 10);
         let h = cpu_worker(d.path());
-        // Upscaled plain fills share a name (`a_scaleup_ext_2x_nearest2x.png`).
+        // Upscaled fills are named by their fill, so mirror and edge write two files; the same fill
+        // twice would write one file twice (`a_scaleup_ext_mirror_2x_nearest2x.png`).
         let s = extend_settings(d.path(), "mirror", 2.0);
         h.tx.send(UiMsg::StartFills {
             mode: Mode::Single(input),
@@ -2560,18 +2561,19 @@ mod tests {
             fills: vec![
                 FillChoice::Plain(Fill::Mirror),
                 FillChoice::Plain(Fill::Edge),
+                FillChoice::Plain(Fill::Mirror),
             ],
         })
         .unwrap();
         let evs = until_end(&h);
         assert_eq!(
             evs.last(),
-            Some(&WorkerEvent::AllDone { done: 1, failed: 1 }),
+            Some(&WorkerEvent::AllDone { done: 2, failed: 1 }),
             "{evs:?}"
         );
         assert!(
             evs.iter().any(
-                |e| matches!(e, WorkerEvent::FileFailed { error, .. } if error.starts_with("Edge pixels: would write"))
+                |e| matches!(e, WorkerEvent::FileFailed { error, .. } if error.starts_with("Mirror: would write"))
             ),
             "{evs:?}"
         );

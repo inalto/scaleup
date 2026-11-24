@@ -403,16 +403,14 @@ impl Upscaler {
     }
 
     /// [`Upscaler::output_name`] for any job. `extend_fill` is the fill when the job extends the
-    /// canvas: `_ext` then goes before the size (`<stem>_scaleup_ext_4x_<model_id>.<ext>`). With no
-    /// upscale model the name is `<stem>_scaleup_ext_<fill>.<ext>`, `<fill>` being the fill's CLI word
-    /// (`ai`, `mirror`, `edge`, `transparent`, or the colour as `rrggbb`). With neither, it is
-    /// `<stem>_scaleup.<ext>`.
-    ///
-    /// An AI fill also names its inpainting model, `inpaint_model`, so fills of the same extension
-    /// by two models do not overwrite each other: `<stem>_scaleup_ext_ai-<inpaint>.<ext>`, or
-    /// `<stem>_scaleup_ext_ai-<inpaint>_4x_<model_id>.<ext>` when upscaling. A model given as a file
-    /// path is named by its file stem. Plain fills ignore `inpaint_model`; an AI fill without one
-    /// is named like a plain fill (`_ext_ai` when only extending).
+    /// canvas, and an extended output always names it, so two fills of the same extension never
+    /// share a name: `<stem>_scaleup_ext_<fill>.<ext>` when only extending, and
+    /// `<stem>_scaleup_ext_<fill>_4x_<model_id>.<ext>` (or `_<w>px_`) when upscaling. `<fill>` is
+    /// the fill's CLI word (`mirror`, `edge`, `transparent`, or the colour as `rrggbb`), and for
+    /// the AI fill `ai-<inpaint>`, `<inpaint>` being `inpaint_model` (a model given as a file path
+    /// is named by its file stem; plain `ai` when it is `None`). Plain fills ignore
+    /// `inpaint_model`. A job that does not extend keeps [`Upscaler::output_name`]; with neither
+    /// an extension nor a model the name is `<stem>_scaleup.<ext>`.
     pub fn output_name_for(
         input: &Path,
         out_dir: &Path,
@@ -426,17 +424,13 @@ impl Upscaler {
             .file_stem()
             .map(|s| s.to_string_lossy())
             .unwrap_or_default();
-        let ai = match (extend_fill, inpaint_model) {
-            (Some(Fill::Ai), Some(id)) => Some(format!("ai-{}", name_part(id))),
-            _ => None,
+        let ext = match (extend_fill, inpaint_model) {
+            (Some(Fill::Ai), Some(id)) => format!("_ext_ai-{}", name_part(id)),
+            (Some(fill), _) => format!("_ext_{}", fill_word(fill)),
+            (None, _) => String::new(),
         };
-        let tail = match (model_id, extend_fill) {
-            (Some(model_id), _) => {
-                let ext = match (&ai, extend_fill) {
-                    (Some(ai), _) => format!("_ext_{ai}"),
-                    (None, Some(_)) => "_ext".to_string(),
-                    (None, None) => String::new(),
-                };
+        let tail = match model_id {
+            Some(model_id) => {
                 let size = match (opts.output_width, opts.output_scale) {
                     (Some(w), _) => format!("{w}px"),
                     (None, Some(s)) => format!("{s}x"),
@@ -444,8 +438,7 @@ impl Upscaler {
                 };
                 format!("{ext}_{size}_{model_id}")
             }
-            (None, Some(fill)) => format!("_ext_{}", ai.unwrap_or_else(|| fill_word(fill))),
-            (None, None) => String::new(),
+            None => ext,
         };
         out_dir.join(format!("{stem}_scaleup{tail}.{}", fmt.ext()))
     }
@@ -1106,9 +1099,10 @@ mod tests {
                 OutputFormat::Png
             )
         );
+        // An AI fill whose model is not known is still named by its fill.
         assert_eq!(
             name(Some("realesrgan-x4plus"), Some(&Fill::Ai), &scale4),
-            out.join("a_scaleup_ext_4x_realesrgan-x4plus.png")
+            out.join("a_scaleup_ext_ai_4x_realesrgan-x4plus.png")
         );
         let width = UpscaleOptions {
             output_width: Some(1920),
@@ -1116,9 +1110,10 @@ mod tests {
         };
         assert_eq!(
             name(Some("realesrgan-x4plus"), Some(&Fill::Edge), &width),
-            out.join("a_scaleup_ext_1920px_realesrgan-x4plus.png")
+            out.join("a_scaleup_ext_edge_1920px_realesrgan-x4plus.png")
         );
-        // No upscale model: the fill's CLI word, and no size.
+        // Every fill names itself by its CLI word, with or without upscaling, so two fills of the
+        // same extension never share a name.
         for (fill, word) in [
             (Fill::Ai, "ai"),
             (Fill::Mirror, "mirror"),
@@ -1130,7 +1125,13 @@ mod tests {
                 name(None, Some(&fill), &scale4),
                 out.join(format!("a_scaleup_ext_{word}.png"))
             );
+            assert_eq!(
+                name(Some("realesrgan-x4plus"), Some(&fill), &scale4),
+                out.join(format!("a_scaleup_ext_{word}_4x_realesrgan-x4plus.png"))
+            );
         }
+        // Not extending, not upscaling: no tail at all.
+        assert_eq!(name(None, None, &scale4), out.join("a_scaleup.png"));
     }
 
     #[test]
@@ -1169,14 +1170,18 @@ mod tests {
             name(None, &Fill::Ai, Some("models/my fill.onnx")),
             out.join("a_scaleup_ext_ai-my fill.png")
         );
-        // Plain fills ignore the inpainting model and keep their names.
+        assert_eq!(
+            name(None, &Fill::Ai, Some("lama-manga")),
+            out.join("a_scaleup_ext_ai-lama-manga.png")
+        );
+        // Plain fills ignore the inpainting model and are named by their fill.
         assert_eq!(
             name(None, &Fill::Mirror, Some("lama-512")),
             out.join("a_scaleup_ext_mirror.png")
         );
         assert_eq!(
             name(Some("realesrgan-x4plus"), &Fill::Edge, Some("lama-512")),
-            out.join("a_scaleup_ext_4x_realesrgan-x4plus.png")
+            out.join("a_scaleup_ext_edge_4x_realesrgan-x4plus.png")
         );
     }
 

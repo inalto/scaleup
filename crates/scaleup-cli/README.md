@@ -56,10 +56,11 @@ is downloaded and loaded once per run, and only for the `ai` fill: the other fil
 models list --kind inpaint` shows the inpainting models (`--kind all` shows both kinds; plain `models list`
 shows upscalers only).
 
-Output names get `_ext` before the size: `photo_scaleup_ext_4x_<model>.png` when upscaling, and
-`photo_scaleup_ext_<fill>.png` with `extend` (`<fill>` is `mirror`, `edge`, `transparent` or `rrggbb`).
-The AI fill names its inpainting model, so two models do not overwrite each other:
-`photo_scaleup_ext_ai-lama-512.png`, or `photo_scaleup_ext_ai-lama-512_4x_<model>.png` when upscaling.
+Output names carry the fill after `_ext_`, so two fills of the same extension never overwrite each other:
+`photo_scaleup_ext_<fill>.png` with `extend`, and `photo_scaleup_ext_<fill>_4x_<model>.png` when upscaling.
+`<fill>` is `mirror`, `edge`, `transparent`, the colour as `rrggbb`, or `ai-<inpainting model>` for the AI
+fill: `photo_scaleup_ext_edge.png`, `photo_scaleup_ext_mirror_4x_<model>.png`,
+`photo_scaleup_ext_ai-lama-512_4x_<model>.png`.
 
 ```
 scaleup extend -i photo.jpg -o wide.png --aspect 16:9

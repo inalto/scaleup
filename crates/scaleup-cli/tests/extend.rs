@@ -149,7 +149,7 @@ fn upscale_with_extend_grows_then_upscales() {
         .args(["-g", "cpu", "--extend", "2", "--extend-fill", "edge"])
         .assert()
         .code(0);
-    let named = out.join("in_scaleup_ext_2x_nearest2x.png");
+    let named = out.join("in_scaleup_ext_edge_2x_nearest2x.png");
     assert!(
         named.is_file(),
         "{:?}",

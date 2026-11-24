@@ -108,9 +108,11 @@ scaleup extend -i photo.jpg -o wide.png --aspect 16:9
 scaleup upscale -i photo.jpg -o out/ --extend 10% --extend-fill mirror
 ```
 
-Output names get `_ext`: `photo_scaleup_ext_4x_<model>.png` when upscaling, and
-`photo_scaleup_ext_<fill>.png` with `scaleup extend`, where `<fill>` is `ai`, `mirror`, `edge`,
-`transparent` or the colour as `rrggbb`.
+Output names carry the fill after `_ext_`, so two fills of the same extension never overwrite each
+other: `photo_scaleup_ext_<fill>.png` with `scaleup extend`, and
+`photo_scaleup_ext_<fill>_4x_<model>.png` when upscaling. `<fill>` is `mirror`, `edge`,
+`transparent`, the colour as `rrggbb`, or `ai-<inpainting model>` for the AI fill, for example
+`photo_scaleup_ext_ai-lama-512.png` or `photo_scaleup_ext_mirror_4x_<model>.png`.
 
 **In the app**, the section is called **Extend canvas** in the sidebar. Tick **Add canvas before
 upscaling** to turn it on. Choose **Pixels**, **Percent** or **Aspect**. Pixels and percent take
