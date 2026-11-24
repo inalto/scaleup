@@ -3,6 +3,7 @@
 pub mod canvas_edit;
 pub mod canvas_view;
 pub mod compare;
+pub mod history;
 pub mod hub_dialog;
 pub mod models_dialog;
 pub mod sidebar;

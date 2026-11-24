@@ -50,7 +50,9 @@ impl Toasts {
         self.active.push((toast, None));
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) {
+    /// Draws the toasts in the bottom right corner, `bottom` points above the window's bottom edge
+    /// (above the status bar, or above the history strip when it shows).
+    pub fn show(&mut self, ctx: &egui::Context, bottom: f32) {
         let now = ctx.input(|i| i.time);
         self.active.retain_mut(|(toast, expires)| {
             let e = *expires.get_or_insert(now + toast.lifetime());
@@ -62,7 +64,7 @@ impl Toasts {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
         egui::Area::new(egui::Id::unique("toasts"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -52.0])
+            .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -bottom])
             .interactable(false)
             .show(ctx, |ui| {
                 ui.set_max_width(420.0);

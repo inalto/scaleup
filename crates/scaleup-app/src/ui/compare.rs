@@ -183,6 +183,13 @@ impl CompareView {
         self.before.is_none() && self.after.is_none()
     }
 
+    /// The file sizes of the "before" and "after" shown (tests check which pair is on screen).
+    #[cfg(test)]
+    pub fn sizes(&self) -> [Option<[u32; 2]>; 2] {
+        let size = |s: &Option<Side>| s.as_ref().map(|s| [s.size.x as u32, s.size.y as u32]);
+        [size(&self.before), size(&self.after)]
+    }
+
     /// The layout the edit stage drew last, in screen coordinates (tests aim the pointer with it).
     #[cfg(test)]
     pub fn edit_layout(&self) -> Option<crate::ui::canvas_edit::CanvasLayout> {

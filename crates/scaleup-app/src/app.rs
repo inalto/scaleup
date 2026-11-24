@@ -7,16 +7,28 @@ use scaleup_core::Registry;
 
 use crate::paste;
 use crate::state::Mode;
-use crate::state::{AppState, Settings, Status, apply_event, mode_from_path};
+use crate::state::{AppState, Settings, Status, Step, apply_event, mode_from_path};
 use crate::ui::compare::{CompareView, StageInput};
+use crate::ui::history::{self, HistoryAction, HistoryStrip};
 use crate::ui::hub_dialog::{HubAction, HubDialog};
 use crate::ui::models_dialog::{DialogAction, ModelsDialog};
 use crate::ui::toast::{Toast, Toasts};
-use crate::ui::{sidebar, statusbar, theme};
+use crate::ui::{canvas_view, sidebar, statusbar, theme};
 use crate::worker::{self, UiMsg, Which, WorkerEvent, WorkerHandle};
 
 const SETTINGS_KEY: &str = "settings";
 const SIDEBAR_WIDTH: f32 = 320.0;
+/// Toasts sit this far above the window's bottom edge when no history strip shows.
+const TOAST_GAP: f32 = 52.0;
+
+/// A history step asked of the worker, until its "after" preview arrives. Its "before" is held
+/// back until then, so the image area goes from the old pair to the new pair in one frame (a
+/// "before" alone would flash the edit stage).
+struct PendingStep {
+    input: PathBuf,
+    output: PathBuf,
+    before: Option<(egui::ColorImage, [u32; 2])>,
+}
 
 pub struct App {
     pub state: AppState,
@@ -27,6 +39,14 @@ pub struct App {
     compare: CompareView,
     models_dialog: ModelsDialog,
     hub_dialog: HubDialog,
+    strip: HistoryStrip,
+    /// The step whose previews are on their way.
+    showing: Option<PendingStep>,
+    /// Why the current step cannot be shown (a file of it is gone), for the empty image area.
+    step_error: Option<String>,
+    /// The outputs of the steps the worker was asked to show, for the tests to check.
+    #[cfg(test)]
+    asked: Vec<PathBuf>,
 }
 
 impl App {
@@ -52,6 +72,11 @@ impl App {
             compare: CompareView::default(),
             models_dialog: ModelsDialog::default(),
             hub_dialog: HubDialog::default(),
+            strip: HistoryStrip::default(),
+            showing: None,
+            step_error: None,
+            #[cfg(test)]
+            asked: Vec::new(),
         };
         if let Some(path) = initial {
             app.select(&path);
@@ -71,6 +96,8 @@ impl App {
         match mode_from_path(path) {
             Some(mode) => {
                 self.compare.clear();
+                self.showing = None;
+                self.step_error = None;
                 self.state.source_size = None;
                 if let Mode::Single(p) = &mode {
                     self.send(UiMsg::Preview(p.clone()));
@@ -103,6 +130,8 @@ impl App {
             percent: 0.0,
             phase: "Starting".into(),
         };
+        // Previews of a step still on their way now show as they come: the run's own follow them.
+        self.showing = None;
         self.send(UiMsg::Start {
             mode,
             settings: Box::new(self.state.settings.clone()),
@@ -119,16 +148,48 @@ impl App {
         match ev {
             WorkerEvent::Preview {
                 which,
+                path,
                 image,
                 size,
                 margins,
             } => {
-                self.state.note_preview(which, size);
-                self.compare.set(ctx, which, image, size, margins);
                 if which == Which::After {
-                    self.compare.result_settings(&self.state.settings);
+                    self.strip
+                        .note_result(ctx, &self.state.history, &path, &image);
                 }
+                if let Some(pending) = &mut self.showing {
+                    match which {
+                        Which::Before if path == pending.input => {
+                            pending.before = Some((image, size));
+                        }
+                        Which::After if path == pending.output => {
+                            let before = self.showing.take().and_then(|p| p.before);
+                            if let Some((image, size)) = before {
+                                let none = Default::default();
+                                self.show_preview(ctx, Which::Before, image, size, none);
+                            }
+                            self.show_preview(ctx, Which::After, image, size, margins);
+                        }
+                        // A preview of a step that was left before it arrived.
+                        _ => {}
+                    }
+                    return;
+                }
+                self.show_preview(ctx, which, image, size, margins);
                 return;
+            }
+            // The step being shown has a file that is gone or unreadable: say so in the image
+            // area too, where its picture would be. The step stays in the history.
+            WorkerEvent::Error(ref message)
+                if self.showing.as_ref().is_some_and(|p| {
+                    [&p.input, &p.output]
+                        .iter()
+                        .any(|f| message.starts_with(&f.display().to_string()))
+                }) =>
+            {
+                self.showing = None;
+                self.compare.clear();
+                self.step_error = Some(message.clone());
             }
             WorkerEvent::HubCatalog(cat) => {
                 self.hub_dialog.set_catalog(cat);
@@ -152,6 +213,109 @@ impl App {
         if let Some(toast) = apply_event(&mut self.state, ev) {
             self.toasts.push(toast);
         }
+    }
+
+    /// Puts a decoded preview in the image area. A result shows as a result: the image area stays
+    /// on it until the extension is changed.
+    fn show_preview(
+        &mut self,
+        ctx: &egui::Context,
+        which: Which,
+        image: egui::ColorImage,
+        size: [u32; 2],
+        margins: scaleup_core::Margins,
+    ) {
+        self.state.note_preview(which, size);
+        self.compare.set(ctx, which, image, size, margins);
+        if which == Which::After {
+            self.compare.result_settings(&self.state.settings);
+        }
+    }
+
+    /// Does what the history strip or a history shortcut asked. Nothing while a run is going.
+    fn history_action(&mut self, action: HistoryAction) {
+        if self.state.status.is_running() {
+            return;
+        }
+        let history = &mut self.state.history;
+        let Some(at) = history.at() else {
+            return;
+        };
+        match action {
+            HistoryAction::Back | HistoryAction::Forward | HistoryAction::Go(_) => {
+                let step = match action {
+                    HistoryAction::Back => history.back(),
+                    HistoryAction::Forward => history.forward(),
+                    HistoryAction::Go(i) => history.go(i),
+                    _ => None,
+                };
+                if let Some(step) = step.cloned() {
+                    self.show_step(&step);
+                }
+            }
+            HistoryAction::UseAsInput => {
+                if let Some(path) = history.use_as_input(at).map(Path::to_path_buf) {
+                    self.select(&path);
+                }
+            }
+            HistoryAction::RestoreSettings => {
+                let Some(settings) = self.state.restore_settings(at) else {
+                    return;
+                };
+                let device = settings.gpu != self.state.settings.gpu;
+                self.state.settings = settings;
+                if device {
+                    self.send(UiMsg::ChangeDevice(self.state.settings.gpu.clone()));
+                }
+                // The result on screen stays a result: restoring is not editing the extension.
+                self.compare.result_settings(&self.state.settings);
+                self.toasts.push(Toast::success(format!(
+                    "Settings of step {} restored",
+                    at + 1
+                )));
+            }
+            HistoryAction::OpenFolder => {
+                if let Some(step) = history.current() {
+                    let output = step.output.clone();
+                    self.open_folder_of(&output);
+                }
+            }
+            HistoryAction::Remove => {
+                history.remove(at);
+                match history.current().cloned() {
+                    Some(step) => self.show_step(&step),
+                    // The last step went: back to the selected image on its own.
+                    None => {
+                        if let Some(Mode::Single(path)) = self.state.mode.clone() {
+                            self.select(&path);
+                        }
+                    }
+                }
+                self.toasts.push(Toast::success(
+                    "Removed from the history. The file is kept.",
+                ));
+            }
+        }
+    }
+
+    /// Shows the current history step: its input becomes the selected image (so the sidebar, the
+    /// size line, the edit stage and the next run all work on the picture shown as "before"), and
+    /// the worker is asked for both previews with the step's margins.
+    fn show_step(&mut self, step: &Step) {
+        self.state.mode = Some(Mode::Single(step.input.clone()));
+        self.state.source_size = Some(step.source_size);
+        if matches!(self.state.status, Status::Error(_)) {
+            self.state.status = Status::Idle;
+        }
+        self.step_error = None;
+        self.showing = Some(PendingStep {
+            input: step.input.clone(),
+            output: step.output.clone(),
+            before: None,
+        });
+        #[cfg(test)]
+        self.asked.push(step.output.clone());
+        self.send(UiMsg::show_step(step));
     }
 
     /// The registry reads `installed.json` when it is built: build it again after an install or
@@ -214,12 +378,51 @@ impl App {
                 None => {}
             }
         }
+        if self.history_keys_apply(ctx) {
+            let nav = ctx.input_mut(|i| {
+                let mut nav = None;
+                i.events.retain(|e| match e {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => match history::nav_for(*modifiers, *key) {
+                        Some(n) => {
+                            nav = Some(n);
+                            false
+                        }
+                        None => true,
+                    },
+                    _ => true,
+                });
+                nav
+            });
+            if let Some(nav) = nav {
+                self.history_action(nav.into());
+            }
+        }
+    }
+
+    /// The history keys work when there is a history, nothing runs, and the keys do not belong to
+    /// something else: a text field keeps its own undo, a focused canvas handle its arrows.
+    fn history_keys_apply(&self, ctx: &egui::Context) -> bool {
+        !self.state.history.steps().is_empty()
+            && !self.state.status.is_running()
+            && !ctx.text_edit_focused()
+            && !canvas_view::handle_focused(ctx)
     }
 
     fn open_output_folder(&mut self) {
         let Status::Done(path) = &self.state.status else {
             return;
         };
+        let path = path.clone();
+        self.open_folder_of(&path);
+    }
+
+    /// Opens the folder `path` is in, in the system's file manager.
+    fn open_folder_of(&mut self, path: &Path) {
         let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         if let Err(e) = open::that(&dir) {
             self.toasts
@@ -270,6 +473,12 @@ impl App {
     fn empty_text(&self, ctx: &egui::Context) -> (String, String) {
         let key =
             |k| ctx.format_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, k));
+        if let Some(why) = &self.step_error {
+            return (
+                "This step cannot be shown".into(),
+                format!("{why}.\nThe step stays in the history: go to another step, or remove it."),
+            );
+        }
         match &self.state.mode {
             Some(Mode::Batch(p)) => (
                 "Folder selected".into(),
@@ -360,6 +569,21 @@ impl App {
             self.send(UiMsg::Stop);
         }
 
+        // The history strip: under the image area, right of the sidebar, once there is a step.
+        let mut toast_gap = TOAST_GAP;
+        self.strip.forget_dropped(&self.state.history);
+        if !self.state.history.steps().is_empty() {
+            let running = self.state.status.is_running();
+            let strip = egui::Panel::bottom("history")
+                .exact_size(history::STRIP_HEIGHT)
+                .resizable(false)
+                .show(ui, |ui| self.strip.show(ui, &self.state.history, running));
+            toast_gap = ctx.content_rect().bottom() - strip.response.rect.top() + 12.0;
+            if let Some(action) = strip.inner {
+                self.history_action(action);
+            }
+        }
+
         let stage = egui::Frame::central_panel(ui.style()).fill(theme::stage_fill(ui.visuals()));
         egui::CentralPanel::default().frame(stage).show(ui, |ui| {
             let area = ui.max_rect();
@@ -412,7 +636,7 @@ impl App {
             self.hub_action(action);
         }
 
-        self.toasts.show(&ctx);
+        self.toasts.show(&ctx, toast_gap);
     }
 }
 
@@ -455,6 +679,10 @@ mod tests {
             compare: CompareView::default(),
             models_dialog: ModelsDialog::default(),
             hub_dialog: HubDialog::default(),
+            strip: HistoryStrip::default(),
+            showing: None,
+            step_error: None,
+            asked: Vec::new(),
         }
     }
 
@@ -554,6 +782,24 @@ mod tests {
                     harness.get_by_label(handle.name());
                 }
             }
+        }
+        // The history strip, with the middle of three steps current.
+        let steps = three_steps(dir.path());
+        let mut harness = history_harness(dir.path(), settings, &steps, 1);
+        harness.step();
+        harness.check_accessibility();
+        for name in [
+            "Back",
+            "Forward",
+            "Use as input",
+            "Restore settings",
+            "Open folder",
+            "Remove",
+        ] {
+            harness.get_by_label(name);
+        }
+        for (i, s) in steps.iter().enumerate() {
+            harness.get_by_label(&history::step_name(i, s));
         }
     }
 
@@ -685,6 +931,415 @@ mod tests {
         harness.state_mut().state.mode = Some(Mode::Batch(dir.path().to_path_buf()));
         harness.step();
         assert!(harness.query_by_label("Extend canvas…").is_none());
+    }
+
+    /// Writes a `w`×`h` PNG of one colour.
+    fn png(path: &Path, [w, h]: [u32; 2], rgb: [u8; 3]) {
+        let [r, g, b] = rgb;
+        image::RgbaImage::from_pixel(w, h, image::Rgba([r, g, b, 255]))
+            .save(path)
+            .unwrap();
+    }
+
+    /// Three steps with real files in `dir`, each input and output of its own size, run with
+    /// scale 2, 3 and 4. The middle one is current.
+    fn three_steps(dir: &Path) -> Vec<Step> {
+        (0..3u32)
+            .map(|n| {
+                let input = dir.join(format!("in{n}.png"));
+                let output = dir.join(format!("out{n}.png"));
+                let source_size = [8 + n, 6];
+                let result_size = [16 + 2 * n, 12];
+                png(&input, source_size, [40, 40, 40]);
+                png(&output, result_size, [200, 60 * n as u8, 40]);
+                Step {
+                    input,
+                    output,
+                    settings: Settings {
+                        scale: Some(2 + n),
+                        ..Settings::default()
+                    },
+                    source_size,
+                    result_size,
+                    margins: Margins::default(),
+                    label: format!("Upscale {}× · step {n}", 2 + n),
+                }
+            })
+            .collect()
+    }
+
+    /// A window with `steps` in its history and step `at` current, its previews not asked for.
+    fn history_harness(
+        dir: &Path,
+        settings: Settings,
+        steps: &[Step],
+        at: usize,
+    ) -> egui_kittest::Harness<'static, App> {
+        let mut app = app_with(dir, settings);
+        for s in steps {
+            app.state.history.push(s.clone());
+        }
+        app.state.history.go(at);
+        app.state.mode = Some(Mode::Single(steps[at].input.clone()));
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([1200.0, 800.0])
+            .build_ui_state(|ui, app: &mut App| app.frame(ui), app);
+        harness.step();
+        harness
+    }
+
+    /// Steps the window until the previews of the step asked for have arrived.
+    fn settle(harness: &mut egui_kittest::Harness<'_, App>) {
+        for _ in 0..1000 {
+            harness.step();
+            if harness.state().showing.is_none() {
+                harness.step();
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the worker did not send the step's previews");
+    }
+
+    /// Step `at` of `steps` is current and on screen.
+    fn assert_shows(app: &App, steps: &[Step], at: usize) {
+        assert_eq!(app.state.history.at(), Some(at));
+        assert_on_screen(app, &steps[at]);
+    }
+
+    /// `s` is on screen: its input is the selected image, its pair is shown.
+    fn assert_on_screen(app: &App, s: &Step) {
+        assert_eq!(app.state.mode, Some(Mode::Single(s.input.clone())));
+        assert_eq!(app.state.source_size, Some(s.source_size));
+        assert_eq!(
+            app.compare.sizes(),
+            [Some(s.source_size), Some(s.result_size)]
+        );
+    }
+
+    /// The outputs of the steps the worker was asked to show, in order.
+    fn asked(app: &App) -> Vec<PathBuf> {
+        app.asked.clone()
+    }
+
+    #[test]
+    fn back_forward_and_a_click_walk_the_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let steps = three_steps(dir.path());
+        let mut harness = history_harness(dir.path(), Settings::default(), &steps, 1);
+        assert_eq!(harness.state().strip.thumb_count(), 0);
+
+        harness.get_by_label("Back").click();
+        harness.step();
+        assert_eq!(asked(harness.state()), [steps[0].output.clone()]);
+        settle(&mut harness);
+        assert_shows(harness.state(), &steps, 0);
+        // The result preview made the step's thumbnail.
+        assert_eq!(harness.state().strip.thumb_count(), 1);
+        // At the first step Back is disabled.
+        harness.get_by_label("Back").click();
+        harness.step();
+        assert_eq!(harness.state().state.history.at(), Some(0));
+        assert_eq!(asked(harness.state()).len(), 1);
+
+        harness.get_by_label("Forward").click();
+        harness.step();
+        harness.get_by_label("Forward").click();
+        harness.step();
+        let want = [0, 1, 2].map(|i| steps[i].output.clone());
+        assert_eq!(asked(harness.state()), want);
+        settle(&mut harness);
+        assert_shows(harness.state(), &steps, 2);
+
+        harness.get_by_label("Step 2: Upscale 3× · step 1").click();
+        harness.step();
+        assert_eq!(asked(harness.state()).last(), Some(&steps[1].output));
+        settle(&mut harness);
+        assert_shows(harness.state(), &steps, 1);
+        assert!(harness.query_by_label("2 of 3").is_some());
+    }
+
+    #[test]
+    fn a_run_started_after_going_back_reads_the_steps_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let steps = three_steps(dir.path());
+        let mut harness = history_harness(dir.path(), Settings::default(), &steps, 2);
+        // An unrelated image is selected; going back makes the step's input the image.
+        let other = dir.path().join("other.png");
+        png(&other, [5, 5], [0, 0, 0]);
+        harness.state_mut().select(&other);
+        harness.step();
+        harness.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowLeft);
+        settle(&mut harness);
+        assert_shows(harness.state(), &steps, 1);
+        // The size line and Start see the step's input, and a result shows as a result.
+        assert!(harness.state().compare.edit_layout().is_none());
+        harness.state_mut().start();
+        let Some(Mode::Single(p)) = &harness.state().state.mode else {
+            panic!("no image")
+        };
+        assert_eq!(*p, steps[1].input);
+        assert!(harness.state().state.status.is_running());
+    }
+
+    #[test]
+    fn remove_takes_the_step_out_and_keeps_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let steps = three_steps(dir.path());
+        let mut harness = history_harness(dir.path(), Settings::default(), &steps, 1);
+        harness.get_by_label("Remove").click();
+        harness.step();
+        let h = &harness.state().state.history;
+        assert_eq!(h.steps().len(), 2);
+        assert_eq!(h.at(), Some(1));
+        assert_eq!(h.current().unwrap().output, steps[2].output);
+        assert!(steps[1].output.is_file());
+        // The view moves to the step the cursor moved to.
+        settle(&mut harness);
+        assert_on_screen(harness.state(), &steps[2]);
+        assert_eq!(harness.state().asked.last(), Some(&steps[2].output));
+        // The last ones go too: the strip goes, the selected image stays on screen alone.
+        harness.get_by_label("Remove").click();
+        harness.step();
+        harness.get_by_label("Remove").click();
+        harness.step();
+        harness.step();
+        assert!(harness.state().state.history.steps().is_empty());
+        assert!(harness.query_by_label("Back").is_none());
+        assert_eq!(harness.state().strip.thumb_count(), 0);
+        let mode = harness.state().state.mode.clone();
+        assert_eq!(mode, Some(Mode::Single(steps[0].input.clone())));
+        for _ in 0..1000 {
+            harness.step();
+            if harness.state().compare.sizes()[0].is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            harness.state().compare.sizes(),
+            [Some(steps[0].source_size), None]
+        );
+    }
+
+    #[test]
+    fn use_as_input_selects_the_result_and_restore_brings_its_settings_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let steps = three_steps(dir.path());
+        let mut harness = history_harness(dir.path(), Settings::default(), &steps, 1);
+        harness.get_by_label("Restore settings").click();
+        harness.step();
+        assert_eq!(harness.state().state.settings.scale, Some(3));
+
+        harness.get_by_label("Use as input").click();
+        harness.step();
+        let mode = harness.state().state.mode.clone();
+        assert_eq!(mode, Some(Mode::Single(steps[1].output.clone())));
+        for _ in 0..1000 {
+            harness.step();
+            if harness.state().state.source_size.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        harness.step();
+        // The result is now the image: alone, as a new image, with its size in the sidebar.
+        assert_eq!(
+            harness.state().compare.sizes(),
+            [Some(steps[1].result_size), None]
+        );
+        assert_eq!(
+            harness.state().state.source_size,
+            Some(steps[1].result_size)
+        );
+        // The history is unchanged.
+        assert_eq!(harness.state().state.history.steps().len(), 3);
+    }
+
+    #[test]
+    fn history_keys_walk_but_not_in_a_text_field_or_while_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let steps = three_steps(dir.path());
+        let settings = Settings {
+            extend_enabled: true,
+            extend_linked: false,
+            ..Settings::default()
+        };
+        let mut harness = history_harness(dir.path(), settings, &steps, 1);
+        let at = |h: &egui_kittest::Harness<'_, App>| h.state().state.history.at();
+        let cmd = egui::Modifiers::COMMAND;
+        let shift = egui::Modifiers::SHIFT;
+        let keys = [
+            (egui::Modifiers::ALT, egui::Key::ArrowLeft, 0),
+            (egui::Modifiers::ALT, egui::Key::ArrowRight, 1),
+            (cmd, egui::Key::Y, 2),
+            (cmd, egui::Key::Z, 1),
+            (cmd | shift, egui::Key::Z, 2),
+        ];
+        for (modifiers, key, want) in keys {
+            harness.key_press_modifiers(modifiers, key);
+            harness.step();
+            assert_eq!(at(&harness), Some(want), "{modifiers:?} {key:?}");
+        }
+        settle(&mut harness);
+
+        // A text field keeps its own undo.
+        harness.get_by_label("Right").click();
+        harness.step();
+        harness.step();
+        assert!(harness.ctx.text_edit_focused());
+        harness.key_press_modifiers(cmd, egui::Key::Z);
+        harness.step();
+        harness.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowLeft);
+        harness.step();
+        assert_eq!(at(&harness), Some(2));
+        assert_eq!(asked(harness.state()).len(), keys.len());
+        harness.ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+        harness.step();
+        assert!(!harness.ctx.text_edit_focused());
+
+        // While a run goes, neither the keys nor the strip move.
+        harness.state_mut().state.status = Status::Running {
+            file: 0,
+            files: 1,
+            percent: 10.0,
+            phase: "Upscaling".into(),
+        };
+        harness.step();
+        harness.key_press_modifiers(cmd, egui::Key::Z);
+        harness.step();
+        harness.get_by_label("Back").click();
+        harness.step();
+        harness.get_by_label("Step 1: Upscale 2× · step 0").click();
+        harness.step();
+        assert_eq!(at(&harness), Some(2));
+    }
+
+    #[test]
+    fn a_focused_canvas_handle_keeps_its_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = edit_harness(dir.path());
+        let steps = three_steps(dir.path());
+        for s in &steps {
+            harness.state_mut().state.history.push(s.clone());
+        }
+        harness.step();
+        harness.get_by_label("Right edge").focus();
+        harness.step();
+        harness.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowLeft);
+        harness.step();
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+        harness.step();
+        assert_eq!(harness.state().state.history.at(), Some(2));
+        assert!(harness.get_by_label("Right edge").is_focused());
+    }
+
+    #[test]
+    fn a_step_whose_file_is_gone_stays_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let steps = three_steps(dir.path());
+        std::fs::remove_file(&steps[0].output).unwrap();
+        let mut harness = history_harness(dir.path(), Settings::default(), &steps, 1);
+        harness.get_by_label("Back").click();
+        settle(&mut harness);
+        let app = harness.state();
+        assert_eq!(app.state.history.steps().len(), 3);
+        assert_eq!(app.state.history.at(), Some(0));
+        let why = app.step_error.clone().unwrap();
+        assert!(why.ends_with("no longer exists"), "{why}");
+        assert!(
+            harness
+                .query_by_label("This step cannot be shown")
+                .is_some()
+        );
+        // Another step shows again.
+        harness.get_by_label("Forward").click();
+        settle(&mut harness);
+        assert_shows(harness.state(), &steps, 1);
+        assert!(harness.state().step_error.is_none());
+    }
+
+    /// `n` steps made from the fixture photo, written to `dir`: upscales, extensions and a grey
+    /// version in turn, so the thumbnails differ in shape and tone.
+    fn photo_steps(dir: &Path, n: usize) -> Vec<Step> {
+        let photo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/images/photo_like_256x192.jpg");
+        let img = image::open(&photo).unwrap().into_rgba8();
+        let input = dir.join("harbour at night.png");
+        img.save(&input).unwrap();
+        let filter = image::imageops::FilterType::Triangle;
+        (0..n)
+            .map(|i| {
+                let (out, label, margins): (image::RgbaImage, &str, Margins) = match i % 3 {
+                    0 => (
+                        image::imageops::resize(&img, 512, 384, filter),
+                        "Upscale 2× · Real-ESRGAN General v3 (fast)",
+                        Margins::default(),
+                    ),
+                    1 => {
+                        let ground = image::Rgba([96, 104, 120, 255]);
+                        let mut wide = image::RgbaImage::from_pixel(384, 192, ground);
+                        image::imageops::overlay(&mut wide, &img, 64, 0);
+                        let m = Margins {
+                            left: 64,
+                            top: 0,
+                            right: 64,
+                            bottom: 0,
+                        };
+                        (wide, "Extend +64 px · LaMa (512)", m)
+                    }
+                    _ => {
+                        let big = image::imageops::resize(&img, 1024, 768, filter);
+                        let grey = image::DynamicImage::ImageRgba8(big).grayscale();
+                        (
+                            grey.into_rgba8(),
+                            "Upscale 4× · Real-ESRGAN General v3 (fast)",
+                            Margins::default(),
+                        )
+                    }
+                };
+                let output = dir.join(format!("harbour at night_scaleup_{i}.png"));
+                out.save(&output).unwrap();
+                Step {
+                    input: input.clone(),
+                    output,
+                    settings: Settings::default(),
+                    source_size: [256, 192],
+                    result_size: [out.width(), out.height()],
+                    margins,
+                    label: label.into(),
+                }
+            })
+            .collect()
+    }
+
+    /// Puts `steps` in the history with their thumbnails, made from the files as a run makes
+    /// them, then goes to step `at` (the worker sends its previews).
+    fn with_history(app: &mut App, ctx: &egui::Context, steps: &[Step], at: usize) {
+        for s in steps {
+            app.state.history.push(s.clone());
+            let img = image::open(&s.output).unwrap().into_rgba8();
+            let size = [img.width() as usize, img.height() as usize];
+            let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+            app.strip
+                .note_result(ctx, &app.state.history, &s.output, &color);
+        }
+        app.history_action(HistoryAction::Go(at));
+    }
+
+    fn mirror_settings() -> Settings {
+        Settings {
+            extend_enabled: true,
+            extend_linked: false,
+            extend_left: 64.0,
+            extend_right: 64.0,
+            extend_fill: "mirror".into(),
+            ..Settings::default()
+        }
     }
 
     /// Draws the whole window in its main states, dark and light, into `$SCALEUP_RENDER_DIR/*.png`
@@ -892,6 +1547,67 @@ mod tests {
                         path: Some(PathBuf::from("a.png")),
                         mime: String::new(),
                     });
+                },
+            );
+            // The history strip: three steps with the middle one current; twelve, scrolled to the
+            // current one; while running; at the smallest window with the log open.
+            let three = photo_steps(dir.path(), 3);
+            let twelve = photo_steps(dir.path(), 12);
+            let running = |a: &mut App| {
+                a.state.status = Status::Running {
+                    file: 0,
+                    files: 1,
+                    percent: 42.0,
+                    phase: "Upscaling".into(),
+                };
+            };
+            // Name, window size, steps, current step, running, log open.
+            type Case<'a> = (&'a str, [f32; 2], &'a [Step], usize, bool, bool);
+            let cases: [Case<'_>; 4] = [
+                ("history", big, &three, 1, false, false),
+                ("history-many", big, &twelve, 10, false, false),
+                ("history-running", big, &three, 1, true, false),
+                ("history-small", [900.0, 600.0], &twelve, 4, false, true),
+            ];
+            for (name, size, steps, at, run, log) in cases {
+                render_then(
+                    new(),
+                    size,
+                    theme,
+                    &format!("{name}-{t}"),
+                    |a, c| {
+                        with_history(a, c, steps, at);
+                        a.log_open = log;
+                        a.state.log = (0..6).map(|i| format!("tile {i}/24 done")).collect();
+                    },
+                    |h| {
+                        settle(h);
+                        if run {
+                            running(h.state_mut());
+                        }
+                    },
+                );
+            }
+            // Use as input on an extension, at the smallest window: the edit stage of the result.
+            render_then(
+                app_with(dir.path(), mirror_settings()),
+                [900.0, 600.0],
+                theme,
+                &format!("history-edit-small-{t}"),
+                |a, c| {
+                    with_history(a, c, &three, 2);
+                    a.log_open = true;
+                },
+                |h| {
+                    settle(h);
+                    h.get_by_label("Use as input").click();
+                    for _ in 0..500 {
+                        h.step();
+                        if h.state().compare.edit_layout().is_some() {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
                 },
             );
         }

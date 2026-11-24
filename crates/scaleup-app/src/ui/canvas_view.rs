@@ -172,6 +172,12 @@ fn handle_id(handle: Handle) -> egui::Id {
     egui::Id::unique(("canvas_handle", handle))
 }
 
+/// True while one of the handles has the keyboard focus: its keys belong to it then.
+pub fn handle_focused(ctx: &egui::Context) -> bool {
+    ctx.memory(|m| m.focused())
+        .is_some_and(|id| Handle::ALL.iter().any(|&h| handle_id(h) == id))
+}
+
 impl EditView {
     /// Forgets a drag in progress.
     pub fn clear(&mut self) {

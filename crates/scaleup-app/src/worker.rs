@@ -68,10 +68,6 @@ pub enum UiMsg {
         fills: Vec<FillChoice>,
     },
     /// Show a history step: its input as "before", its output as "after" with its margins.
-    #[allow(
-        dead_code,
-        reason = "wired by the history strip and the Try several list (plan 12, Tasks 6 and 7)"
-    )]
     ShowStep {
         input: PathBuf,
         output: PathBuf,
@@ -106,10 +102,6 @@ pub enum UiMsg {
     Quit,
 }
 
-#[allow(
-    dead_code,
-    reason = "wired by the history strip and the Try several list (plan 12, Tasks 6 and 7)"
-)]
 impl UiMsg {
     /// The message that shows `step` again.
     pub fn show_step(step: &Step) -> Self {
@@ -168,6 +160,8 @@ pub enum WorkerEvent {
     ModelDownloaded(String),
     Preview {
         which: Which,
+        /// The file decoded: the window matches a history step's previews and thumbnail by it.
+        path: PathBuf,
         image: egui::ColorImage,
         /// Size of the file, which `image` may be a downscaled copy of.
         size: [u32; 2],
@@ -399,6 +393,7 @@ fn preview_event(path: &Path, which: Which, margins: Margins) -> Result<WorkerEv
     let dims = [img.width() as usize, img.height() as usize];
     Ok(WorkerEvent::Preview {
         which,
+        path: path.to_path_buf(),
         image: egui::ColorImage::from_rgba_unmultiplied(dims, img.as_raw()),
         size,
         margins,
@@ -1326,15 +1321,17 @@ mod tests {
         let input = d.path().join("a.png");
         write_png(&input, 9);
         let h = cpu_worker(d.path());
-        h.tx.send(UiMsg::Preview(input)).unwrap();
+        h.tx.send(UiMsg::Preview(input.clone())).unwrap();
         loop {
             match h.rx.recv_timeout(Duration::from_secs(120)).unwrap() {
                 WorkerEvent::Preview {
                     which,
+                    path,
                     image,
                     size,
                     margins,
                 } => {
+                    assert_eq!(path, input);
                     assert_eq!(margins, Margins::default());
                     assert_eq!(which, Which::Before);
                     assert_eq!(size, [9, 9]);

@@ -423,10 +423,6 @@ pub struct History {
     at: Option<usize>,
 }
 
-#[allow(
-    dead_code,
-    reason = "wired by the history strip and the Try several list (plan 12, Tasks 6 and 7)"
-)]
 impl History {
     pub fn steps(&self) -> &[Step] {
         &self.steps
@@ -686,7 +682,9 @@ impl AppState {
         self.stopping = self.status.is_running();
     }
 
-    /// Remembers the size of a decoded preview: the "before" of a single image is the source.
+    /// Remembers the size of a decoded preview: the "before" of a single image is the source. A
+    /// history step's "before" is its input, which going to the step made the selected image, so
+    /// the size always describes the image the next run reads.
     pub fn note_preview(&mut self, which: Which, size: [u32; 2]) {
         if which == Which::Before && matches!(self.mode, Some(Mode::Single(_))) {
             self.source_size = Some(size);
@@ -695,10 +693,6 @@ impl AppState {
 
     /// "Restore settings": the settings of step `index`, with this window's own preferences (the
     /// OpenModelDB filters, the non-commercial group) kept as they are now.
-    #[allow(
-        dead_code,
-        reason = "wired by the history strip and the Try several list (plan 12, Tasks 6 and 7)"
-    )]
     pub fn restore_settings(&self, index: usize) -> Option<Settings> {
         let step = self.history.steps().get(index)?;
         Some(Settings {
