@@ -407,10 +407,14 @@ impl Upscaler {
     /// share a name: `<stem>_scaleup_ext_<fill>.<ext>` when only extending, and
     /// `<stem>_scaleup_ext_<fill>_4x_<model_id>.<ext>` (or `_<w>px_`) when upscaling. `<fill>` is
     /// the fill's CLI word (`mirror`, `edge`, `transparent`, or the colour as `rrggbb`), and for
-    /// the AI fill `ai-<inpaint>`, `<inpaint>` being `inpaint_model` (a model given as a file path
-    /// is named by its file stem; plain `ai` when it is `None`). Plain fills ignore
-    /// `inpaint_model`. A job that does not extend keeps [`Upscaler::output_name`]; with neither
-    /// an extension nor a model the name is `<stem>_scaleup.<ext>`.
+    /// the AI fill `ai-<inpaint>`, `<inpaint>` being `inpaint_model` (plain `ai` when it is
+    /// `None`). Plain fills ignore `inpaint_model`. A job that does not extend keeps
+    /// [`Upscaler::output_name`]; with neither an extension nor a model the name is
+    /// `<stem>_scaleup.<ext>`.
+    ///
+    /// `model_id` and `inpaint_model` are taken as the user gave them: a catalogue id is used as
+    /// it is, and a model given as a file path is named by its file stem. This is the one place
+    /// that rule lives, so the app and the CLI name their files alike.
     pub fn output_name_for(
         input: &Path,
         out_dir: &Path,
@@ -429,12 +433,12 @@ impl Upscaler {
             (Some(fill), _) => format!("_ext_{}", fill_word(fill)),
             (None, _) => String::new(),
         };
-        let tail = match model_id {
+        let tail = match model_id.map(name_part) {
             Some(model_id) => {
                 let size = match (opts.output_width, opts.output_scale) {
                     (Some(w), _) => format!("{w}px"),
                     (None, Some(s)) => format!("{s}x"),
-                    (None, None) => format!("{}x", scale_from_name(model_id)),
+                    (None, None) => format!("{}x", scale_from_name(&model_id)),
                 };
                 format!("{ext}_{size}_{model_id}")
             }
@@ -1173,6 +1177,21 @@ mod tests {
         assert_eq!(
             name(None, &Fill::Ai, Some("lama-manga")),
             out.join("a_scaleup_ext_ai-lama-manga.png")
+        );
+        // So is an upscaling model file; without a scale, the scale comes from that stem.
+        assert_eq!(
+            name(Some("models/4x_custom.v2.onnx"), &Fill::Mirror, None),
+            out.join("a_scaleup_ext_mirror_4x_4x_custom.v2.png")
+        );
+        assert_eq!(
+            Upscaler::output_name(
+                Path::new("a.png"),
+                out,
+                "models/2x_custom.onnx",
+                &UpscaleOptions::default(),
+                OutputFormat::Png
+            ),
+            out.join("a_scaleup_2x_2x_custom.png")
         );
         // Plain fills ignore the inpainting model and are named by their fill.
         assert_eq!(

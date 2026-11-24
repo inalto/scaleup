@@ -268,17 +268,6 @@ pub fn spawn_with(registry: Registry, initial_gpu: &str, hub: HubConfig) -> Work
     }
 }
 
-/// `model_id` as it appears in output names: the file stem for a custom model file.
-fn model_label(model_id: &str) -> String {
-    let path = Path::new(model_id);
-    if (path.extension().is_some() || path.components().count() > 1)
-        && let Some(stem) = path.file_stem()
-    {
-        return stem.to_string_lossy().into_owned();
-    }
-    model_id.to_string()
-}
-
 /// The files a run processes. Batch mode takes the supported images directly inside the folder,
 /// sorted, leaving out earlier results of this app.
 pub(crate) fn plan_jobs(mode: &Mode, s: &Settings) -> Vec<FileJob> {
@@ -303,7 +292,7 @@ pub(crate) fn plan_jobs(mode: &Mode, s: &Settings) -> Vec<FileJob> {
     let format = OutputFormat::parse(&s.format).unwrap_or(OutputFormat::Png);
     let opts = s.to_options();
     // Extend only: no model, so none in the name either.
-    let label = s.upscales().then(|| model_label(&s.model_id));
+    let label = s.upscales().then_some(s.model_id.as_str());
     // `start` refuses settings whose fill cannot be read before it plans anything.
     let extend = s.to_extend_options().ok().flatten();
     inputs
@@ -312,7 +301,7 @@ pub(crate) fn plan_jobs(mode: &Mode, s: &Settings) -> Vec<FileJob> {
             output: Upscaler::output_name_for(
                 &input,
                 &s.output_dir_for(&input),
-                label.as_deref(),
+                label,
                 extend.as_ref().map(|e| &e.fill),
                 Some(&s.extend_model),
                 &opts,

@@ -240,7 +240,8 @@ fn run(
                 rep.warn(&line);
             }
         }
-        loaded = Some((model, model_id));
+        // Output names take the id or the file as given: `output_name_for` stems a file itself.
+        loaded = Some((model, up.model.clone()));
     }
 
     // The inpainting model is loaded once per run, and only when the AI fill will use it.
