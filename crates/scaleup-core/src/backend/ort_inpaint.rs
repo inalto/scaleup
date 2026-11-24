@@ -137,6 +137,21 @@ impl Layout {
     }
 }
 
+/// Whether a failure to open a model on `tried` is retried on the CPU: only for an entry that
+/// says the graph works on a GPU (`gpu: true`), and only when `tried` is a GPU. A CPU-only model
+/// (lama-512) never gets here, and a uint8 model given by path fails as it always has.
+pub(crate) fn falls_back_to_cpu(hint: &InpaintLayout, tried: &DeviceInfo) -> bool {
+    hint.gpu == Some(true) && tried.kind.is_gpu()
+}
+
+/// A float32 output value in `range`, as 0..1 rounded to 8 bits; out-of-range values clamp.
+fn from_output(v: f32, range: OutputRange) -> f32 {
+    match range {
+        OutputRange::Byte => v.clamp(0.0, 255.0).round() / 255.0,
+        OutputRange::Unit => f32::from(to_u8(v)) / 255.0,
+    }
+}
+
 fn commit(device: &DeviceInfo, path: &Path) -> Result<Session> {
     builder_for(device)?
         .commit_from_file(path)
@@ -165,6 +180,10 @@ impl OrtBackend {
     /// when the layout then names another device (MI-GAN given by path on a GPU), because the
     /// LaMa graphs take 16 to 20 s to open. A file that is missing or of neither packing is a
     /// [`ScaleUpError::Model`].
+    ///
+    /// When an entry that says `gpu: true` cannot be opened on the GPU, the model is opened on the
+    /// CPU instead, with a warning (`falls_back_to_cpu`): such a model is verified on one
+    /// DirectML GPU only, and a slow run beats a failed one.
     pub fn load_inpainter(&self, path: &Path, hint: &InpaintLayout) -> Result<Box<dyn Inpainter>> {
         if !path.is_file() {
             return Err(ScaleUpError::Model(format!(
@@ -173,13 +192,26 @@ impl OrtBackend {
             )));
         }
         let started = Instant::now();
-        let selected = self.device();
+        let mut selected = self.device().clone();
         let first = if hint.gpu == Some(true) {
             selected.clone()
         } else {
             cpu_device()
         };
-        let session = commit(&first, path)?;
+        let (first, session) = match commit(&first, path) {
+            Ok(session) => (first, session),
+            Err(e) if falls_back_to_cpu(hint, &first) => {
+                tracing::warn!(
+                    "inpainting model {} could not be opened on {}, running it on the CPU: {e}",
+                    path.display(),
+                    first.name
+                );
+                selected = cpu_device();
+                (cpu_device(), commit(&cpu_device(), path)?)
+            }
+            Err(e) => return Err(e),
+        };
+        let selected = &selected;
         let layout = Layout::detect(&signature(&session), hint)
             .map_err(|e| ScaleUpError::Model(format!("{}: {e}", path.display())))?;
         let Some(output_name) = session.outputs().first().map(|o| o.name().to_string()) else {
@@ -287,12 +319,11 @@ impl Inpainter for OrtInpainter {
             }
             Packing::LaMa { output } => {
                 let mask: Vec<f32> = known.iter().map(|&k| if k { 0.0 } else { 1.0 }).collect();
-                let out = self.run(&rgb.data, &mask)?.into_iter();
                 // Rounded to 8 bits either way, so a known pixel comes back as it went in.
-                match output {
-                    OutputRange::Byte => out.map(|v| v.clamp(0.0, 255.0).round() / 255.0).collect(),
-                    OutputRange::Unit => out.map(|v| f32::from(to_u8(v)) / 255.0).collect(),
-                }
+                self.run(&rgb.data, &mask)?
+                    .into_iter()
+                    .map(|v| from_output(v, output))
+                    .collect()
             }
         };
         Ok(Image32 {
@@ -646,6 +677,48 @@ mod tests {
         let l = Layout::detect(&migan, &catalogue_layout("migan-512-places2")).unwrap();
         assert_eq!(l.device_for(&gpu), gpu);
         assert_eq!(l.device_for(&cpu_device()), cpu_device());
+    }
+
+    #[test]
+    fn only_a_gpu_entry_that_fails_on_the_gpu_falls_back_to_the_cpu() {
+        let gpu = DeviceInfo {
+            kind: DeviceKind::DirectMl,
+            index: 0,
+            name: "DirectML GPU 0".into(),
+        };
+        // lama-manga: tried on the GPU, retried on the CPU.
+        assert!(falls_back_to_cpu(&catalogue_layout("lama-manga"), &gpu));
+        // Already on the CPU: nothing to retry.
+        assert!(!falls_back_to_cpu(
+            &catalogue_layout("lama-manga"),
+            &cpu_device()
+        ));
+        // No `gpu: true` (lama-512, MI-GAN, a file by path): a failure stays a failure.
+        for id in ["lama-512", "migan-512-places2"] {
+            assert!(!falls_back_to_cpu(&catalogue_layout(id), &gpu), "{id}");
+        }
+        assert!(!falls_back_to_cpu(&InpaintLayout::default(), &gpu));
+        let off = InpaintLayout {
+            gpu: Some(false),
+            ..InpaintLayout::default()
+        };
+        assert!(!falls_back_to_cpu(&off, &gpu));
+    }
+
+    #[test]
+    fn out_of_range_outputs_clamp() {
+        use OutputRange::{Byte, Unit};
+        for (v, range, want) in [
+            (-0.5, Unit, 0.0),
+            (1.7, Unit, 1.0),
+            (0.5, Unit, 128.0 / 255.0),
+            (f32::NEG_INFINITY, Unit, 0.0),
+            (-3.0, Byte, 0.0),
+            (300.0, Byte, 1.0),
+            (127.6, Byte, 128.0 / 255.0),
+        ] {
+            assert_eq!(from_output(v, range), want, "{v} in {range:?}");
+        }
     }
 
     #[test]

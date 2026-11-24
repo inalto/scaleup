@@ -1,6 +1,8 @@
-Model: lama-manga — Author: dreMaz (AnimeMangaInpainting, LaMa fine-tuned on anime and manga; upstream declares MIT); base model LaMa by Roman Suvorov et al. (advimman/lama, https://github.com/advimman/lama, Apache-2.0); ONNX export by ogkalu (https://huggingface.co/ogkalu/lama-manga-onnx-dynamic) — Source: https://huggingface.co/ogkalu/lama-manga-onnx-dynamic/resolve/ee4ed4a8447b6730fc41d34f90876b6c48af925a/lama-manga-dynamic.onnx
+Model: lama-manga — Author: ogkalu (ONNX export, https://huggingface.co/ogkalu/lama-manga-onnx-dynamic) — Source: https://huggingface.co/ogkalu/lama-manga-onnx-dynamic/resolve/ee4ed4a8447b6730fc41d34f90876b6c48af925a/lama-manga-dynamic.onnx
 
-License as declared by the uploader; the terms of the weights and of the training data were not verified. The Hugging Face card of ogkalu/lama-manga-onnx-dynamic declares Apache-2.0, reproduced below.
+Base model as stated on the uploader's model card: dreMaz/AnimeMangaInpainting, which declares MIT on Hugging Face (read 2026-11-24).
+
+License as declared by the uploader; the terms of the weights and of the training data were not verified. The uploader's model card declares Apache-2.0, reproduced below.
 
                               Apache License
                         Version 2.0, January 2004

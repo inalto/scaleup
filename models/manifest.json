@@ -181,7 +181,7 @@
         "extend",
         "anime"
       ],
-      "notes": "ogkalu/lama-manga-onnx-dynamic: LaMa (advimman/lama) fine-tuned on anime and manga by dreMaz (AnimeMangaInpainting); dynamic size, run at 512x512; runs on the GPU; license as declared by the uploader",
+      "notes": "ONNX export by ogkalu/lama-manga-onnx-dynamic. Base model as stated on the uploader's model card: dreMaz/AnimeMangaInpainting, which declares MIT on Hugging Face (read 2026-11-24). Dynamic size, run at 512x512; runs on the GPU. License as declared by the uploader; the terms of the weights and of the training data were not verified.",
       "good_for": "Illustrations and flat colour, fast on the GPU. Blurs photo detail on large margins.",
       "layout": {
         "output": "0..1",

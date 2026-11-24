@@ -94,7 +94,11 @@ pub enum OutputRange {
 /// model given by file path is run: a float32 graph (LaMa) gives `0..255`, stays on the CPU and
 /// takes context factors up to 4; a uint8 graph (MI-GAN) runs on the chosen device with a context
 /// factor of 1. `output` applies to float32 graphs only (uint8 outputs are always 0..255).
+///
+/// Unknown fields are refused, so a misspelt field is an error rather than a rule quietly not
+/// applied.
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct InpaintLayout {
     /// Range of a float32 output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -169,14 +173,27 @@ impl ModelEntry {
 
 #[derive(Deserialize)]
 struct Manifest {
-    models: Vec<ModelEntry>,
+    models: Vec<serde_json::Value>,
 }
 
-/// Parses a manifest document (`{"version": 1, "models": [...]}`).
+/// Parses a manifest document (`{"version": 1, "models": [...]}`). An invalid entry is an error
+/// naming its id (or its position when it has none).
 pub fn parse_manifest(json: &str) -> Result<Vec<ModelEntry>> {
-    serde_json::from_str::<Manifest>(json)
-        .map(|m| m.models)
-        .map_err(|e| ScaleUpError::Model(format!("invalid model manifest: {e}")))
+    let invalid =
+        |e: &dyn std::fmt::Display| ScaleUpError::Model(format!("invalid model manifest: {e}"));
+    let manifest = serde_json::from_str::<Manifest>(json).map_err(|e| invalid(&e))?;
+    manifest
+        .models
+        .into_iter()
+        .enumerate()
+        .map(|(i, value)| {
+            let name = match value.get("id").and_then(|id| id.as_str()) {
+                Some(id) => format!("model '{id}'"),
+                None => format!("model {}", i + 1),
+            };
+            ModelEntry::deserialize(value).map_err(|e| invalid(&format!("{name}: {e}")))
+        })
+        .collect()
 }
 
 /// A model ready to load: a local file, plus its scale and catalogue entry when known.
@@ -1079,6 +1096,13 @@ mod tests {
         assert_eq!(c["layout"], serde_json::json!({"output": "0..255"}));
         // An unknown range is refused, not guessed.
         assert!(parse_manifest(&json.replace("\"0..1\"", "\"0..2\"")).is_err());
+        // A misspelt layout field is an error naming the entry, not a rule quietly dropped.
+        let typo = json.replace("\"max_context_factor\":2", "\"max_context\":2");
+        let err = parse_manifest(&typo).unwrap_err().to_string();
+        assert!(
+            err.contains("model 'b'") && err.contains("max_context"),
+            "{err}"
+        );
     }
 
     #[test]
