@@ -403,6 +403,8 @@ pub const HISTORY_LIMIT: usize = 30;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Step {
     pub input: PathBuf,
+    /// The file the run wrote. With Overwrite on, a later run of the same image and settings
+    /// writes this same path again: both steps then show the newest picture, the only one on disk.
     pub output: PathBuf,
     /// The settings of the run, for "Restore settings".
     pub settings: Settings,
@@ -417,10 +419,15 @@ pub struct Step {
 
 /// The results of this session, oldest first, and the one being looked at. Moving the cursor never
 /// drops steps: a new result goes after the last one wherever the cursor is.
+///
+/// The cursor's step is on screen until something else replaces the picture (another image, "Use
+/// as input"): [`History::leave`]. The cursor stays where it was, so Back shows that step again.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct History {
     steps: Vec<Step>,
     at: Option<usize>,
+    /// The image area shows something other than the cursor's step.
+    away: bool,
 }
 
 impl History {
@@ -437,6 +444,16 @@ impl History {
         self.steps.get(self.at?)
     }
 
+    /// Index of the step on screen: the cursor's, unless the picture was replaced since.
+    pub fn shown(&self) -> Option<usize> {
+        self.at.filter(|_| !self.away)
+    }
+
+    /// The picture on screen is no longer the cursor's step. The cursor stays.
+    pub fn leave(&mut self) {
+        self.away = true;
+    }
+
     /// Adds `step` after the last one and makes it current. Past [`HISTORY_LIMIT`] the oldest step
     /// is dropped.
     pub fn push(&mut self, step: Step) {
@@ -445,34 +462,40 @@ impl History {
             self.steps.remove(0);
         }
         self.at = Some(self.steps.len() - 1);
+        self.away = false;
     }
 
+    /// Back can show a step: the one before the shown step, or, with no step shown, the
+    /// cursor's own.
     pub fn can_back(&self) -> bool {
-        self.at.is_some_and(|i| i > 0)
+        self.at.is_some_and(|i| i > 0 || self.away)
     }
 
     pub fn can_forward(&self) -> bool {
         self.at.is_some_and(|i| i + 1 < self.steps.len())
     }
 
-    /// The step before the current one becomes current; `None`, and no change, at the first.
+    /// The step before the current one becomes current and shown; `None`, and no change, at the
+    /// first. With no step shown, the cursor's step is shown again instead.
     pub fn back(&mut self) -> Option<&Step> {
-        let i = self.at.filter(|_| self.can_back())? - 1;
-        self.go(i)
+        let at = self.at.filter(|_| self.can_back())?;
+        self.go(if self.away { at } else { at - 1 })
     }
 
-    /// The step after the current one becomes current; `None`, and no change, at the last.
+    /// The step after the current one becomes current and shown; `None`, and no change, at the
+    /// last.
     pub fn forward(&mut self) -> Option<&Step> {
         let i = self.at.filter(|_| self.can_forward())? + 1;
         self.go(i)
     }
 
-    /// Makes step `index` current; `None`, and no change, when there is no such step.
+    /// Makes step `index` current and shown; `None`, and no change, when there is no such step.
     pub fn go(&mut self, index: usize) -> Option<&Step> {
         if index >= self.steps.len() {
             return None;
         }
         self.at = Some(index);
+        self.away = false;
         self.steps.get(index)
     }
 
@@ -1446,6 +1469,55 @@ mod tests {
         assert_eq!(h.current().map(|s| s.label.as_str()), Some("step 1"));
         assert_eq!(h.use_as_input(2), Some(Path::new("out2.png")));
         assert_eq!(h.use_as_input(9), None);
+    }
+
+    #[test]
+    fn leaving_the_history_keeps_the_cursor_and_back_shows_it_again() {
+        let mut h = History::default();
+        assert_eq!(h.shown(), None);
+        for n in 0..3 {
+            h.push(step(n));
+        }
+        h.go(1);
+        assert_eq!(h.shown(), Some(1));
+        h.leave();
+        assert_eq!(h.shown(), None);
+        assert_eq!(h.at(), Some(1));
+        // Back shows the cursor's step again, not the one before it.
+        assert!(h.can_back());
+        assert_eq!(h.back().map(|s| s.label.clone()), Some("step 1".into()));
+        assert_eq!(h.shown(), Some(1));
+        // Forward goes on to the next step when there is one.
+        h.leave();
+        assert!(h.can_forward());
+        h.forward();
+        assert_eq!(h.shown(), Some(2));
+        h.leave();
+        assert!(!h.can_forward());
+        assert!(h.forward().is_none());
+        assert_eq!(h.shown(), None);
+        // Left at the first step, Back is still there: it shows that step.
+        h.go(0);
+        assert!(!h.can_back());
+        h.leave();
+        assert!(h.can_back());
+        assert_eq!(h.back().map(|s| s.label.clone()), Some("step 0".into()));
+        // A new result is shown; a click on a step shows it.
+        h.leave();
+        h.push(step(3));
+        assert_eq!(h.shown(), Some(3));
+        h.leave();
+        h.go(2);
+        assert_eq!(h.shown(), Some(2));
+        // Removing keeps "away"; the last removed leaves nothing shown.
+        h.leave();
+        h.remove(2);
+        assert_eq!(h.shown(), None);
+        for _ in 0..3 {
+            h.remove(0);
+        }
+        assert_eq!((h.at(), h.shown()), (None, None));
+        assert!(!h.can_back());
     }
 
     #[test]

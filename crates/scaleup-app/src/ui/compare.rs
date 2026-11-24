@@ -107,6 +107,8 @@ pub struct StageInput<'a> {
     pub single: bool,
     /// A run or a download is in progress.
     pub running: bool,
+    /// The history step on screen, as its chip names it; `None` when the picture is not a step.
+    pub step: Option<String>,
 }
 
 /// Zooms about the pointer with the scroll wheel, between the view's limits.
@@ -295,6 +297,7 @@ impl CompareView {
         let image = input.single && self.before.is_some() && !input.running;
         let adjust = image && input.settings.extend_enabled && self.after.is_some();
         let offer = image && !input.settings.extend_enabled;
+        let has_result = self.after.is_some();
         let Some(native) = self.show_result(ui, rect) else {
             return false;
         };
@@ -324,6 +327,10 @@ impl CompareView {
                     input.settings.extend_enabled = true;
                     self.editing = true;
                     changed = true;
+                }
+                // Which history step this result is, cut short with … when the row is short.
+                if let Some(text) = input.step.as_deref().filter(|_| has_result) {
+                    theme::overlay_chip_elided(ui, text, theme::OVERLAY).on_hover_text(text);
                 }
             },
         );

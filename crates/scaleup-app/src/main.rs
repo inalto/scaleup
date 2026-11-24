@@ -4,6 +4,7 @@
 mod app;
 mod paste;
 mod state;
+mod step_previews;
 mod thumbs;
 mod ui;
 mod worker;

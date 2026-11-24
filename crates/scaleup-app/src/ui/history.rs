@@ -99,11 +99,48 @@ pub fn step_hover(step: &Step) -> String {
     format!("{}\n{file}\n{w}×{h}", step.label)
 }
 
-/// Where the cursor is: `3 of 7`.
+/// Which step is on screen, `3 of 7`; with none on screen, how many there are, `7 steps`.
 pub fn count_text(history: &History) -> String {
-    match history.at() {
-        Some(at) => format!("{} of {}", at + 1, history.steps().len()),
-        None => String::new(),
+    let n = history.steps().len();
+    match (history.shown(), n) {
+        (Some(at), _) => format!("{} of {n}", at + 1),
+        (None, 0) => String::new(),
+        (None, 1) => "1 step".into(),
+        (None, _) => format!("{n} steps"),
+    }
+}
+
+/// The chip in the image area naming the step on screen: `Step 2 of 3 · Extend +96 px · Mirror`.
+/// `None` while no step is on screen.
+pub fn shown_text(history: &History) -> Option<String> {
+    let at = history.shown()?;
+    let step = history.steps().get(at)?;
+    Some(format!(
+        "Step {} of {} · {}",
+        at + 1,
+        history.steps().len(),
+        step.label
+    ))
+}
+
+/// How a thumbnail is marked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    /// The step on screen: the accent outline.
+    Shown,
+    /// The cursor's step while something else is on screen: a neutral, slightly stronger outline.
+    Visited,
+    Plain,
+}
+
+/// The mark of step `index`.
+pub fn mark(history: &History, index: usize) -> Mark {
+    if history.shown() == Some(index) {
+        Mark::Shown
+    } else if history.at() == Some(index) {
+        Mark::Visited
+    } else {
+        Mark::Plain
     }
 }
 
@@ -258,7 +295,10 @@ impl HistoryStrip {
                 // The actions and the count keep their width; the thumbnails get the rest.
                 let actions = ActionsLayout::measure(ui);
                 let count_font = egui::TextStyle::Body.resolve(ui.style());
-                let count_w = text_width(ui, "30 of 30", count_font);
+                let count_w = ["30 of 30", "30 steps"]
+                    .map(|t| text_width(ui, t, count_font.clone()))
+                    .into_iter()
+                    .fold(0.0, f32::max);
                 // Before the actions and before the count: item spacing, a space, item spacing.
                 let right = actions.width() + count_w + 6.0 * GAP;
                 let thumbs_w = (ui.available_width() - right).max(THUMB_MIN_WIDTH);
@@ -269,7 +309,8 @@ impl HistoryStrip {
                     }
                 });
                 ui.add_space(GAP);
-                if let Some(a) = step_actions(ui, &actions) {
+                let on_step = history.shown().is_some();
+                if let Some(a) = step_actions(ui, &actions, on_step) {
                     action = Some(a);
                 }
                 ui.add_space(GAP);
@@ -279,7 +320,9 @@ impl HistoryStrip {
                     |ui| {
                         let text = egui::RichText::new(count_text(history)).weak();
                         ui.add(egui::Label::new(text).selectable(false))
-                            .on_hover_text("The step shown, and how many steps this session has");
+                            .on_hover_text(
+                                "The step on screen, and how many steps this session has",
+                            );
                     },
                 );
             });
@@ -300,10 +343,9 @@ impl HistoryStrip {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     for (i, step) in history.steps().iter().enumerate() {
-                        let current = history.at() == Some(i);
                         let texture = self.thumbs.get(&step.output);
-                        let resp = step_thumb(ui, i, step, texture, current);
-                        if current && scroll {
+                        let resp = step_thumb(ui, i, step, texture, mark(history, i));
+                        if history.at() == Some(i) && scroll {
                             resp.scroll_to_me_animation(
                                 Some(egui::Align::Center),
                                 egui::style::ScrollAnimation::none(),
@@ -389,9 +431,15 @@ fn text_width(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
         .x
 }
 
-/// The actions on the current step, two by two, in the panel's plain button style.
-fn step_actions(ui: &mut egui::Ui, layout: &ActionsLayout) -> Option<HistoryAction> {
+/// The actions on the step on screen, two by two, in the panel's plain button style; disabled
+/// while no step is on screen (`on_step` false).
+fn step_actions(ui: &mut egui::Ui, layout: &ActionsLayout, on_step: bool) -> Option<HistoryAction> {
     let mut action = None;
+    let why = if ui.is_enabled() {
+        "Go to a step first"
+    } else {
+        "Not while a run is in progress"
+    };
     let gap_y = THUMB_HEIGHT - 2.0 * ACTION_HEIGHT;
     for (column, width) in ACTIONS.iter().zip(layout.columns) {
         ui.allocate_ui_with_layout(
@@ -401,7 +449,12 @@ fn step_actions(ui: &mut egui::Ui, layout: &ActionsLayout) -> Option<HistoryActi
                 ui.spacing_mut().item_spacing.y = gap_y;
                 for (text, hover, a) in column {
                     let button = egui::Button::new(*text).min_size(vec2(width, ACTION_HEIGHT));
-                    if ui.add(button).on_hover_text(*hover).clicked() {
+                    let resp = ui.add_enabled(on_step, button);
+                    if resp
+                        .on_hover_text(*hover)
+                        .on_disabled_hover_text(why)
+                        .clicked()
+                    {
                         action = Some(*a);
                     }
                 }
@@ -467,20 +520,21 @@ fn chevron(painter: &egui::Painter, at: egui::Pos2, nav: Nav, stroke: Stroke) {
     painter.add(egui::Shape::line(points, stroke));
 }
 
-/// One step's thumbnail: a button showing the result, a 1 px outline, the accent on the current one.
+/// One step's thumbnail: a button showing the result, a 1 px outline, the accent on the step on
+/// screen.
 fn step_thumb(
     ui: &mut egui::Ui,
     index: usize,
     step: &Step,
     texture: Option<&TextureHandle>,
-    current: bool,
+    mark: Mark,
 ) -> egui::Response {
     let size = thumb_size(step.result_size);
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let on = ui.is_enabled();
     resp.widget_info(|| {
         let mut info = egui::WidgetInfo::labeled(egui::Role::Button, on, step_name(index, step));
-        info.selected = Some(current);
+        info.selected = Some(mark == Mark::Shown);
         info
     });
     if ui.is_rect_visible(rect) {
@@ -502,10 +556,12 @@ fn step_thumb(
                 );
             }
         }
-        let stroke = if current {
+        let stroke = if mark == Mark::Shown {
             Stroke::new(2.0, theme::ACCENT)
         } else if resp.hovered() || resp.has_focus() {
             Stroke::new(1.0, visuals.widgets.hovered.fg_stroke.color)
+        } else if mark == Mark::Visited {
+            Stroke::new(1.5, visuals.weak_text_color())
         } else {
             Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color)
         };
@@ -612,6 +668,30 @@ mod tests {
         ] {
             assert!(fonts_have(&text), "{text}");
         }
+    }
+
+    #[test]
+    fn with_no_step_on_screen_the_count_and_marks_say_so() {
+        let mut h = History::default();
+        assert_eq!(shown_text(&h), None);
+        h.push(step(0));
+        h.leave();
+        assert_eq!(count_text(&h), "1 step");
+        for n in 1..7 {
+            h.push(step(n));
+        }
+        h.go(1);
+        assert_eq!(
+            shown_text(&h).as_deref(),
+            Some("Step 2 of 7 · Extend +128 px · LaMa (512) · 1×")
+        );
+        assert_eq!(mark(&h, 1), Mark::Shown);
+        assert_eq!(mark(&h, 2), Mark::Plain);
+        h.leave();
+        assert_eq!(count_text(&h), "7 steps");
+        assert_eq!(shown_text(&h), None);
+        assert_eq!(mark(&h, 1), Mark::Visited);
+        assert!(fonts_have(&count_text(&h)));
     }
 
     #[test]

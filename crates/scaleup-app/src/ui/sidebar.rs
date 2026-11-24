@@ -840,6 +840,7 @@ mod tests {
                             registry: &registry,
                             single: true,
                             running: false,
+                            step: None,
                         },
                     );
                 },

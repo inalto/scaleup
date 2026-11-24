@@ -8,6 +8,7 @@ use scaleup_core::Registry;
 use crate::paste;
 use crate::state::Mode;
 use crate::state::{AppState, Settings, Status, Step, apply_event, mode_from_path};
+use crate::step_previews::{ErrorFate, PreviewFate, StepPreviews};
 use crate::ui::compare::{CompareView, StageInput};
 use crate::ui::history::{self, HistoryAction, HistoryStrip};
 use crate::ui::hub_dialog::{HubAction, HubDialog};
@@ -21,14 +22,8 @@ const SIDEBAR_WIDTH: f32 = 320.0;
 /// Toasts sit this far above the window's bottom edge when no history strip shows.
 const TOAST_GAP: f32 = 52.0;
 
-/// A history step asked of the worker, until its "after" preview arrives. Its "before" is held
-/// back until then, so the image area goes from the old pair to the new pair in one frame (a
-/// "before" alone would flash the edit stage).
-struct PendingStep {
-    input: PathBuf,
-    output: PathBuf,
-    before: Option<(egui::ColorImage, [u32; 2])>,
-}
+/// A decoded preview and the size of its file.
+type Decoded = (egui::ColorImage, [u32; 2]);
 
 pub struct App {
     pub state: AppState,
@@ -40,8 +35,8 @@ pub struct App {
     models_dialog: ModelsDialog,
     hub_dialog: HubDialog,
     strip: HistoryStrip,
-    /// The step whose previews are on their way.
-    showing: Option<PendingStep>,
+    /// The history steps asked of the worker and not answered yet, and which one is wanted.
+    previews: StepPreviews<Decoded>,
     /// Why the current step cannot be shown (a file of it is gone), for the empty image area.
     step_error: Option<String>,
     /// The outputs of the steps the worker was asked to show, for the tests to check.
@@ -76,7 +71,7 @@ impl App {
             models_dialog: ModelsDialog::default(),
             hub_dialog: HubDialog::default(),
             strip: HistoryStrip::default(),
-            showing: None,
+            previews: StepPreviews::default(),
             step_error: None,
             #[cfg(test)]
             asked: Vec::new(),
@@ -101,7 +96,10 @@ impl App {
         match mode_from_path(path) {
             Some(mode) => {
                 self.compare.clear();
-                self.showing = None;
+                // Another picture: answers to earlier step requests are dropped, and the strip
+                // shows no step as current.
+                self.previews.leave();
+                self.state.history.leave();
                 self.step_error = None;
                 self.state.source_size = None;
                 if let Mode::Single(p) = &mode {
@@ -135,8 +133,12 @@ impl App {
             percent: 0.0,
             phase: "Starting".into(),
         };
-        // Previews of a step still on their way now show as they come: the run's own follow them.
-        self.showing = None;
+        // A step still on its way never reaches the screen: the run's previews follow its answer.
+        if self.previews.waiting() {
+            self.previews.leave();
+            self.state.history.leave();
+        }
+        self.step_error = None;
         self.send(UiMsg::Start {
             mode,
             settings: Box::new(self.state.settings.clone()),
@@ -150,6 +152,20 @@ impl App {
     }
 
     fn handle_event(&mut self, ctx: &egui::Context, ev: WorkerEvent) {
+        if let WorkerEvent::Error(message) = &ev {
+            match self.previews.error(message) {
+                // About a step no longer wanted: no toast, no status.
+                ErrorFate::Drop => return,
+                // The step on screen has a file that is gone or unreadable: say so where its
+                // picture would be, as well as in the toast and the status line. It stays in the
+                // history.
+                ErrorFate::Live => {
+                    self.compare.clear();
+                    self.step_error = Some(message.clone());
+                }
+                ErrorFate::NotAStep => {}
+            }
+        }
         match ev {
             WorkerEvent::Preview {
                 which,
@@ -162,39 +178,23 @@ impl App {
                     self.strip
                         .note_result(ctx, &self.state.history, &path, &image);
                 }
-                if let Some(pending) = &mut self.showing {
-                    match which {
-                        Which::Before if path == pending.input => {
-                            pending.before = Some((image, size));
-                        }
-                        Which::After if path == pending.output => {
-                            let before = self.showing.take().and_then(|p| p.before);
-                            if let Some((image, size)) = before {
-                                let none = Default::default();
-                                self.show_preview(ctx, Which::Before, image, size, none);
-                            }
-                            self.show_preview(ctx, Which::After, image, size, margins);
-                        }
-                        // A preview of a step that was left before it arrived.
-                        _ => {}
+                match self.previews.preview(which, &path, (image, size)) {
+                    PreviewFate::Show((image, size)) => {
+                        self.show_preview(ctx, which, image, size, margins);
                     }
-                    return;
+                    // The step's "before" and "after" go in together: a "before" alone would
+                    // flash the edit stage while the result decodes.
+                    PreviewFate::Pair { before, after } => {
+                        if let Some((image, size)) = before {
+                            let none = Default::default();
+                            self.show_preview(ctx, Which::Before, image, size, none);
+                        }
+                        let (image, size) = after;
+                        self.show_preview(ctx, Which::After, image, size, margins);
+                    }
+                    PreviewFate::Hold | PreviewFate::Drop => {}
                 }
-                self.show_preview(ctx, which, image, size, margins);
                 return;
-            }
-            // The step being shown has a file that is gone or unreadable: say so in the image
-            // area too, where its picture would be. The step stays in the history.
-            WorkerEvent::Error(ref message)
-                if self.showing.as_ref().is_some_and(|p| {
-                    [&p.input, &p.output]
-                        .iter()
-                        .any(|f| message.starts_with(&f.display().to_string()))
-                }) =>
-            {
-                self.showing = None;
-                self.compare.clear();
-                self.step_error = Some(message.clone());
             }
             WorkerEvent::HubCatalog(cat) => {
                 self.hub_dialog.set_catalog(cat);
@@ -243,9 +243,8 @@ impl App {
             return;
         }
         let history = &mut self.state.history;
-        let Some(at) = history.at() else {
-            return;
-        };
+        // The step actions act on the step on screen; with none, they do nothing.
+        let shown = history.shown();
         match action {
             HistoryAction::Back | HistoryAction::Forward | HistoryAction::Go(_) => {
                 let step = match action {
@@ -259,12 +258,15 @@ impl App {
                 }
             }
             HistoryAction::UseAsInput => {
-                if let Some(path) = history.use_as_input(at).map(Path::to_path_buf) {
+                let path = shown.and_then(|at| history.use_as_input(at));
+                if let Some(path) = path.map(Path::to_path_buf) {
                     self.select(&path);
                 }
             }
             HistoryAction::RestoreSettings => {
-                let Some(settings) = self.state.restore_settings(at) else {
+                let Some((at, settings)) =
+                    shown.and_then(|at| Some((at, self.state.restore_settings(at)?)))
+                else {
                     return;
                 };
                 let device = settings.gpu != self.state.settings.gpu;
@@ -280,17 +282,21 @@ impl App {
                 )));
             }
             HistoryAction::OpenFolder => {
-                if let Some(step) = history.current() {
+                if let Some(step) = shown.and_then(|at| history.steps().get(at)) {
                     let output = step.output.clone();
                     self.open_folder_of(&output);
                 }
             }
             HistoryAction::Remove => {
+                let Some(at) = shown else {
+                    return;
+                };
                 history.remove(at);
                 match history.current().cloned() {
                     Some(step) => self.show_step(&step),
                     // The last step went: back to the selected image on its own.
                     None => {
+                        self.previews.leave();
                         if let Some(Mode::Single(path)) = self.state.mode.clone() {
                             self.select(&path);
                         }
@@ -313,11 +319,7 @@ impl App {
             self.state.status = Status::Idle;
         }
         self.step_error = None;
-        self.showing = Some(PendingStep {
-            input: step.input.clone(),
-            output: step.output.clone(),
-            before: None,
-        });
+        self.previews.ask(&step.input, &step.output);
         #[cfg(test)]
         self.asked.push(step.output.clone());
         self.send(UiMsg::show_step(step));
@@ -604,6 +606,7 @@ impl App {
                         registry: &self.registry,
                         single,
                         running: self.state.status.is_running(),
+                        step: history::shown_text(&self.state.history),
                     },
                 );
                 // The sidebar was drawn before the image area: draw the frame again, so its fields
@@ -689,7 +692,7 @@ mod tests {
             models_dialog: ModelsDialog::default(),
             hub_dialog: HubDialog::default(),
             strip: HistoryStrip::default(),
-            showing: None,
+            previews: StepPreviews::default(),
             step_error: None,
             asked: Vec::new(),
             discards: 0,
@@ -1216,7 +1219,7 @@ mod tests {
     fn settle(harness: &mut egui_kittest::Harness<'_, App>) {
         for _ in 0..1000 {
             harness.step();
-            if harness.state().showing.is_none() {
+            if !harness.state().previews.waiting() {
                 harness.step();
                 return;
             }
@@ -1288,11 +1291,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let steps = three_steps(dir.path());
         let mut harness = history_harness(dir.path(), Settings::default(), &steps, 2);
-        // An unrelated image is selected; going back makes the step's input the image.
+        // An unrelated image is selected: no step is on screen. Back shows the cursor's step
+        // again, then the one before; each makes the step's input the image.
         let other = dir.path().join("other.png");
         png(&other, [5, 5], [0, 0, 0]);
         harness.state_mut().select(&other);
         harness.step();
+        assert_eq!(harness.state().state.history.shown(), None);
+        harness.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowLeft);
+        settle(&mut harness);
+        assert_shows(harness.state(), &steps, 2);
         harness.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowLeft);
         settle(&mut harness);
         assert_shows(harness.state(), &steps, 1);
@@ -1376,8 +1384,104 @@ mod tests {
             harness.state().state.source_size,
             Some(steps[1].result_size)
         );
-        // The history is unchanged.
+        // The history is unchanged, but its step is no longer on screen: no accent, the step
+        // actions do nothing, the count says how many steps there are.
+        let h = &harness.state().state.history;
+        assert_eq!((h.steps().len(), h.at(), h.shown()), (3, Some(1), None));
+        assert!(harness.query_by_label("3 steps").is_some());
+        harness.get_by_label("Remove").click();
+        harness.step();
         assert_eq!(harness.state().state.history.steps().len(), 3);
+        // Back shows that same step again, as it was.
+        harness.get_by_label("Back").click();
+        settle(&mut harness);
+        assert_shows(harness.state(), &steps, 1);
+        assert!(harness.query_by_label("2 of 3").is_some());
+    }
+
+    /// Waits up to a few seconds for `done`, stepping the window.
+    fn wait_for(harness: &mut egui_kittest::Harness<'_, App>, done: impl Fn(&App) -> bool) -> bool {
+        for _ in 0..500 {
+            harness.step();
+            if done(harness.state()) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// Steps the window for a moment, so late worker events would have arrived.
+    fn linger(harness: &mut egui_kittest::Harness<'_, App>) {
+        for _ in 0..30 {
+            harness.step();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_step_left_for_another_image_never_reaches_the_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let steps = three_steps(dir.path());
+        let mut harness = history_harness(dir.path(), Settings::default(), &steps, 1);
+        let other = dir.path().join("other.png");
+        png(&other, [5, 5], [0, 0, 0]);
+        // Back, then another image before the worker answered.
+        harness.state_mut().history_action(HistoryAction::Back);
+        harness.state_mut().select(&other);
+        assert!(wait_for(&mut harness, |a| a.compare.sizes()[0].is_some()));
+        linger(&mut harness);
+        let app = harness.state();
+        assert_eq!(app.compare.sizes(), [Some([5, 5]), None]);
+        assert_eq!(app.state.source_size, Some([5, 5]));
+        assert_eq!(app.state.mode, Some(Mode::Single(other.clone())));
+        assert_eq!(app.state.history.shown(), None);
+        assert!(harness.query_by_label("3 steps").is_some());
+        // The same with a step whose file is gone: its error makes no report.
+        std::fs::remove_file(&steps[2].output).unwrap();
+        harness.state_mut().history_action(HistoryAction::Go(2));
+        harness.state_mut().select(&other);
+        assert!(wait_for(&mut harness, |a| a.compare.sizes()[0].is_some()));
+        linger(&mut harness);
+        let app = harness.state();
+        assert_eq!(app.step_error, None);
+        assert_eq!(app.state.status, Status::Idle);
+        assert!(
+            app.state
+                .log
+                .iter()
+                .all(|l| !l.contains("no longer exists"))
+        );
+        // And when the image picked cannot be decoded, the step's pair does not stay behind.
+        let broken = dir.path().join("broken.png");
+        std::fs::write(&broken, b"not a png").unwrap();
+        harness.state_mut().history_action(HistoryAction::Go(0));
+        harness.state_mut().select(&broken);
+        assert!(wait_for(&mut harness, |a| matches!(
+            a.state.status,
+            Status::Error(_)
+        )));
+        linger(&mut harness);
+        assert_eq!(harness.state().compare.sizes(), [None, None]);
+        assert_eq!(harness.state().state.source_size, None);
+    }
+
+    #[test]
+    fn a_run_started_before_the_step_arrived_drops_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let steps = three_steps(dir.path());
+        let mut harness = history_harness(dir.path(), Settings::default(), &steps, 1);
+        harness.state_mut().history_action(HistoryAction::Back);
+        harness.state_mut().start();
+        assert!(harness.state().state.status.is_running());
+        assert_eq!(harness.state().state.history.shown(), None);
+        // The run reads the step's input; its model file is not a model, so it fails.
+        assert!(wait_for(&mut harness, |a| !a.state.status.is_running()));
+        linger(&mut harness);
+        let app = harness.state();
+        assert_eq!(app.compare.sizes(), [None, None]);
+        assert_eq!(app.step_error, None);
+        assert!(matches!(app.state.status, Status::Error(_)));
     }
 
     #[test]
@@ -1485,6 +1589,19 @@ mod tests {
         settle(&mut harness);
         assert_shows(harness.state(), &steps, 1);
         assert!(harness.state().step_error.is_none());
+        // Back to the broken step, then a run: the message goes and cannot come back for
+        // another picture.
+        harness.get_by_label("Back").click();
+        settle(&mut harness);
+        assert!(harness.state().step_error.is_some());
+        harness.state_mut().start();
+        harness.step();
+        assert!(harness.state().step_error.is_none());
+        assert!(
+            harness
+                .query_by_label("This step cannot be shown")
+                .is_none()
+        );
     }
 
     /// `n` steps made from the fixture photo, written to `dir`: upscales, extensions and a grey
@@ -1791,7 +1908,7 @@ mod tests {
                 ("history", big, &three, 1, false, false),
                 ("history-many", big, &twelve, 10, false, false),
                 ("history-running", big, &three, 1, true, false),
-                ("history-small", [900.0, 600.0], &twelve, 4, false, true),
+                ("history-small", [900.0, 600.0], &twelve, 3, false, true),
             ];
             for (name, size, steps, at, run, log) in cases {
                 render_then(
@@ -1832,6 +1949,19 @@ mod tests {
                         }
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
+                },
+            );
+            // Use as input with Extend off: no step on screen, the result alone as the image.
+            render_then(
+                new(),
+                big,
+                theme,
+                &format!("history-left-{t}"),
+                |a, c| with_history(a, c, &three, 1),
+                |h| {
+                    settle(h);
+                    h.get_by_label("Use as input").click();
+                    wait_for(h, |a| a.compare.sizes()[0].is_some());
                 },
             );
         }

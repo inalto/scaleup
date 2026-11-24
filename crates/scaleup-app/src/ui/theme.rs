@@ -123,6 +123,25 @@ pub fn overlay_chip(ui: &mut egui::Ui, text: &str, fill: Color32) -> egui::Respo
         .response
 }
 
+/// A chip on the picture whose text is cut short with … to fit the room left in its row. The
+/// caller gives the full text as hover text.
+pub fn overlay_chip_elided(ui: &mut egui::Ui, text: &str, fill: Color32) -> egui::Response {
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(6, 3))
+        .show(ui, |ui| {
+            let text = egui::RichText::new(text).color(Color32::WHITE);
+            ui.add(
+                egui::Label::new(text)
+                    .truncate()
+                    .show_tooltip_when_elided(false)
+                    .selectable(false),
+            )
+        })
+        .response
+}
+
 /// A button on the picture, in the chips' look.
 pub fn overlay_button<'a>(text: &str) -> egui::Button<'a> {
     egui::Button::new(egui::RichText::new(text).color(Color32::WHITE))
