@@ -704,11 +704,23 @@ fn reduce(state: &mut AppState, ev: WorkerEvent) -> Option<Toast> {
                 ))
             });
         }
-        WorkerEvent::Stopped { done, total } => {
+        WorkerEvent::Stopped {
+            done,
+            total,
+            failed,
+        } => {
             state.stopping = false;
-            state.fill_queue = false;
             state.last_file_error = None;
             state.status = Status::Stopped { done, total };
+            // A queue also says what became of its fills; "after 1 of 3" alone hides a failure.
+            if std::mem::take(&mut state.fill_queue) {
+                let text = format!("Stopped: {}", queue_summary(done, failed));
+                return Some(if failed > 0 {
+                    Toast::error(text)
+                } else {
+                    Toast::success(text)
+                });
+            }
         }
         WorkerEvent::Error(message) => {
             state.stopping = false;
@@ -943,7 +955,14 @@ mod tests {
             },
         );
         assert_eq!(st.status_line(), "Stopping…");
-        apply_event(&mut st, WorkerEvent::Stopped { done: 0, total: 3 });
+        apply_event(
+            &mut st,
+            WorkerEvent::Stopped {
+                done: 0,
+                total: 3,
+                failed: 0,
+            },
+        );
         assert_eq!(st.status_line(), "Stopped after 0 of 3");
     }
 
@@ -1047,7 +1066,14 @@ mod tests {
     #[test]
     fn stopped_sets_counts() {
         let mut st = AppState::default();
-        apply_event(&mut st, WorkerEvent::Stopped { done: 1, total: 3 });
+        apply_event(
+            &mut st,
+            WorkerEvent::Stopped {
+                done: 1,
+                total: 3,
+                failed: 0,
+            },
+        );
         assert_eq!(st.status, Status::Stopped { done: 1, total: 3 });
         assert_eq!(st.status.label(), "Stopped after 1 of 3");
     }
@@ -1106,9 +1132,37 @@ mod tests {
         let mut st = AppState::default();
         let toast = apply_event(&mut st, WorkerEvent::AllDone { done: 2, failed: 0 }).unwrap();
         assert_eq!(toast.text, "Done: 2 files");
+        // A stopped queue says what became of its fills; an ordinary stopped run has no toast.
+        let stop = |fill_queue, done, failed| {
+            let mut st = AppState {
+                fill_queue,
+                ..AppState::default()
+            };
+            let ev = WorkerEvent::Stopped {
+                done,
+                total: 3,
+                failed,
+            };
+            let toast = apply_event(&mut st, ev).map(|t| (t.kind, t.text));
+            assert_eq!(st.status.label(), format!("Stopped after {done} of 3"));
+            toast
+        };
+        assert_eq!(
+            stop(true, 1, 1),
+            Some((ToastKind::Error, "Stopped: 1 fill done, 1 failed".into()))
+        );
+        assert_eq!(
+            stop(true, 2, 0),
+            Some((ToastKind::Success, "Stopped: 2 fills done".into()))
+        );
+        assert_eq!(stop(false, 1, 1), None);
         // A stopped or failed queue is over too: the next run is not a queue.
         for ev in [
-            WorkerEvent::Stopped { done: 1, total: 3 },
+            WorkerEvent::Stopped {
+                done: 1,
+                total: 3,
+                failed: 0,
+            },
             WorkerEvent::Error("x".into()),
         ] {
             let mut st = AppState {
@@ -1794,7 +1848,14 @@ mod tests {
                 error: "bad".into(),
             },
         );
-        apply_event(&mut st, WorkerEvent::Stopped { done: 0, total: 1 });
+        apply_event(
+            &mut st,
+            WorkerEvent::Stopped {
+                done: 0,
+                total: 1,
+                failed: 0,
+            },
+        );
         apply_event(&mut st, WorkerEvent::Error("boom".into()));
         assert_eq!(st.history.steps().len(), 1);
     }

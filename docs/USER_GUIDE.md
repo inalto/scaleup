@@ -167,8 +167,8 @@ Trying needs a single image, Extend canvas turned on, and at least two fills tic
 another on the same extension, and the status line says `Fill 2 of 3`. Each finished fill is a step in the
 history. A fill that repeats an earlier one writes a new file, with `-2` added before the extension, unless
 **Overwrite existing files** is on, when the file is replaced. **Stop** ends the queue: the fills that
-finished keep their steps. A fill whose inpainting model cannot be loaded is reported by name, and the
-others still run.
+finished keep their steps, and a message says how many fills finished and how many failed. A fill whose
+inpainting model cannot be loaded is reported by name, and the others still run.
 
 ### History
 

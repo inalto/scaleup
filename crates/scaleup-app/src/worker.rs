@@ -141,9 +141,11 @@ pub enum WorkerEvent {
         done: usize,
         failed: usize,
     },
+    /// The run ended at Stop. `failed` counts the files (or fills) that failed before it.
     Stopped {
         done: usize,
         total: usize,
+        failed: usize,
     },
     /// One file could not be processed; the run goes on. Always followed by `AllDone`.
     FileFailed {
@@ -671,7 +673,11 @@ impl Worker {
         match result {
             Ok(_) => self.emit(WorkerEvent::ModelDownloaded(id.to_string())),
             Err(ScaleUpError::Cancelled) => {
-                self.emit(WorkerEvent::Stopped { done: 0, total: 1 });
+                self.emit(WorkerEvent::Stopped {
+                    done: 0,
+                    total: 1,
+                    failed: 0,
+                });
             }
             Err(e) => self.emit(WorkerEvent::Error(e.to_string())),
         }
@@ -792,7 +798,11 @@ impl Worker {
                 self.emit(WorkerEvent::HubInstalled(model));
             }
             Err(_) if cancel.is_cancelled() => {
-                self.emit(WorkerEvent::Stopped { done: 0, total: 1 });
+                self.emit(WorkerEvent::Stopped {
+                    done: 0,
+                    total: 1,
+                    failed: 0,
+                });
             }
             Err(e) => self.emit(WorkerEvent::Error(e.to_string())),
         }
@@ -936,7 +946,11 @@ impl Worker {
         for (index, job) in jobs.iter().enumerate() {
             self.inbox.poll(&cancel);
             if cancel.is_cancelled() {
-                self.emit(WorkerEvent::Stopped { done, total: files });
+                self.emit(WorkerEvent::Stopped {
+                    done,
+                    total: files,
+                    failed,
+                });
                 return;
             }
             let place = Place {
@@ -954,7 +968,11 @@ impl Worker {
                     failed += 1;
                 }
                 Outcome::Stopped => {
-                    self.emit(WorkerEvent::Stopped { done, total: files });
+                    self.emit(WorkerEvent::Stopped {
+                        done,
+                        total: files,
+                        failed,
+                    });
                     return;
                 }
                 // A missing inpainting model is reported, never replaced by a plain fill.
@@ -997,7 +1015,11 @@ impl Worker {
         for (n, choice) in fills.iter().enumerate() {
             self.inbox.poll(&cancel);
             if cancel.is_cancelled() {
-                self.emit(WorkerEvent::Stopped { done, total });
+                self.emit(WorkerEvent::Stopped {
+                    done,
+                    total,
+                    failed,
+                });
                 return;
             }
             let s = choice.apply(settings);
@@ -1025,7 +1047,11 @@ impl Worker {
                     failed += 1;
                 }
                 Outcome::Stopped => {
-                    self.emit(WorkerEvent::Stopped { done, total });
+                    self.emit(WorkerEvent::Stopped {
+                        done,
+                        total,
+                        failed,
+                    });
                     return;
                 }
                 Outcome::Fatal(e) => {
@@ -1464,10 +1490,15 @@ mod tests {
         }
         h.tx.send(UiMsg::Stop).unwrap();
         let evs = until_end(&h);
-        let Some(WorkerEvent::Stopped { done, total }) = evs.last() else {
+        let Some(WorkerEvent::Stopped {
+            done,
+            total,
+            failed,
+        }) = evs.last()
+        else {
             panic!("{evs:?}")
         };
-        assert_eq!(*total, 3);
+        assert_eq!((*total, *failed), (3, 0));
         assert!((1..3).contains(done), "{done}");
         // Files that were not finished leave nothing behind.
         assert_eq!(std::fs::read_dir(&out).unwrap().count(), *done);
@@ -2057,7 +2088,11 @@ mod tests {
         let evs = until_hub(&h);
         assert_eq!(
             evs.last(),
-            Some(&WorkerEvent::Stopped { done: 0, total: 1 }),
+            Some(&WorkerEvent::Stopped {
+                done: 0,
+                total: 1,
+                failed: 0
+            }),
             "{evs:?}"
         );
         assert!(
@@ -2479,7 +2514,11 @@ mod tests {
         let evs = until_end(&h);
         assert_eq!(
             evs.last(),
-            Some(&WorkerEvent::Stopped { done: 0, total: 1 }),
+            Some(&WorkerEvent::Stopped {
+                done: 0,
+                total: 1,
+                failed: 0
+            }),
             "{evs:?}"
         );
         assert!(stopped_at.elapsed() < Duration::from_secs(3));
@@ -2857,6 +2896,54 @@ mod tests {
         );
     }
 
+    /// A queue stopped after a fill failed says so: `Stopped` carries the failures as well.
+    #[test]
+    fn a_stopped_fill_queue_counts_its_failed_fills() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 16);
+        let h = spawn(inpaint_registry(d.path(), &dripping_server(), false), "cpu");
+        let s = Settings {
+            scale: None,
+            ..extend_settings(d.path(), "mirror", 4.0)
+        };
+        // Mirror runs, an unknown model fails, and the third fill's model is held downloading.
+        let fills = vec![
+            FillChoice::Plain(Fill::Mirror),
+            FillChoice::Ai("no-such-model".into()),
+            FillChoice::Ai("test-fill".into()),
+        ];
+        h.tx.send(UiMsg::StartFills {
+            mode: Mode::Single(input),
+            settings: Box::new(s),
+            fills,
+        })
+        .unwrap();
+        let mut evs = Vec::new();
+        loop {
+            let ev = h.rx.recv_timeout(Duration::from_secs(120)).unwrap();
+            if let WorkerEvent::Error(e) = &ev {
+                panic!("{e}");
+            }
+            let downloading = matches!(ev, WorkerEvent::Download { .. });
+            evs.push(ev);
+            if downloading {
+                break;
+            }
+        }
+        h.tx.send(UiMsg::Stop).unwrap();
+        evs.extend(until_end(&h));
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::Stopped {
+                done: 1,
+                total: 3,
+                failed: 1
+            }),
+            "{evs:?}"
+        );
+    }
+
     #[test]
     fn stop_ends_the_fill_queue() {
         let d = tempfile::tempdir().unwrap();
@@ -2896,7 +2983,11 @@ mod tests {
         evs.extend(until_end(&h));
         assert_eq!(
             evs.last(),
-            Some(&WorkerEvent::Stopped { done: 1, total: 3 }),
+            Some(&WorkerEvent::Stopped {
+                done: 1,
+                total: 3,
+                failed: 0
+            }),
             "{evs:?}"
         );
         // One step per finished fill; the interrupted one and the one after it add none.
