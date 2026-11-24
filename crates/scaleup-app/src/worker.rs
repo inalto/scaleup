@@ -142,7 +142,7 @@ pub enum WorkerEvent {
         percent: f32,
         phase: String,
     },
-    /// A file was written, or was already there and kept.
+    /// A file was written; in a folder run also one that was already there and kept.
     FileDone {
         output: PathBuf,
         /// What the history keeps of it: set for a single image (a fill of *Try several*
@@ -438,11 +438,59 @@ impl Place<'_> {
 /// How one file of a run ended. Its events are already sent.
 enum Outcome {
     Done,
-    /// Reported with `FileFailed`; the run goes on.
-    Failed,
+    /// This file failed; the run goes on. The caller reports it with `FileFailed`.
+    Failed(String),
     Stopped,
-    /// A model could not be loaded: every later file would fail the same way. Not reported yet.
+    /// The upscaler or the upscaling model could not be loaded: every later file, and every
+    /// later fill of a queue, would fail the same way. Not reported yet.
     Fatal(String),
+    /// The inpainting model of this file's AI fill could not be loaded. Ends a normal run (every
+    /// file uses the same model); in a fill queue only this fill fails. Not reported yet.
+    NoInpainter(String),
+}
+
+/// `path` when no file is there, else the first free `<stem>-2.<ext>`, `<stem>-3.<ext>`, ... next
+/// to it. A single-image run writes there rather than reuse a file from an earlier run, whose
+/// settings may differ in what the name does not say (margins, aspect).
+pub(crate) fn next_free_name(path: &Path) -> PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    (2..)
+        .map(|n| path.with_file_name(format!("{stem}-{n}{ext}")))
+        .find(|p| !p.exists())
+        .expect("some number is free")
+}
+
+/// The history step of a finished single-image `job`. `Err` when the input or the result cannot
+/// be measured: a step with no size would mislead the view.
+fn step_for(
+    job: &FileJob,
+    settings: &Settings,
+    registry: &Registry,
+) -> std::result::Result<Step, String> {
+    let size = |p: &Path| {
+        oriented_dimensions(p)
+            .map(|(w, h)| [w, h])
+            .ok_or_else(|| format!("cannot read the size of {}", p.display()))
+    };
+    Ok(Step {
+        input: job.input.clone(),
+        output: job.output.clone(),
+        settings: settings.clone(),
+        source_size: size(&job.input)?,
+        result_size: size(&job.output)?,
+        margins: job_margins(job),
+        label: step_label(settings, registry),
+    })
 }
 
 /// The worker's end of the UI channel; messages that cannot be acted on mid-run wait in `deferred`.
@@ -907,13 +955,19 @@ impl Worker {
             };
             match self.run_one(place, job, settings, single, &cancel) {
                 Outcome::Done => done += 1,
-                Outcome::Failed => failed += 1,
+                Outcome::Failed(error) => {
+                    self.emit(WorkerEvent::FileFailed {
+                        input: job.input.clone(),
+                        error,
+                    });
+                    failed += 1;
+                }
                 Outcome::Stopped => {
                     self.emit(WorkerEvent::Stopped { done, total: files });
                     return;
                 }
                 // A missing inpainting model is reported, never replaced by a plain fill.
-                Outcome::Fatal(e) => {
+                Outcome::Fatal(e) | Outcome::NoInpainter(e) => {
                     self.emit(WorkerEvent::Error(e));
                     return;
                 }
@@ -922,8 +976,10 @@ impl Worker {
         self.emit(WorkerEvent::AllDone { done, failed });
     }
 
-    /// *Try several*: each fill in turn on one image. A fill that fails, its model included, is
-    /// reported as a failed file and the next one runs.
+    /// *Try several*: each fill in turn on one image. A fill that fails, its inpainting model
+    /// included, is reported as a failed file named after the fill, and the next one runs. A
+    /// failure every fill would repeat (the upscaling model) ends the queue with one error. Two
+    /// identical fills both run: the second writes the next free name.
     fn start_fills(&mut self, mode: &Mode, settings: &Settings, fills: &[FillChoice]) {
         let Mode::Single(input) = mode else {
             self.emit(WorkerEvent::Error(
@@ -947,8 +1003,6 @@ impl Worker {
         let cancel = CancelToken::new();
         let total = fills.len();
         let (mut done, mut failed) = (0, 0);
-        // Outputs of this queue: a fill must not overwrite another one's result.
-        let mut written: Vec<PathBuf> = Vec::new();
         for (n, choice) in fills.iter().enumerate() {
             self.inbox.poll(&cancel);
             if cancel.is_cancelled() {
@@ -967,14 +1021,6 @@ impl Worker {
                 continue;
             }
             let job = plan_jobs(mode, &s).remove(0);
-            if written.contains(&job.output) {
-                self.emit(fail(format!(
-                    "would write {} again, as an earlier fill did",
-                    job.output.display()
-                )));
-                failed += 1;
-                continue;
-            }
             let prefix = format!("Fill {} of {total}: ", n + 1);
             let place = Place {
                 file: 0,
@@ -982,26 +1028,28 @@ impl Worker {
                 prefix: &prefix,
             };
             match self.run_one(place, &job, &s, true, &cancel) {
-                Outcome::Done => {
-                    done += 1;
-                    written.push(job.output);
+                Outcome::Done => done += 1,
+                Outcome::Failed(e) | Outcome::NoInpainter(e) => {
+                    self.emit(fail(e));
+                    failed += 1;
                 }
-                Outcome::Failed => failed += 1,
                 Outcome::Stopped => {
                     self.emit(WorkerEvent::Stopped { done, total });
                     return;
                 }
                 Outcome::Fatal(e) => {
-                    self.emit(fail(e));
-                    failed += 1;
+                    self.emit(WorkerEvent::Error(e));
+                    return;
                 }
             }
         }
         self.emit(WorkerEvent::AllDone { done, failed });
     }
 
-    /// One file of a run: loads the models it needs, runs it and reports the result. `single`
-    /// marks a single-image run, whose result becomes a history step.
+    /// One file of a run: loads the models it needs, runs it and reports the result (a failure
+    /// is left to the caller). `single` marks a single-image run, whose result becomes a history
+    /// step: it never reuses an existing file without Overwrite, but writes the next free name,
+    /// so the step describes a file this run wrote. A folder run skips files already done.
     fn run_one(
         &mut self,
         place: Place,
@@ -1010,13 +1058,25 @@ impl Worker {
         single: bool,
         cancel: &CancelToken,
     ) -> Outcome {
+        let free;
+        let job = if single && !job.overwrite {
+            free = FileJob {
+                output: next_free_name(&job.output),
+                ..job.clone()
+            };
+            &free
+        } else {
+            job
+        };
         if job.output.exists() && !job.overwrite {
             self.emit(WorkerEvent::Log(format!(
                 "{} exists, not overwriting",
                 job.output.display()
             )));
-            self.finished(job, settings, single);
-            return Outcome::Done;
+            return match self.finished(job, settings, single) {
+                Ok(()) => Outcome::Done,
+                Err(e) => Outcome::Failed(e),
+            };
         }
         // Extend only still runs through the upscaler; it loads no model then.
         let mut loaded = self.ensure_upscaler();
@@ -1024,13 +1084,17 @@ impl Worker {
             self.emit(place.progress(0.0, "Loading model"));
             loaded = self.ensure_model(&settings.model_id, cancel);
         }
-        if loaded.is_ok() && job.extend.as_ref().is_some_and(|e| e.fill == Fill::Ai) {
-            loaded = self.ensure_inpainter(&settings.extend_model, place, cancel);
-        }
         match loaded {
             Ok(()) => {}
             Err(ScaleUpError::Cancelled) => return Outcome::Stopped,
             Err(e) => return Outcome::Fatal(e.to_string()),
+        }
+        if job.extend.as_ref().is_some_and(|e| e.fill == Fill::Ai) {
+            match self.ensure_inpainter(&settings.extend_model, place, cancel) {
+                Ok(()) => {}
+                Err(ScaleUpError::Cancelled) => return Outcome::Stopped,
+                Err(e) => return Outcome::NoInpainter(e.to_string()),
+            }
         }
         if !single {
             self.emit_preview(&job.input, Which::Before, Margins::default());
@@ -1044,41 +1108,35 @@ impl Worker {
                     path.display(),
                     started.elapsed().as_secs_f32()
                 )));
-                self.finished(job, settings, single);
-                Outcome::Done
+                match self.finished(job, settings, single) {
+                    Ok(()) => Outcome::Done,
+                    Err(e) => Outcome::Failed(e),
+                }
             }
             Err(ScaleUpError::Cancelled) => Outcome::Stopped,
-            Err(e) => {
-                self.emit(WorkerEvent::FileFailed {
-                    input: job.input.clone(),
-                    error: e.to_string(),
-                });
-                Outcome::Failed
-            }
+            Err(e) => Outcome::Failed(e.to_string()),
         }
     }
 
     /// Reports that `job.output` is there: `FileDone`, with a history step for a single image,
-    /// then its "after" preview.
-    fn finished(&self, job: &FileJob, settings: &Settings, single: bool) {
-        let margins = job_margins(job);
-        let size = |p: &Path| oriented_dimensions(p).map_or([0, 0], |(w, h)| [w, h]);
-        let step = single.then(|| {
-            Box::new(Step {
-                input: job.input.clone(),
-                output: job.output.clone(),
-                settings: settings.clone(),
-                source_size: size(&job.input),
-                result_size: size(&job.output),
-                margins,
-                label: step_label(settings, &self.registry),
-            })
-        });
+    /// then its "after" preview. `Err`, with nothing sent, when the step cannot be made.
+    fn finished(
+        &self,
+        job: &FileJob,
+        settings: &Settings,
+        single: bool,
+    ) -> std::result::Result<(), String> {
+        let step = if single {
+            Some(Box::new(step_for(job, settings, &self.registry)?))
+        } else {
+            None
+        };
         self.emit(WorkerEvent::FileDone {
             output: job.output.clone(),
             step,
         });
-        self.emit_preview(&job.output, Which::After, margins);
+        self.emit_preview(&job.output, Which::After, job_margins(job));
+        Ok(())
     }
 
     /// Both previews of a history step. A file that is gone, or cannot be read, is an error that
@@ -1423,16 +1481,19 @@ mod tests {
     }
 
     #[test]
-    fn existing_output_without_overwrite_emits_filedone_without_progress() {
+    fn a_folder_rerun_skips_existing_outputs_without_progress() {
         let d = tempfile::tempdir().unwrap();
-        let input = d.path().join("a.png");
+        let dir = d.path().join("in");
+        std::fs::create_dir(&dir).unwrap();
+        let input = dir.join("a.png");
         write_png(&input, 8);
-        let s = settings(d.path());
-        let existing = plan_jobs(&Mode::Single(input.clone()), &s).remove(0).output;
+        let s = settings(&d.path().join("out"));
+        let existing = plan_jobs(&Mode::Batch(dir.clone()), &s).remove(0).output;
+        std::fs::create_dir_all(existing.parent().unwrap()).unwrap();
         std::fs::write(&existing, b"keep me").unwrap();
         let h = cpu_worker(d.path());
         h.tx.send(UiMsg::Start {
-            mode: Mode::Single(input),
+            mode: Mode::Batch(dir),
             settings: Box::new(s),
         })
         .unwrap();
@@ -1444,9 +1505,157 @@ mod tests {
         );
         assert!(evs.iter().any(|e| matches!(
             e,
-            WorkerEvent::FileDone { output, .. } if *output == existing
+            WorkerEvent::FileDone { output, step: None } if *output == existing
         )));
         assert_eq!(std::fs::read(&existing).unwrap(), b"keep me");
+    }
+
+    #[test]
+    fn next_free_name_numbers_before_the_extension() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("a_scaleup_ext_mirror.png");
+        assert_eq!(next_free_name(&p), p);
+        std::fs::write(&p, b"x").unwrap();
+        let second = d.path().join("a_scaleup_ext_mirror-2.png");
+        assert_eq!(next_free_name(&p), second);
+        std::fs::write(&second, b"x").unwrap();
+        assert_eq!(
+            next_free_name(&p),
+            d.path().join("a_scaleup_ext_mirror-3.png")
+        );
+        let bare = d.path().join("noext");
+        std::fs::write(&bare, b"x").unwrap();
+        assert_eq!(next_free_name(&bare), d.path().join("noext-2"));
+    }
+
+    /// Runs a single image with `s` and returns the events up to the end.
+    fn run_single(h: &WorkerHandle, input: &Path, s: Settings) -> Vec<WorkerEvent> {
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input.to_path_buf()),
+            settings: Box::new(s),
+        })
+        .unwrap();
+        until_end(h)
+    }
+
+    #[test]
+    fn a_single_rerun_without_overwrite_writes_a_new_file_its_step_describes() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 10);
+        let h = cpu_worker(d.path());
+        let only = |px| Settings {
+            scale: None,
+            ..extend_settings(d.path(), "mirror", px)
+        };
+        let evs = run_single(&h, &input, only(4.0));
+        let first = steps(&evs)[0].clone();
+        // The name says nothing of the margins: the same name, now taken.
+        let evs = run_single(&h, &input, only(8.0));
+        let [second] = steps(&evs)[..] else {
+            panic!("{evs:?}")
+        };
+        assert_eq!(
+            first.output.file_name().unwrap(),
+            "a_scaleup_ext_mirror.png"
+        );
+        assert_eq!(
+            second.output.file_name().unwrap(),
+            "a_scaleup_ext_mirror-2.png"
+        );
+        assert_eq!(first.result_size, [18, 18]);
+        assert_eq!((second.result_size, second.margins.left), ([26, 26], 8));
+        assert_eq!(image::image_dimensions(&first.output).unwrap(), (18, 18));
+        assert_eq!(image::image_dimensions(&second.output).unwrap(), (26, 26));
+    }
+
+    #[test]
+    fn a_single_rerun_with_overwrite_replaces_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 10);
+        let h = cpu_worker(d.path());
+        let only = |px| Settings {
+            scale: None,
+            overwrite: true,
+            ..extend_settings(d.path(), "mirror", px)
+        };
+        let first = steps(&run_single(&h, &input, only(4.0)))[0].clone();
+        let evs = run_single(&h, &input, only(8.0));
+        let [second] = steps(&evs)[..] else {
+            panic!("{evs:?}")
+        };
+        assert_eq!(second.output, first.output);
+        assert_eq!(second.result_size, [26, 26]);
+        assert_eq!(image::image_dimensions(&first.output).unwrap(), (26, 26));
+    }
+
+    #[test]
+    fn custom_width_with_scale_none_upscales_to_the_width() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 10);
+        let h = cpu_worker(d.path());
+        let s = Settings {
+            scale: None,
+            use_width: true,
+            width: 30,
+            ..settings(d.path())
+        };
+        let evs = run_single(&h, &input, s);
+        let [step] = steps(&evs)[..] else {
+            panic!("{evs:?}")
+        };
+        assert_eq!(step.result_size, [30, 30]);
+        assert_eq!(step.label, "Upscale 30 px wide · nearest2x");
+        assert_eq!(
+            step.output.file_name().unwrap(),
+            "a_scaleup_30px_nearest2x.png"
+        );
+    }
+
+    #[test]
+    fn a_step_of_a_rotated_input_has_the_oriented_size_and_margins() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("portrait.jpg");
+        write_rotated_jpeg(&input, 20, 10);
+        let h = cpu_worker(d.path());
+        let s = Settings {
+            extend_mode: crate::state::ExtendMode::Percent,
+            scale: None,
+            ..extend_settings(d.path(), "mirror", 50.0)
+        };
+        let evs = run_single(&h, &input, s);
+        let [step] = steps(&evs)[..] else {
+            panic!("{evs:?}")
+        };
+        assert_eq!(step.source_size, [10, 20]);
+        assert_eq!(
+            step.margins,
+            Margins {
+                left: 5,
+                top: 10,
+                right: 5,
+                bottom: 10
+            }
+        );
+        assert_eq!(step.result_size, [20, 40]);
+    }
+
+    #[test]
+    fn a_result_whose_size_cannot_be_read_makes_no_step() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 4);
+        let output = d.path().join("out.png");
+        std::fs::write(&output, b"not an image").unwrap();
+        let mut job = plan_jobs(&Mode::Single(input.clone()), &settings(d.path())).remove(0);
+        let reg = Registry::with_dir(d.path().join("models"));
+        job.output = output;
+        let e = step_for(&job, &settings(d.path()), &reg).unwrap_err();
+        assert!(e.contains("out.png"), "{e}");
+        job.output = input;
+        assert!(step_for(&job, &settings(d.path()), &reg).is_ok());
     }
 
     /// Serves HTTP 500 to every request on a loopback port.
@@ -2547,13 +2756,11 @@ mod tests {
     }
 
     #[test]
-    fn try_several_never_writes_one_file_twice() {
+    fn try_several_runs_a_repeated_fill_to_a_new_name() {
         let d = tempfile::tempdir().unwrap();
         let input = d.path().join("a.png");
         write_png(&input, 10);
         let h = cpu_worker(d.path());
-        // Upscaled fills are named by their fill, so mirror and edge write two files; the same fill
-        // twice would write one file twice (`a_scaleup_ext_mirror_2x_nearest2x.png`).
         let s = extend_settings(d.path(), "mirror", 2.0);
         h.tx.send(UiMsg::StartFills {
             mode: Mode::Single(input),
@@ -2568,12 +2775,90 @@ mod tests {
         let evs = until_end(&h);
         assert_eq!(
             evs.last(),
-            Some(&WorkerEvent::AllDone { done: 2, failed: 1 }),
+            Some(&WorkerEvent::AllDone { done: 3, failed: 0 }),
             "{evs:?}"
         );
+        let names: Vec<String> = steps(&evs)
+            .iter()
+            .map(|s| s.output.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "a_scaleup_ext_mirror_2x_nearest2x.png",
+                "a_scaleup_ext_edge_2x_nearest2x.png",
+                "a_scaleup_ext_mirror_2x_nearest2x-2.png",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_fill_that_fails_while_running_is_named() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        std::fs::write(&input, b"not an image").unwrap();
+        let h = cpu_worker(d.path());
+        let s = Settings {
+            scale: None,
+            ..extend_settings(d.path(), "mirror", 2.0)
+        };
+        h.tx.send(UiMsg::StartFills {
+            mode: Mode::Single(input.clone()),
+            settings: Box::new(s),
+            fills: vec![
+                FillChoice::Plain(Fill::Mirror),
+                FillChoice::Plain(Fill::Edge),
+            ],
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::AllDone { done: 0, failed: 2 }),
+            "{evs:?}"
+        );
+        let errors: Vec<&str> = evs
+            .iter()
+            .filter_map(|e| match e {
+                WorkerEvent::FileFailed { input: i, error } if *i == input => Some(error.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 2, "{evs:?}");
+        assert!(errors[0].starts_with("Mirror: "), "{}", errors[0]);
+        assert!(errors[1].starts_with("Edge pixels: "), "{}", errors[1]);
+    }
+
+    #[test]
+    fn an_upscaling_model_that_cannot_load_ends_the_queue_once() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 8);
+        let h = spawn(unreachable_model_registry(d.path()), "cpu");
+        let s = Settings {
+            model_id: "remote".into(),
+            ..extend_settings(d.path(), "mirror", 2.0)
+        };
+        h.tx.send(UiMsg::StartFills {
+            mode: Mode::Single(input),
+            settings: Box::new(s),
+            fills: vec![
+                FillChoice::Plain(Fill::Mirror),
+                FillChoice::Plain(Fill::Edge),
+            ],
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert!(matches!(evs.last(), Some(WorkerEvent::Error(_))), "{evs:?}");
         assert!(
-            evs.iter().any(
-                |e| matches!(e, WorkerEvent::FileFailed { error, .. } if error.starts_with("Mirror: would write"))
+            !evs.iter()
+                .any(|e| matches!(e, WorkerEvent::FileFailed { .. })),
+            "{evs:?}"
+        );
+        // The second fill never started.
+        assert!(
+            !evs.iter().any(
+                |e| matches!(e, WorkerEvent::Progress { phase, .. } if phase.starts_with("Fill 2"))
             ),
             "{evs:?}"
         );
@@ -2583,18 +2868,18 @@ mod tests {
     fn stop_ends_the_fill_queue() {
         let d = tempfile::tempdir().unwrap();
         let input = d.path().join("a.png");
-        // Large enough that the fills after the first are still running when Stop arrives.
-        write_png(&input, 1024);
-        let h = cpu_worker(d.path());
+        write_png(&input, 16);
+        // The second fill's inpainting model downloads a byte every 50 ms: the queue is held
+        // open there until Stop.
+        let h = spawn(inpaint_registry(d.path(), &dripping_server(), false), "cpu");
         let s = Settings {
             scale: None,
             ..extend_settings(d.path(), "mirror", 4.0)
         };
         let fills = vec![
             FillChoice::Plain(Fill::Mirror),
+            FillChoice::Ai("test-fill".into()),
             FillChoice::Plain(Fill::Edge),
-            FillChoice::Plain(Fill::Transparent),
-            FillChoice::Plain(Fill::Color([1, 2, 3])),
         ];
         h.tx.send(UiMsg::StartFills {
             mode: Mode::Single(input),
@@ -2602,20 +2887,32 @@ mod tests {
             fills,
         })
         .unwrap();
+        let mut evs = Vec::new();
         loop {
-            match h.rx.recv_timeout(Duration::from_secs(120)).unwrap() {
-                WorkerEvent::FileDone { .. } => break,
-                WorkerEvent::Error(e) => panic!("{e}"),
-                _ => {}
+            let ev = h.rx.recv_timeout(Duration::from_secs(120)).unwrap();
+            if let WorkerEvent::Error(e) = &ev {
+                panic!("{e}");
+            }
+            let downloading = matches!(ev, WorkerEvent::Download { .. });
+            evs.push(ev);
+            if downloading {
+                break;
             }
         }
         h.tx.send(UiMsg::Stop).unwrap();
-        let evs = until_end(&h);
-        let Some(WorkerEvent::Stopped { done, total }) = evs.last() else {
-            panic!("{evs:?}")
-        };
-        assert_eq!(*total, 4);
-        assert!((1..4).contains(done), "{done}");
+        evs.extend(until_end(&h));
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::Stopped { done: 1, total: 3 }),
+            "{evs:?}"
+        );
+        // One step per finished fill; the interrupted one and the one after it add none.
+        let made = steps(&evs);
+        assert_eq!(made.len(), 1, "{evs:?}");
+        assert_eq!(
+            made[0].output.file_name().unwrap(),
+            "a_scaleup_ext_mirror.png"
+        );
     }
 
     #[test]

@@ -1462,6 +1462,20 @@ mod tests {
     }
 
     #[test]
+    fn history_push_at_the_cap_with_the_cursor_back_goes_to_the_new_step() {
+        let mut h = History::default();
+        for n in 0..HISTORY_LIMIT {
+            h.push(step(n));
+        }
+        h.go(5);
+        h.push(step(99));
+        assert_eq!(h.steps().len(), HISTORY_LIMIT);
+        assert_eq!(h.steps()[0].label, "step 1");
+        assert_eq!(h.at(), Some(HISTORY_LIMIT - 1));
+        assert_eq!(h.current().map(|s| s.label.as_str()), Some("step 99"));
+    }
+
+    #[test]
     fn history_remove_keeps_the_cursor_on_its_step() {
         let mut h = History::default();
         for n in 0..4 {
