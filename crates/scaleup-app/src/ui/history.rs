@@ -585,7 +585,7 @@ mod tests {
     fn step(n: usize) -> Step {
         Step {
             input: PathBuf::from(format!("in{n}.png")),
-            output: PathBuf::from(format!(r"C:\out\out{n}.png")),
+            output: PathBuf::from("out").join(format!("out{n}.png")),
             settings: Settings::default(),
             source_size: [256, 192],
             result_size: [1024, 768],
