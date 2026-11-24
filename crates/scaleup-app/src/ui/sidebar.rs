@@ -6,7 +6,7 @@ use eframe::egui;
 use scaleup_core::registry::SOURCE_HUB;
 use scaleup_core::{DeviceInfo, DeviceKind, Fill, ModelEntry, Registry};
 
-use crate::state::{AppState, ExtendMode, Mode, Settings};
+use crate::state::{AppState, ExtendMode, FillChoice, Mode, Settings, TrySeveral};
 use crate::ui::theme;
 
 /// What the user asked for this frame.
@@ -14,6 +14,8 @@ use crate::ui::theme;
 pub struct SidebarOutput {
     pub picked: Option<PathBuf>,
     pub start: bool,
+    /// The fills the Try several button runs, in list order.
+    pub try_fills: Option<Vec<FillChoice>>,
     pub stop: bool,
     pub device_changed: bool,
     pub open_models: bool,
@@ -70,14 +72,18 @@ fn format_label(format: &str) -> &'static str {
     }
 }
 
-fn model_row(ui: &mut egui::Ui, selected: &mut String, entry: &ModelEntry) {
+/// One model of a picker: the NC badge when it is not for commercial use, the name, the licence.
+/// Returns the response of the name, for a hover text.
+fn model_row(ui: &mut egui::Ui, selected: &mut String, entry: &ModelEntry) -> egui::Response {
     ui.horizontal(|ui| {
         if !entry.commercial {
             nc_badge(ui);
         }
-        ui.selectable_value(selected, entry.id.clone(), &entry.name);
+        let name = ui.selectable_value(selected, entry.id.clone(), &entry.name);
         ui.weak(&entry.license);
-    });
+        name
+    })
+    .inner
 }
 
 /// The name shown for the selected model: catalogue name, or a custom file name.
@@ -349,6 +355,78 @@ pub fn start_label(s: &Settings, registry: &Registry) -> &'static str {
     }
 }
 
+/// One row of the Try several list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FillOffer {
+    pub choice: FillChoice,
+    pub name: String,
+    /// The catalogue entry of an AI fill: its licence, what it suits and its size.
+    pub entry: Option<ModelEntry>,
+}
+
+/// The fills Try several offers: every inpainting model of the catalogue, then Mirror and Edge
+/// pixels. The list has no colour or transparent fill: they have one look only.
+pub fn offered_fills(registry: &Registry) -> Vec<FillOffer> {
+    let models = registry.inpainters().map(|e| FillOffer {
+        choice: FillChoice::Ai(e.id.clone()),
+        name: e.name.clone(),
+        entry: Some(e.clone()),
+    });
+    let plain = [Fill::Mirror, Fill::Edge].map(|fill| {
+        let choice = FillChoice::Plain(fill);
+        FillOffer {
+            name: choice.title(registry),
+            choice,
+            entry: None,
+        }
+    });
+    models.chain(plain).collect()
+}
+
+/// The Try several button's text: `Try 3 fills`, and it says when a ticked model, or the
+/// upscaling model, is downloaded first, as the Start button does.
+pub fn try_label(s: &Settings, fills: &[FillChoice], registry: &Registry) -> String {
+    let missing = |id: &str| registry.get(id).is_some() && !registry.is_downloaded(id);
+    let download = fills
+        .iter()
+        .any(|f| matches!(f, FillChoice::Ai(id) if missing(id)))
+        || (s.upscales() && missing(&s.model_id));
+    let n = fills.len();
+    let fills = match n {
+        0 => "several fills".into(),
+        1 => "1 fill".into(),
+        n => format!("{n} fills"),
+    };
+    if download {
+        format!("Download and try {fills}")
+    } else {
+        format!("Try {fills}")
+    }
+}
+
+/// Why Try several cannot run, `None` when it can. `ticked` is how many fills are ticked.
+pub fn try_blocker(
+    s: &Settings,
+    mode: Option<&Mode>,
+    source: Option<[u32; 2]>,
+    running: bool,
+    ticked: usize,
+) -> Option<String> {
+    if running {
+        return Some("A run is in progress".into());
+    }
+    if !matches!(mode, Some(Mode::Single(_))) {
+        return Some("Try several needs a single image".into());
+    }
+    if !s.extend_enabled {
+        return Some("Turn on Extend canvas to try fills".into());
+    }
+    if let Some(why) = s.start_blocker(source) {
+        return Some(why);
+    }
+    (ticked < 2).then(|| "Tick at least two fills".into())
+}
+
 /// The fill choices of the Extend section: label, and the settings value it selects.
 const FILLS: [(&str, &str); 5] = [
     ("AI (inpainting)", "ai"),
@@ -387,8 +465,16 @@ fn side_value(ui: &mut egui::Ui, name: &str, v: &mut f32, mode: ExtendMode) {
 
 const ASPECTS: [(u32, u32); 5] = [(1, 1), (4, 3), (3, 2), (16, 9), (9, 16)];
 
-fn extend_section(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) {
+fn extend_section(
+    ui: &mut egui::Ui,
+    st: &mut AppState,
+    registry: &Registry,
+    out: &mut SidebarOutput,
+) {
     let source = st.source_size;
+    let running = st.status.is_running();
+    let mode = st.mode.clone();
+    let try_several_state = &mut st.try_several;
     let s = &mut st.settings;
     egui::CollapsingHeader::new(egui::RichText::new("Extend canvas").strong())
         .default_open(s.extend_enabled)
@@ -458,6 +544,18 @@ fn extend_section(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) {
                 if Fill::parse(&s.extend_fill) == Ok(Fill::Ai) {
                     inpainter_picker(ui, &mut s.extend_model, registry);
                 }
+                try_several(
+                    ui,
+                    s,
+                    try_several_state,
+                    registry,
+                    TryContext {
+                        mode: mode.as_ref(),
+                        source,
+                        running,
+                    },
+                    out,
+                );
             });
             match s.extend_summary(source) {
                 Some(Ok(text)) => {
@@ -480,22 +578,122 @@ fn inpainter_picker(ui: &mut egui::Ui, selected: &mut String, registry: &Registr
             .selected_text(entry.map_or(selected.as_str(), |e| e.name.as_str()))
             .show_ui(ui, |ui| {
                 for e in registry.inpainters() {
-                    ui.selectable_value(selected, e.id.clone(), &e.name)
-                        .on_hover_text(&e.notes);
+                    model_row(ui, selected, e).on_hover_text(&e.notes);
                 }
             })
             .response
             .labelled_by(label.id);
     });
-    ui.weak("Suits modest extensions of soft or plain backgrounds.");
-    if let Some(e) = entry
-        && !registry.is_downloaded(&e.id)
-    {
-        ui.weak(format!(
-            "Downloads {:.0} MB on first use.",
-            e.size_bytes as f64 / (1024.0 * 1024.0)
-        ));
+    if let Some(e) = entry {
+        if !e.good_for.is_empty() {
+            ui.weak(&e.good_for);
+        }
+        if !registry.is_downloaded(&e.id) {
+            ui.weak(download_note(e));
+        }
     }
+}
+
+/// `Downloads 196 MB on first use.`
+fn download_note(e: &ModelEntry) -> String {
+    format!(
+        "Downloads {:.0} MB on first use.",
+        e.size_bytes as f64 / (1024.0 * 1024.0)
+    )
+}
+
+/// What the Try several button needs to know besides the settings.
+struct TryContext<'a> {
+    mode: Option<&'a Mode>,
+    source: Option<[u32; 2]>,
+    running: bool,
+}
+
+/// The Try several list, a collapsing area under the Fill rows (a popup would cover the controls
+/// it belongs to and close on every stray click): one row with a checkbox per fill, and the button
+/// that runs the ticked ones on the same extension.
+fn try_several(
+    ui: &mut egui::Ui,
+    s: &Settings,
+    state: &mut TrySeveral,
+    registry: &Registry,
+    cx: TryContext<'_>,
+    out: &mut SidebarOutput,
+) {
+    let offers = offered_fills(registry);
+    let open = state.open;
+    let list = egui::CollapsingHeader::new("Try several fills")
+        .open(Some(open))
+        .show(ui, |ui| {
+            ui.weak("Runs each ticked fill on this extension.");
+            for offer in &offers {
+                let mut on = state.is_ticked(&offer.choice, s);
+                if fill_row(ui, offer, &mut on, registry) {
+                    state.set(&offer.choice, on, s);
+                }
+            }
+            let fills: Vec<FillChoice> = offers
+                .iter()
+                .filter(|o| state.is_ticked(&o.choice, s))
+                .map(|o| o.choice.clone())
+                .collect();
+            let blocker = try_blocker(s, cx.mode, cx.source, cx.running, fills.len());
+            let size = egui::vec2(ui.available_width(), 28.0);
+            let button = egui::Button::new(try_label(s, &fills, registry));
+            let resp = ui.add_enabled(blocker.is_none(), |ui: &mut egui::Ui| {
+                ui.add_sized(size, button)
+            });
+            if resp
+                .on_disabled_hover_text(blocker.unwrap_or_default())
+                .clicked()
+            {
+                out.try_fills = Some(fills);
+            }
+        });
+    if list.header_response.clicked() {
+        state.open = !open;
+        // The list is long and the Extend section low in the sidebar: bring it up to the top.
+        if state.open {
+            list.header_response.scroll_to_me(Some(egui::Align::TOP));
+        }
+    }
+}
+
+/// One fill of the list: a checkbox with its name and licence, and under it, weak, what a model
+/// suits and the download it needs. True when the checkbox was clicked.
+fn fill_row(ui: &mut egui::Ui, offer: &FillOffer, on: &mut bool, registry: &Registry) -> bool {
+    let changed = ui
+        .horizontal(|ui| {
+            let changed = ui.checkbox(on, &offer.name).changed();
+            if let Some(e) = &offer.entry {
+                if !e.commercial {
+                    nc_badge(ui);
+                }
+                ui.weak(&e.license);
+            }
+            changed
+        })
+        .inner;
+    if let Some(e) = &offer.entry {
+        let mut detail = e.good_for.clone();
+        if !registry.is_downloaded(&e.id) {
+            let note = download_note(e);
+            detail = if detail.is_empty() {
+                note
+            } else {
+                format!("{detail} {note}")
+            };
+        }
+        if !detail.is_empty() {
+            // Level with the name, not with the box.
+            let indent = ui.spacing().icon_width + ui.spacing().icon_spacing;
+            ui.horizontal_top(|ui| {
+                ui.add_space(indent);
+                ui.add(egui::Label::new(egui::RichText::new(detail).weak()).wrap());
+            });
+        }
+    }
+    changed
 }
 
 pub fn show(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) -> SidebarOutput {
@@ -577,7 +775,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) -> Sideba
                 output_options(ui, st);
                 ui.add_space(SECTION_GAP);
                 ui.separator();
-                extend_section(ui, st, registry);
+                extend_section(ui, st, registry, &mut out);
                 ui.separator();
                 advanced(ui, st, &mut out);
             });
@@ -684,6 +882,126 @@ mod tests {
         // A custom width upscales: the model is needed again.
         s.use_width = true;
         assert_eq!(start_label(&s, &reg), "Download and start");
+    }
+
+    #[test]
+    fn try_several_offers_every_inpainting_model_then_the_plain_fills() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        let offers = offered_fills(&reg);
+        let models: Vec<&str> = reg.inpainters().map(|e| e.id.as_str()).collect();
+        assert_eq!(models, ["lama-512", "migan-512-places2", "lama-manga"]);
+        let choices: Vec<FillChoice> = offers.iter().map(|o| o.choice.clone()).collect();
+        let mut expected: Vec<FillChoice> = models
+            .iter()
+            .map(|id| FillChoice::Ai((*id).into()))
+            .collect();
+        expected.extend([
+            FillChoice::Plain(Fill::Mirror),
+            FillChoice::Plain(Fill::Edge),
+        ]);
+        assert_eq!(choices, expected);
+        let names: Vec<&str> = offers.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names[0], "LaMa (512)");
+        assert_eq!(&names[3..], ["Mirror", "Edge pixels"]);
+        assert!(offers[..3].iter().all(|o| o.entry.is_some()));
+        assert!(offers[3..].iter().all(|o| o.entry.is_none()));
+    }
+
+    #[test]
+    fn the_try_button_counts_the_fills_and_says_when_it_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        let mirror = FillChoice::Plain(Fill::Mirror);
+        let edge = FillChoice::Plain(Fill::Edge);
+        let lama = FillChoice::Ai("lama-512".into());
+        let migan = FillChoice::Ai("migan-512-places2".into());
+        // Extend only: the upscaling model is not needed.
+        let s = Settings {
+            scale: None,
+            extend_enabled: true,
+            ..Settings::default()
+        };
+        assert_eq!(try_label(&s, &[], &reg), "Try several fills");
+        assert_eq!(
+            try_label(&s, std::slice::from_ref(&mirror), &reg),
+            "Try 1 fill"
+        );
+        assert_eq!(
+            try_label(&s, &[mirror.clone(), edge.clone()], &reg),
+            "Try 2 fills"
+        );
+        assert_eq!(
+            try_label(&s, &[mirror.clone(), lama.clone(), edge.clone()], &reg),
+            "Download and try 3 fills"
+        );
+        std::fs::write(reg.local_path("lama-512"), b"x").unwrap();
+        assert_eq!(
+            try_label(&s, &[mirror.clone(), lama.clone(), edge.clone()], &reg),
+            "Try 3 fills"
+        );
+        assert_eq!(
+            try_label(&s, &[lama.clone(), migan], &reg),
+            "Download and try 2 fills"
+        );
+        // With an upscale the model of the upscale is downloaded first too.
+        let up = Settings {
+            scale: Some(2),
+            ..s
+        };
+        assert_eq!(
+            try_label(&up, &[mirror, edge], &reg),
+            "Download and try 2 fills"
+        );
+    }
+
+    #[test]
+    fn the_try_button_says_why_it_is_disabled() {
+        let single = Mode::Single(PathBuf::from("a.png"));
+        let s = Settings {
+            extend_enabled: true,
+            ..Settings::default()
+        };
+        let why = |s: &Settings, mode: Option<&Mode>, running, n| {
+            try_blocker(s, mode, Some([100, 100]), running, n)
+        };
+        assert_eq!(why(&s, Some(&single), false, 2), None);
+        assert_eq!(why(&s, Some(&single), false, 5), None);
+        assert_eq!(
+            why(&s, Some(&single), false, 1).as_deref(),
+            Some("Tick at least two fills")
+        );
+        assert_eq!(
+            why(&s, Some(&single), false, 0).as_deref(),
+            Some("Tick at least two fills")
+        );
+        let folder = Mode::Batch(PathBuf::from("dir"));
+        for mode in [Some(&folder), None] {
+            assert_eq!(
+                why(&s, mode, false, 3).as_deref(),
+                Some("Try several needs a single image")
+            );
+        }
+        assert_eq!(
+            why(&s, Some(&single), true, 3).as_deref(),
+            Some("A run is in progress")
+        );
+        let off = Settings {
+            extend_enabled: false,
+            ..s.clone()
+        };
+        assert_eq!(
+            why(&off, Some(&single), false, 3).as_deref(),
+            Some("Turn on Extend canvas to try fills")
+        );
+        // An extension that cannot be made gives the reason Start gives.
+        let wide = Settings {
+            extend_left: 5000.0,
+            extend_linked: false,
+            ..s
+        };
+        let reason = wide.start_blocker(Some([100, 100])).unwrap();
+        assert_eq!(why(&wide, Some(&single), false, 3), Some(reason));
     }
 
     #[test]

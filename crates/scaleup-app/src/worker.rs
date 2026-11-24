@@ -58,10 +58,6 @@ pub enum UiMsg {
     /// *Try several*: run each fill in turn on the same single image with the same extension.
     /// Each finished fill is a history step; a failed one is reported and the queue goes on; Stop
     /// ends the queue.
-    #[allow(
-        dead_code,
-        reason = "wired by the history strip and the Try several list (plan 12, Tasks 6 and 7)"
-    )]
     StartFills {
         mode: Mode,
         settings: Box<Settings>,

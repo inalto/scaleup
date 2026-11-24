@@ -7,7 +7,7 @@ use scaleup_core::Registry;
 
 use crate::paste;
 use crate::state::Mode;
-use crate::state::{AppState, Settings, Status, Step, apply_event, mode_from_path};
+use crate::state::{AppState, FillChoice, Settings, Status, Step, apply_event, mode_from_path};
 use crate::step_previews::{ErrorFate, PreviewFate, StepPreviews};
 use crate::ui::compare::{CompareView, StageInput};
 use crate::ui::history::{self, HistoryAction, HistoryStrip};
@@ -127,6 +127,41 @@ impl App {
             self.toasts.push(Toast::error(why));
             return;
         }
+        self.begin_run();
+        self.send(UiMsg::Start {
+            mode,
+            settings: Box::new(self.state.settings.clone()),
+        });
+    }
+
+    /// Try several: each of `fills` in turn on the selected image, with the settings as they are.
+    fn start_fills(&mut self, fills: Vec<FillChoice>) {
+        let Some(mode) = self.state.mode.clone() else {
+            return;
+        };
+        let running = self.state.status.is_running();
+        let source = self.state.source_size;
+        if let Some(why) = sidebar::try_blocker(
+            &self.state.settings,
+            Some(&mode),
+            source,
+            running,
+            fills.len(),
+        ) {
+            self.toasts.push(Toast::error(why));
+            return;
+        }
+        self.begin_run();
+        self.state.fill_queue = true;
+        self.send(UiMsg::StartFills {
+            mode,
+            settings: Box::new(self.state.settings.clone()),
+            fills,
+        });
+    }
+
+    /// What a run does to the window the moment it starts.
+    fn begin_run(&mut self) {
         self.state.status = Status::Running {
             file: 0,
             files: 1,
@@ -139,10 +174,6 @@ impl App {
             self.state.history.leave();
         }
         self.step_error = None;
-        self.send(UiMsg::Start {
-            mode,
-            settings: Box::new(self.state.settings.clone()),
-        });
     }
 
     fn drain_events(&mut self, ctx: &egui::Context) {
@@ -571,6 +602,9 @@ impl App {
         if side.start {
             self.start();
         }
+        if let Some(fills) = side.try_fills {
+            self.start_fills(fills);
+        }
         if side.stop {
             self.state.request_stop();
             self.send(UiMsg::Stop);
@@ -668,7 +702,7 @@ impl eframe::App for App {
 mod tests {
     use super::*;
     use crate::ui::canvas_edit::Handle;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
     use scaleup_core::Margins;
 
     fn app(dir: &Path) -> App {
@@ -719,6 +753,13 @@ mod tests {
         act: impl Fn(&mut egui_kittest::Harness<'_, App>),
     ) {
         let out = PathBuf::from(std::env::var_os("SCALEUP_RENDER_DIR").unwrap());
+        // `SCALEUP_RENDER_ONLY=try-several,models` draws only the pictures whose name contains
+        // one of the words.
+        if let Ok(only) = std::env::var("SCALEUP_RENDER_ONLY")
+            && !only.split(',').any(|word| name.contains(word))
+        {
+            return;
+        }
         let mut harness = egui_kittest::Harness::builder()
             .with_size(size)
             .wgpu()
@@ -796,6 +837,30 @@ mod tests {
                 }
             }
         }
+        // The Try several list, open, with a model not downloaded and one that is.
+        let mut app = app_with(dir.path(), settings.clone());
+        std::fs::write(app.registry.local_path("lama-512"), b"x").unwrap();
+        app.state.try_several.open = true;
+        app.state.mode = Some(Mode::Single(PathBuf::from("a.png")));
+        app.state.source_size = Some([256, 192]);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([1200.0, 800.0])
+            .build_ui_state(|ui, app: &mut App| app.frame(ui), app);
+        for _ in 0..4 {
+            harness.step();
+        }
+        harness.check_accessibility();
+        for name in [
+            "Try several fills",
+            "LaMa (512)",
+            "MI-GAN Places2 (512, fast)",
+            "LaMa Manga (illustrations)",
+            "Mirror",
+            "Edge pixels",
+            "Try 1 fill",
+        ] {
+            harness.get_by_label(name);
+        }
         // The history strip, with the middle of three steps current.
         let steps = three_steps(dir.path());
         let mut harness = history_harness(dir.path(), settings, &steps, 1);
@@ -814,6 +879,124 @@ mod tests {
         for (i, s) in steps.iter().enumerate() {
             harness.get_by_label(&history::step_name(i, s));
         }
+    }
+
+    /// A window on a 16×16 photo with a 4 px extension filled by LaMa, the three fixture
+    /// inpainting models installed under the catalogue's ids, and the Try several list open. The
+    /// worker is the real one, on the CPU.
+    fn try_harness(dir: &Path) -> egui_kittest::Harness<'static, App> {
+        let photo = dir.join("photo.png");
+        png(&photo, [16, 16], [90, 120, 60]);
+        let settings = Settings {
+            extend_enabled: true,
+            extend_left: 4.0,
+            extend_fill: "ai".into(),
+            scale: None,
+            gpu: "cpu".into(),
+            output_dir: Some(dir.join("out")),
+            ..Settings::default()
+        };
+        let mut app = app_with(dir, settings);
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+        for (id, file) in [
+            ("lama-512", "inpaint_mean_lama.onnx"),
+            ("migan-512-places2", "inpaint_mean_migan.onnx"),
+            ("lama-manga", "inpaint_mean_lama_manga.onnx"),
+        ] {
+            std::fs::copy(fixtures.join(file), app.registry.local_path(id)).unwrap();
+        }
+        app.state.mode = Some(Mode::Single(photo));
+        app.state.source_size = Some([16, 16]);
+        app.state.try_several.open = true;
+        // Tall enough to show the whole sidebar: the list sits low in it.
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([1200.0, 1300.0])
+            .build_ui_state(|ui, app: &mut App| app.frame(ui), app);
+        harness.step();
+        harness
+    }
+
+    /// Presses the control called `label`, and lets the window answer.
+    fn click(harness: &mut egui_kittest::Harness<'_, App>, label: &str) {
+        harness.get_by_label(label).click();
+        harness.step();
+        harness.step();
+    }
+
+    fn disabled(harness: &egui_kittest::Harness<'_, App>, label: &str) -> bool {
+        harness.get_by_label(label).accesskit_node().is_disabled()
+    }
+
+    #[test]
+    fn try_several_runs_the_ticked_fills_and_each_is_a_history_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = try_harness(dir.path());
+        // The current fill is ticked; one fill is not enough.
+        assert!(disabled(&harness, "Try 1 fill"));
+        click(&mut harness, "MI-GAN Places2 (512, fast)");
+        assert!(!disabled(&harness, "Try 2 fills"));
+        click(&mut harness, "Try 2 fills");
+        assert!(wait_for(&mut harness, |a| {
+            !a.state.status.is_running() && a.state.history.steps().len() == 2
+        }));
+        let state = &harness.state().state;
+        let labels: Vec<&str> = state
+            .history
+            .steps()
+            .iter()
+            .map(|s| s.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Extend +4 px · LaMa (512)",
+                "Extend +4 px · MI-GAN Places2 (512, fast)"
+            ]
+        );
+        assert!(state.history.steps().iter().all(|s| s.output.is_file()));
+        assert!(
+            matches!(state.status, Status::Done(_)),
+            "{:?}",
+            state.status
+        );
+        assert!(!state.fill_queue);
+        // The list keeps its ticks for the next try.
+        assert!(!disabled(&harness, "Try 2 fills"));
+    }
+
+    #[test]
+    fn try_several_needs_two_fills_a_single_image_and_no_run_in_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = try_harness(dir.path());
+        click(&mut harness, "Mirror");
+        assert!(!disabled(&harness, "Try 2 fills"));
+        // Untick one: disabled again, and pressing it does nothing.
+        click(&mut harness, "Mirror");
+        assert!(disabled(&harness, "Try 1 fill"));
+        click(&mut harness, "Try 1 fill");
+        assert!(!harness.state().state.status.is_running());
+        // A folder cannot be tried.
+        click(&mut harness, "Mirror");
+        let folder = Mode::Batch(dir.path().to_path_buf());
+        harness.state_mut().state.mode = Some(folder);
+        harness.step();
+        assert!(disabled(&harness, "Try 2 fills"));
+        click(&mut harness, "Try 2 fills");
+        assert!(!harness.state().state.status.is_running());
+        assert!(harness.state().state.history.steps().is_empty());
+        // So is a run in progress; the whole sidebar waits.
+        let single = Mode::Single(dir.path().join("photo.png"));
+        harness.state_mut().state.mode = Some(single);
+        harness.step();
+        assert!(!disabled(&harness, "Try 2 fills"));
+        harness.state_mut().state.status = Status::Running {
+            file: 0,
+            files: 1,
+            percent: 10.0,
+            phase: "Fill 1 of 2: Extending".into(),
+        };
+        harness.step();
+        assert!(disabled(&harness, "Try 2 fills"));
     }
 
     /// Extend on, mirror fill, 32 px on every side (not linked).
@@ -1840,6 +2023,64 @@ mod tests {
                 with_images(a, c, false);
                 a.models_dialog.open = true;
             });
+            // The Models window scrolled to its inpainting rows.
+            render_then(
+                new(),
+                big,
+                theme,
+                &format!("models-inpaint-{t}"),
+                |a, c| {
+                    with_images(a, c, false);
+                    a.models_dialog.open = true;
+                },
+                |h| {
+                    h.get_by_label("LaMa Manga (illustrations)").scroll_to_me();
+                    h.step();
+                },
+            );
+            // The Try several list open with three fills ticked: LaMa (installed, the current
+            // fill), MI-GAN (not downloaded) and Mirror. Large, then the smallest window.
+            for (size, name) in [(big, "try-several"), ([900.0, 600.0], "try-several-small")] {
+                let settings = Settings {
+                    extend_enabled: true,
+                    extend_left: 128.0,
+                    ..Settings::default()
+                };
+                let app = app_with(dir.path(), settings);
+                std::fs::write(app.registry.local_path("lama-512"), b"x").unwrap();
+                render_then(
+                    app,
+                    size,
+                    theme,
+                    &format!("{name}-{t}"),
+                    |a, c| {
+                        with_images(a, c, false);
+                        a.state.try_several.open = true;
+                        let s = a.state.settings.clone();
+                        for fill in [
+                            FillChoice::Ai("migan-512-places2".into()),
+                            FillChoice::Plain(scaleup_core::Fill::Mirror),
+                        ] {
+                            a.state.try_several.set(&fill, true, &s);
+                        }
+                    },
+                    |h| h.get_by_label("Try several fills").scroll_to_me(),
+                );
+            }
+            // The picker of the single fill, with what the model suits under it.
+            let ai = Settings {
+                extend_enabled: true,
+                extend_left: 128.0,
+                ..Settings::default()
+            };
+            render_then(
+                app_with(dir.path(), ai),
+                big,
+                theme,
+                &format!("inpaint-picker-{t}"),
+                |a, c| with_images(a, c, false),
+                |h| h.get_all_by_label("Model").nth(1).unwrap().click(),
+            );
             render_then(
                 new(),
                 big,

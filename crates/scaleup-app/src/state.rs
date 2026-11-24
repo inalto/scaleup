@@ -367,10 +367,6 @@ pub fn step_label(s: &Settings, registry: &Registry) -> String {
 }
 
 /// One fill of a *Try several* queue.
-#[allow(
-    dead_code,
-    reason = "wired by the history strip and the Try several list (plan 12, Tasks 6 and 7)"
-)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum FillChoice {
     /// A fill that needs no model, as [`Fill::parse`] reads it. `Fill::Ai` here means the AI fill
@@ -392,6 +388,60 @@ impl FillChoice {
             }
         }
         s
+    }
+
+    /// The fill `s` makes a single run with, when it is one the Try several list offers: the AI
+    /// fill with its model, Mirror or Edge pixels. A colour or a transparent fill is not.
+    pub fn current(s: &Settings) -> Option<FillChoice> {
+        match Fill::parse(&s.extend_fill) {
+            Ok(Fill::Ai) => Some(FillChoice::Ai(s.extend_model.clone())),
+            Ok(fill @ (Fill::Mirror | Fill::Edge)) => Some(FillChoice::Plain(fill)),
+            _ => None,
+        }
+    }
+
+    /// What the fill is called for people: the model's name, `Mirror` or `Edge pixels`.
+    pub fn title(&self, registry: &Registry) -> String {
+        fill_title(&self.apply(&Settings::default()), registry)
+    }
+}
+
+/// Which fills the Try several list has ticked, and whether it is open. Interface state of this
+/// session only: it is not part of the saved settings.
+#[derive(Clone, Debug, Default)]
+pub struct TrySeveral {
+    pub open: bool,
+    /// The fills ticked once the user has ticked or unticked any. Until then the fill of the
+    /// settings is the only one ticked, and follows it when it changes.
+    ticked: Option<Vec<FillChoice>>,
+}
+
+impl TrySeveral {
+    pub fn is_ticked(&self, choice: &FillChoice, s: &Settings) -> bool {
+        match &self.ticked {
+            Some(list) => list.contains(choice),
+            None => FillChoice::current(s).as_ref() == Some(choice),
+        }
+    }
+
+    pub fn set(&mut self, choice: &FillChoice, on: bool, s: &Settings) {
+        let list = self
+            .ticked
+            .get_or_insert_with(|| FillChoice::current(s).into_iter().collect());
+        list.retain(|c| c != choice);
+        if on {
+            list.push(choice.clone());
+        }
+    }
+}
+
+/// The text of the queue's end of run: `3 fills done`, `2 fills done, 1 failed`.
+fn queue_summary(done: usize, failed: usize) -> String {
+    let fills = if done == 1 { "fill" } else { "fills" };
+    if failed == 0 {
+        format!("{done} {fills} done")
+    } else {
+        format!("{done} {fills} done, {failed} failed")
     }
 }
 
@@ -569,6 +619,10 @@ pub struct AppState {
     pub source_size: Option<[u32; 2]>,
     /// Finished single-image runs of this session.
     pub history: History,
+    /// The Try several list: open or closed, and what is ticked.
+    pub try_several: TrySeveral,
+    /// The run in progress is a Try several queue: its end says how many fills finished.
+    pub fill_queue: bool,
 }
 
 /// What a selected or dropped path means: a folder is a batch, a supported image a single run.
@@ -626,11 +680,20 @@ fn reduce(state: &mut AppState, ev: WorkerEvent) -> Option<Toast> {
         }
         WorkerEvent::AllDone { done, failed } => {
             state.stopping = false;
+            let queue = std::mem::take(&mut state.fill_queue);
             let error = state.last_file_error.take();
             match (&state.last_result, done, error) {
                 (Some(path), 1.., _) => state.status = Status::Done(path.clone()),
                 (_, _, Some(error)) => state.status = Status::Error(error),
                 _ => state.status = Status::Idle,
+            }
+            if queue {
+                let text = queue_summary(done, failed);
+                return Some(if failed > 0 {
+                    Toast::error(text)
+                } else {
+                    Toast::success(text)
+                });
             }
             return Some(if failed > 0 {
                 Toast::error(format!("{done} done, {failed} failed"))
@@ -643,11 +706,13 @@ fn reduce(state: &mut AppState, ev: WorkerEvent) -> Option<Toast> {
         }
         WorkerEvent::Stopped { done, total } => {
             state.stopping = false;
+            state.fill_queue = false;
             state.last_file_error = None;
             state.status = Status::Stopped { done, total };
         }
         WorkerEvent::Error(message) => {
             state.stopping = false;
+            state.fill_queue = false;
             state.last_file_error = None;
             state.log.push(message.clone());
             state.status = Status::Error(message.clone());
@@ -989,6 +1054,90 @@ mod tests {
         let toast = apply_event(&mut st, WorkerEvent::AllDone { done: 1, failed: 0 }).unwrap();
         assert_eq!(st.status, Status::Done(PathBuf::from("o.png")));
         assert_eq!(toast.kind, ToastKind::Success);
+    }
+
+    #[test]
+    fn a_fill_queue_says_how_many_fills_finished() {
+        let end = |done, failed| {
+            let mut st = AppState {
+                fill_queue: true,
+                ..AppState::default()
+            };
+            let toast = apply_event(&mut st, WorkerEvent::AllDone { done, failed }).unwrap();
+            assert!(!st.fill_queue, "the queue is over");
+            (toast.kind, toast.text)
+        };
+        assert_eq!(end(3, 0), (ToastKind::Success, "3 fills done".into()));
+        assert_eq!(end(1, 0), (ToastKind::Success, "1 fill done".into()));
+        assert_eq!(
+            end(2, 1),
+            (ToastKind::Error, "2 fills done, 1 failed".into())
+        );
+        assert_eq!(
+            end(0, 2),
+            (ToastKind::Error, "0 fills done, 2 failed".into())
+        );
+        // An ordinary run keeps its wording.
+        let mut st = AppState::default();
+        let toast = apply_event(&mut st, WorkerEvent::AllDone { done: 2, failed: 0 }).unwrap();
+        assert_eq!(toast.text, "Done: 2 files");
+        // A stopped or failed queue is over too: the next run is not a queue.
+        for ev in [
+            WorkerEvent::Stopped { done: 1, total: 3 },
+            WorkerEvent::Error("x".into()),
+        ] {
+            let mut st = AppState {
+                fill_queue: true,
+                ..AppState::default()
+            };
+            apply_event(&mut st, ev);
+            assert!(!st.fill_queue);
+        }
+    }
+
+    #[test]
+    fn try_several_starts_with_the_current_fill_ticked_and_follows_it_until_touched() {
+        let mut s = Settings {
+            extend_fill: "mirror".into(),
+            ..Settings::default()
+        };
+        let mirror = FillChoice::Plain(Fill::Mirror);
+        let edge = FillChoice::Plain(Fill::Edge);
+        let lama = FillChoice::Ai("lama-512".into());
+        let mut t = TrySeveral::default();
+        assert!(t.is_ticked(&mirror, &s) && !t.is_ticked(&edge, &s));
+        s.extend_fill = "ai".into();
+        assert!(t.is_ticked(&lama, &s) && !t.is_ticked(&mirror, &s));
+        // A colour fill is not on the list: nothing is ticked.
+        s.extend_fill = "#102030".into();
+        assert!(![&mirror, &edge, &lama].iter().any(|c| t.is_ticked(c, &s)));
+        // The first tick keeps the current fill and adds to it; later changes of the fill do
+        // not touch the ticks.
+        s.extend_fill = "mirror".into();
+        t.set(&edge, true, &s);
+        s.extend_fill = "ai".into();
+        assert!(t.is_ticked(&mirror, &s) && t.is_ticked(&edge, &s) && !t.is_ticked(&lama, &s));
+        t.set(&mirror, false, &s);
+        t.set(&edge, true, &s);
+        assert!(!t.is_ticked(&mirror, &s) && t.is_ticked(&edge, &s));
+    }
+
+    #[test]
+    fn fill_choices_know_their_names_and_the_fill_of_the_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        assert_eq!(FillChoice::Plain(Fill::Mirror).title(&reg), "Mirror");
+        assert_eq!(FillChoice::Plain(Fill::Edge).title(&reg), "Edge pixels");
+        assert_eq!(FillChoice::Ai("lama-512".into()).title(&reg), "LaMa (512)");
+        let mut s = Settings::default();
+        assert_eq!(
+            FillChoice::current(&s),
+            Some(FillChoice::Ai("lama-512".into()))
+        );
+        s.extend_fill = "edge".into();
+        assert_eq!(FillChoice::current(&s), Some(FillChoice::Plain(Fill::Edge)));
+        s.extend_fill = "transparent".into();
+        assert_eq!(FillChoice::current(&s), None);
     }
 
     #[test]
