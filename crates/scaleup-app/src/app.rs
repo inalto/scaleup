@@ -289,9 +289,24 @@ impl App {
                 }
             }
             HistoryAction::UseAsInput => {
-                let path = shown.and_then(|at| history.use_as_input(at));
-                if let Some(path) = path.map(Path::to_path_buf) {
-                    self.select(&path);
+                let Some(at) = shown else {
+                    return;
+                };
+                let extended = history.steps()[at].margins != scaleup_core::Margins::default();
+                let Some(path) = history.use_as_input(at).map(Path::to_path_buf) else {
+                    return;
+                };
+                self.select(&path);
+                // The picture already has its new canvas: with Extend still on, the next run
+                // would add the same margins around it again.
+                let selected = self.state.mode == Some(Mode::Single(path.clone()));
+                if extended && selected && self.state.settings.extend_enabled {
+                    self.state.settings.extend_enabled = false;
+                    let name = path.file_name().unwrap_or(path.as_os_str());
+                    self.toasts.push(Toast::success(format!(
+                        "Using {} as the input. Extend canvas is off: it was already extended.",
+                        name.to_string_lossy()
+                    )));
                 }
             }
             HistoryAction::RestoreSettings => {
@@ -1558,6 +1573,89 @@ mod tests {
         settle(&mut harness);
         assert_shows(harness.state(), &steps, 1);
         assert!(harness.query_by_label("2 of 3").is_some());
+    }
+
+    /// Extend, then Use as input, then an upscale: the chained run upscales the extended picture
+    /// and does not extend it a second time. The worker and the models are real.
+    #[test]
+    fn use_as_input_after_an_extension_turns_extend_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let photo = dir.path().join("photo.png");
+        png(&photo, [16, 16], [90, 120, 60]);
+        let settings = Settings {
+            extend_enabled: true,
+            extend_left: 4.0,
+            extend_fill: "mirror".into(),
+            scale: None,
+            gpu: "cpu".into(),
+            tile: 32,
+            output_dir: Some(dir.path().join("out")),
+            ..Settings::default()
+        };
+        let mut app = app_with(dir.path(), settings);
+        app.state.mode = Some(Mode::Single(photo));
+        app.state.source_size = Some([16, 16]);
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([1200.0, 800.0])
+            .build_ui_state(|ui, app: &mut App| app.frame(ui), app);
+        harness.step();
+        harness.state_mut().start();
+        assert!(wait_for(&mut harness, |a| {
+            !a.state.status.is_running() && a.state.history.steps().len() == 1
+        }));
+        let extended = harness.state().state.history.steps()[0].output.clone();
+        assert_eq!(image::image_dimensions(&extended).unwrap(), (24, 24));
+
+        harness.get_by_label("Use as input").click();
+        harness.step();
+        assert!(!harness.state().state.settings.extend_enabled);
+        let name = extended.file_name().unwrap().to_string_lossy().into_owned();
+        let toast =
+            format!("Using {name} as the input. Extend canvas is off: it was already extended.");
+        assert!(harness.query_by_label(&toast).is_some(), "{toast}");
+        assert!(wait_for(&mut harness, |a| a.state.source_size == Some([24, 24])));
+
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/nearest2x.onnx");
+        let s = &mut harness.state_mut().state.settings;
+        s.model_id = fixture.to_string_lossy().into_owned();
+        s.scale = Some(2);
+        harness.step();
+        harness.state_mut().start();
+        assert!(wait_for(&mut harness, |a| {
+            !a.state.status.is_running() && a.state.history.steps().len() == 2
+        }));
+        let state = &harness.state().state;
+        assert!(
+            matches!(state.status, Status::Done(_)),
+            "{:?}",
+            state.status
+        );
+        let chained = &state.history.steps()[1].output;
+        assert_eq!(image::image_dimensions(chained).unwrap(), (48, 48));
+        let name = chained.file_name().unwrap().to_string_lossy();
+        assert_eq!(name.matches("_ext_").count(), 1, "{name}");
+    }
+
+    /// A step that only upscaled leaves the extension settings as they are when it is used as
+    /// the input.
+    #[test]
+    fn use_as_input_after_an_upscale_keeps_extend() {
+        let dir = tempfile::tempdir().unwrap();
+        let steps = three_steps(dir.path());
+        let settings = Settings {
+            extend_enabled: true,
+            ..Settings::default()
+        };
+        let mut harness = history_harness(dir.path(), settings.clone(), &steps, 1);
+        harness.get_by_label("Use as input").click();
+        harness.step();
+        assert_eq!(harness.state().state.settings, settings);
+        assert!(
+            harness
+                .query_by_label_contains("Extend canvas is off")
+                .is_none()
+        );
     }
 
     /// Steps the window until `done` holds, and says whether it did within 30 s. It returns as

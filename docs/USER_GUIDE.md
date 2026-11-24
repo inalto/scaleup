@@ -181,7 +181,9 @@ for example `Extend +128 px · LaMa (512) · 4×`. The step on screen has an acc
   nothing when there is no step, while a run is in progress, while a text field has the keyboard (Ctrl+Z is
   then the field's own undo), or while a canvas handle has focus, because its arrows move the handle.
 - The step actions are **Use as input**, **Open folder**, **Restore settings** and **Remove**. **Use as
-  input** makes the step's result the selected image, so an extension can be upscaled next. **Restore
+  input** makes the step's result the selected image, so an extension can be upscaled next. When the step
+  extended the canvas, Use as input also turns Extend canvas off, so the next run does not add the same
+  canvas a second time. **Restore
   settings** puts the step's settings back into the sidebar. **Remove** takes the step out of the history and
   keeps its file: removing a step never deletes a file. The actions need a step on screen.
 - The history lasts for the session, so closing the app clears it. It holds up to 30 steps, and the oldest is
