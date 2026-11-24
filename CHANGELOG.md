@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- App: an **Extend only** button in the Extend canvas section. It makes the extension alone, whatever the
+  Scale row says; the main button still extends and upscales in one run.
+
+### Changed
+
+- App: the Extend canvas checkbox reads "Add canvas" (was "Add canvas before upscaling").
+
 ## [0.4.0] - 2026-11-24
 
 ### Added

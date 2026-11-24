@@ -14,6 +14,8 @@ use crate::ui::theme;
 pub struct SidebarOutput {
     pub picked: Option<PathBuf>,
     pub start: bool,
+    /// The Extend only button: the extension alone, whatever the scale.
+    pub extend: bool,
     /// The fills the Try several button runs, in list order.
     pub try_fills: Option<Vec<FillChoice>>,
     pub stop: bool,
@@ -355,6 +357,15 @@ pub fn start_label(s: &Settings, registry: &Registry) -> &'static str {
     }
 }
 
+/// The Extend only button's text. It never reads as the Start button does, which says `Extend`
+/// with the scale "None".
+pub fn extend_label(s: &Settings, registry: &Registry) -> &'static str {
+    match start_label(&s.extend_only(), registry) {
+        "Download and extend" => "Download and extend only",
+        _ => "Extend only",
+    }
+}
+
 /// One row of the Try several list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FillOffer {
@@ -480,7 +491,7 @@ fn extend_section(
     egui::CollapsingHeader::new(egui::RichText::new("Extend canvas").strong())
         .default_open(s.extend_enabled)
         .show(ui, |ui| {
-            ui.checkbox(&mut s.extend_enabled, "Add canvas before upscaling");
+            ui.checkbox(&mut s.extend_enabled, "Add canvas");
             ui.add_enabled_ui(s.extend_enabled, |ui| {
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut s.extend_mode, ExtendMode::Pixels, "Pixels");
@@ -544,6 +555,25 @@ fn extend_section(
                 });
                 if Fill::parse(&s.extend_fill) == Ok(Fill::Ai) {
                     inpainter_picker(ui, &mut s.extend_model, registry);
+                }
+                let blocker = if running {
+                    Some("A run is in progress".to_string())
+                } else if mode.is_none() {
+                    Some("Open an image or a folder first".to_string())
+                } else {
+                    s.extend_blocker(source)
+                };
+                let size = egui::vec2(ui.available_width(), 28.0);
+                let button = egui::Button::new(extend_label(s, registry));
+                let resp = ui.add_enabled(blocker.is_none(), |ui: &mut egui::Ui| {
+                    ui.add_sized(size, button)
+                });
+                if resp
+                    .on_hover_text("Extends the canvas without upscaling. Upscale does both.")
+                    .on_disabled_hover_text(blocker.unwrap_or_default())
+                    .clicked()
+                {
+                    out.extend = true;
                 }
                 try_several(
                     ui,
@@ -862,6 +892,24 @@ mod tests {
         assert_eq!(start_label(&s, &reg), "Upscale");
         s.extend_model = "migan-512-places2".into();
         assert_eq!(start_label(&s, &reg), "Download and start");
+    }
+
+    #[test]
+    fn extend_only_has_its_own_name_and_ignores_the_upscaling_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        // Scale 4 with its model missing: Start downloads it, Extend only does not need it.
+        let mut s = Settings {
+            extend_enabled: true,
+            ..Settings::default()
+        };
+        assert_eq!(start_label(&s, &reg), "Download and start");
+        assert_eq!(extend_label(&s, &reg), "Download and extend only");
+        std::fs::write(reg.local_path("lama-512"), b"x").unwrap();
+        assert_eq!(extend_label(&s, &reg), "Extend only");
+        // With the scale "None" Start says "Extend": the two buttons still differ.
+        s.scale = None;
+        assert_ne!(start_label(&s, &reg), extend_label(&s, &reg));
     }
 
     #[test]

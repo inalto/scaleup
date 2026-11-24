@@ -162,6 +162,25 @@ impl Settings {
         }
     }
 
+    /// These settings with the upscaling left out: what the Extend only button runs.
+    pub fn extend_only(&self) -> Settings {
+        Settings {
+            scale: None,
+            use_width: false,
+            double: false,
+            ..self.clone()
+        }
+    }
+
+    /// Why the Extend only button cannot be pressed, `None` when it can. `source` as for
+    /// [`Settings::start_blocker`].
+    pub fn extend_blocker(&self, source: Option<[u32; 2]>) -> Option<String> {
+        if !self.extend_enabled {
+            return Some("Turn on Extend canvas".into());
+        }
+        self.extend_only().start_blocker(source)
+    }
+
     /// Left, top, right, bottom as the user set them; all the left value when linked.
     pub fn extend_sides(&self) -> [f32; 4] {
         if self.extend_linked {
@@ -1858,6 +1877,40 @@ mod tests {
         );
         apply_event(&mut st, WorkerEvent::Error("boom".into()));
         assert_eq!(st.history.steps().len(), 1);
+    }
+
+    #[test]
+    fn extend_only_drops_the_upscale_and_keeps_the_extension() {
+        let mut s = extending(ExtendMode::Pixels, [64.0; 4], "mirror");
+        s.scale = Some(4);
+        s.use_width = true;
+        s.double = true;
+        let only = s.extend_only();
+        assert!(!only.upscales());
+        assert!(!only.double);
+        assert_eq!(
+            Settings {
+                scale: s.scale,
+                use_width: true,
+                double: true,
+                ..only.clone()
+            },
+            s
+        );
+        assert_eq!(s.extend_blocker(Some([256, 192])), None);
+        // An extension that cannot be made blocks it, as it blocks Start.
+        let huge = extending(ExtendMode::Pixels, [100_000.0; 4], "mirror");
+        assert_eq!(
+            huge.extend_blocker(Some([256, 192])),
+            huge.start_blocker(Some([256, 192]))
+        );
+        assert!(huge.extend_blocker(Some([256, 192])).is_some());
+        // Nothing to do with Extend off, whatever the scale.
+        let off = Settings::default();
+        assert_eq!(
+            off.extend_blocker(None).as_deref(),
+            Some("Turn on Extend canvas")
+        );
     }
 
     #[test]

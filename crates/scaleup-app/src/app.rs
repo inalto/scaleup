@@ -116,6 +116,20 @@ impl App {
     }
 
     fn start(&mut self) {
+        self.start_with(self.state.settings.clone());
+    }
+
+    /// The Extend only button: the extension alone, the upscaling settings left as they are.
+    fn start_extend(&mut self) {
+        if let Some(why) = self.state.settings.extend_blocker(self.state.source_size) {
+            self.toasts.push(Toast::error(why));
+            return;
+        }
+        self.start_with(self.state.settings.extend_only());
+    }
+
+    /// One run of `settings` on the selected image or folder.
+    fn start_with(&mut self, settings: Settings) {
         let Some(mode) = self.state.mode.clone() else {
             return;
         };
@@ -123,14 +137,14 @@ impl App {
             return;
         }
         // The sidebar disables Start then; the keyboard shortcut lands here.
-        if let Some(why) = self.state.settings.start_blocker(self.state.source_size) {
+        if let Some(why) = settings.start_blocker(self.state.source_size) {
             self.toasts.push(Toast::error(why));
             return;
         }
         self.begin_run();
         self.send(UiMsg::Start {
             mode,
-            settings: Box::new(self.state.settings.clone()),
+            settings: Box::new(settings),
         });
     }
 
@@ -613,6 +627,9 @@ impl App {
         }
         if side.open_hub {
             self.hub_dialog.open_with(self.registry.models_dir());
+        }
+        if side.extend {
+            self.start_extend();
         }
         if side.start {
             self.start();

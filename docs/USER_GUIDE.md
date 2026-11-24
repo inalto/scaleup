@@ -128,9 +128,13 @@ not downloaded yet, the Start button says **Download and start**, or **Download 
 upscaled. Under **Output**, the **Scale** row has a **None** choice: the image is only extended, nothing is
 upscaled, and the Start button reads **Extend**.
 
+The **Extend only** button in the Extend canvas section does the same without touching the Scale row: it
+makes the extension alone, and the main button still extends and upscales in one run. The extended picture
+is a step in the history; **Use as input** on it, then the main button, upscales it.
+
 ### Editing the canvas in the app
 
-With **Add canvas before upscaling** on and one image loaded, the image area shows the planned canvas: the
+With **Add canvas** on and one image loaded, the image area shows the planned canvas: the
 picture at its place, the new area showing its fill, and eight handles on the sides and corners of the new
 canvas. A chip under the canvas gives the size before and after, for example `256×192 to 512×448`, or asks
 for a handle to be dragged while no canvas is added. If the margins cannot be used for the image, the chip
