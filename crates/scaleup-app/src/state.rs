@@ -183,9 +183,18 @@ impl Settings {
             return Ok(None);
         }
         let fill = Fill::parse(&self.extend_fill)?;
+        Ok(Some(ExtendOptions {
+            margins: self.margin_spec(),
+            fill,
+        }))
+    }
+
+    /// The margins the "Extend canvas" fields ask for, whether or not extension is on and the fill
+    /// can be read.
+    pub fn margin_spec(&self) -> MarginSpec {
         let [left, top, right, bottom] = self.extend_sides();
         let px = |v: f32| v.max(0.0).round() as u32;
-        let margins = match self.extend_mode {
+        match self.extend_mode {
             ExtendMode::Pixels => MarginSpec::Pixels(Margins {
                 left: px(left),
                 top: px(top),
@@ -202,8 +211,7 @@ impl Settings {
                 w: self.extend_aspect.0,
                 h: self.extend_aspect.1,
             },
-        };
-        Ok(Some(ExtendOptions { margins, fill }))
+        }
     }
 
     /// The "resulting size" line of the Extend section, `None` when extension is off. With the
