@@ -404,21 +404,14 @@ pub fn current_margins(settings: &Settings, source: [u32; 2]) -> Option<Margins>
     options.margins.resolve(source[0], source[1]).ok()
 }
 
-/// The margins the edit view draws and a drag starts from: [`current_margins`] when the settings
-/// resolve, whether or not extension is on. Pixel and percent values over the limits are cut back
-/// to the limits, so the canvas still shows about what was asked (the size chip says why it
-/// cannot be used); an aspect that cannot be reached shows no margins.
+/// The margins the edit view draws and a drag starts from: what [`current_margins`] gives when the
+/// settings resolve, whether or not extension is on and the fill can be read. Pixel and percent
+/// values over the limits are cut back to the limits, so the canvas still shows about what was
+/// asked (the size chip says why it cannot be used); an aspect that cannot be reached shows no
+/// margins.
 pub fn planned_margins(settings: &Settings, source: [u32; 2]) -> Margins {
-    let on = Settings {
-        extend_enabled: true,
-        ..settings.clone()
-    };
-    if let Some(m) = current_margins(&on, source) {
-        return m;
-    }
     let spec = settings.margin_spec();
     if let Ok(m) = spec.resolve(source[0], source[1]) {
-        // Resolves on its own: only the fill could not be read.
         return m;
     }
     let px = |v: f32, side: u32| (f64::from(v.max(0.0)) * f64::from(side) / 100.0).round() as u32;
@@ -1275,6 +1268,25 @@ mod tests {
         assert_eq!(s.extend_top, 10.0);
         assert_eq!(s.extend_right, 20.0);
         assert_eq!(s.extend_bottom, 5.0);
+    }
+
+    #[test]
+    fn write_percent_reads_back_the_same_pixels() {
+        // A drag writes percent and the next frame reads pixels back: they must agree exactly,
+        // else the two would chase each other a pixel apart on every frame.
+        let mut s = extending(ExtendMode::Percent);
+        for w in (1..=4096u32).step_by(37).chain([16384 / 5, 12000]) {
+            let h = 1 + w / 3;
+            for px in (0..=4 * w.min(4096)).step_by(11) {
+                let px = px.min(16384 - w);
+                let m = m(px, px.min(4 * h), 0, 0);
+                if !resolves(m, [w, h]) {
+                    continue;
+                }
+                write_margins(&mut s, m, [w, h]);
+                assert_eq!(planned_margins(&s, [w, h]), m, "{w}x{h}");
+            }
+        }
     }
 
     #[test]

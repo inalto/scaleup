@@ -74,9 +74,11 @@ pub struct CompareView {
     pan: Vec2,
     /// The edit stage's drag and layout.
     edit: EditView,
-    /// The extend settings the shown result was made with, when known.
+    /// The extend settings the shown result was made with, when known; after a change, the
+    /// settings as last seen, so the next change is noticed too.
     result_key: Option<ExtendKey>,
-    /// Since the result arrived the extension was changed or "Adjust canvas" pressed: show Edit.
+    /// Since the result arrived the extension was changed or "Adjust canvas" pressed: show Edit
+    /// (until "Show result" or a new result).
     editing: bool,
 }
 
@@ -176,7 +178,20 @@ impl CompareView {
     /// Remembers the settings the result just shown was made with: changing their extension later
     /// goes back to the edit stage.
     pub fn result_settings(&mut self, settings: &Settings) {
-        self.result_key = Some(ExtendKey::of(settings));
+        self.result_key = Some(ExtendKey::of(settings, self.source()));
+    }
+
+    /// The size of the "before" image, the source of the next run.
+    fn source(&self) -> Option<[u32; 2]> {
+        self.before
+            .as_ref()
+            .map(|s| [s.size.x as u32, s.size.y as u32])
+    }
+
+    /// Whether a change of the extension (or "Adjust canvas") holds the edit stage (tests).
+    #[cfg(test)]
+    pub fn editing(&self) -> bool {
+        self.editing
     }
 
     pub fn is_empty(&self) -> bool {
@@ -212,13 +227,12 @@ impl CompareView {
 
     /// The stage the image area shows with these settings.
     fn stage(&mut self, input: &StageInput<'_>) -> Stage {
-        if self.after.is_some()
-            && self
-                .result_key
-                .as_ref()
-                .is_some_and(|k| *k != ExtendKey::of(input.settings))
-        {
-            self.editing = true;
+        if self.after.is_some() {
+            let key = ExtendKey::of(input.settings, self.source());
+            if self.result_key.as_ref().is_some_and(|k| *k != key) {
+                self.editing = true;
+                self.result_key = Some(key);
+            }
         }
         canvas_view::stage(StageFacts {
             extend_on: input.settings.extend_enabled,
@@ -251,6 +265,8 @@ impl CompareView {
             );
             let native = EditView::canvas_pixels(input.settings, source);
             let fit = EditView::fit_area(rect);
+            let has_result = self.after.is_some();
+            let mut back = false;
             toolbar(ui, rect, fit, native, &mut self.zoom, &mut self.pan, |ui| {
                 match canvas_view::size_text(input.settings, source) {
                     Ok(text) => theme::overlay_chip(ui, &text, theme::OVERLAY).on_hover_text(
@@ -260,8 +276,19 @@ impl CompareView {
                     Err(why) => theme::overlay_chip(ui, &why, theme::DANGER)
                         .on_hover_text("These margins cannot be used for this image"),
                 };
+                back = has_result
+                    && ui
+                        .add(theme::overlay_button("Show result"))
+                        .on_hover_text("Shows the last result again")
+                        .clicked();
             });
-            return changed;
+            if back {
+                // The result on screen (a run's, or the history step's) shows again as it is; a
+                // later change of the extension comes back here.
+                self.editing = false;
+                self.edit.clear();
+            }
+            return changed || back;
         }
         self.edit.clear();
         let mut changed = false;

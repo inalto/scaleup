@@ -10,10 +10,10 @@
 //! the zoom and pan. Re-fitting under the pointer would make the edge run away from it: a wider
 //! canvas fits smaller, which moves the edge back, which shrinks the drag.
 
-use eframe::egui::{self, Color32, Key, Rect, Stroke, TextureHandle, Vec2, pos2, vec2};
-use scaleup_core::{Fill, Margins, Registry};
+use eframe::egui::{self, Color32, Key, Pos2, Rect, Stroke, TextureHandle, Vec2, pos2, vec2};
+use scaleup_core::{Fill, MarginSpec, Margins, Registry};
 
-use crate::state::{ExtendMode, Settings, fill_title};
+use crate::state::{Settings, fill_title};
 use crate::ui::canvas_edit::{self, CanvasLayout, DragMods, HIT_SIZE, Handle, PreviewKind};
 use crate::ui::compare::{around, wheel_zoom};
 use crate::ui::theme;
@@ -54,37 +54,47 @@ pub fn stage(f: StageFacts) -> Stage {
     }
 }
 
-/// The extend settings whose change, after a result, sends the image area back to Edit.
+/// What of the extend settings changes the output, after a result: a change sends the image area
+/// back to Edit. Only what a run would do differently counts, so ticking "Same on every side" over
+/// equal values, typing side values while in Aspect mode, or picking an inpainting model under a
+/// plain fill does not.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExtendKey {
     enabled: bool,
-    mode: ExtendMode,
-    sides: [f32; 4],
-    linked: bool,
-    aspect: (u32, u32),
-    fill: String,
-    model: String,
+    /// The margins in pixels for the image; the fields as the run reads them when they do not
+    /// resolve (or the image size is not known).
+    margins: Result<Margins, MarginSpec>,
+    /// The fill; its text when it cannot be read.
+    fill: Result<Fill, String>,
+    /// The inpainting model, for the AI fill only.
+    model: Option<String>,
 }
 
 impl ExtendKey {
-    pub fn of(s: &Settings) -> Self {
+    /// The key of `s` for an image of size `source`.
+    pub fn of(s: &Settings, source: Option<[u32; 2]>) -> Self {
+        let spec = s.margin_spec();
+        let margins = match source.and_then(|[w, h]| spec.resolve(w, h).ok()) {
+            Some(m) => Ok(m),
+            None => Err(spec),
+        };
+        let fill = Fill::parse(&s.extend_fill).map_err(|_| s.extend_fill.clone());
+        let model = (fill == Ok(Fill::Ai)).then(|| s.extend_model.clone());
         Self {
             enabled: s.extend_enabled,
-            mode: s.extend_mode,
-            sides: [s.extend_left, s.extend_top, s.extend_right, s.extend_bottom],
-            linked: s.extend_linked,
-            aspect: s.extend_aspect,
-            fill: s.extend_fill.clone(),
-            model: s.extend_model.clone(),
+            margins,
+            fill,
+            model,
         }
     }
 }
 
-/// The size chip under the canvas: `256×192 to 512×448`, or why the settings cannot be used for
-/// this image.
+/// The size chip under the canvas: `256×192 to 512×448`, a hint while no canvas is added yet, or
+/// why the settings cannot be used for this image.
 pub fn size_text(s: &Settings, source: [u32; 2]) -> Result<String, String> {
     let [w, h] = source;
     match canvas_edit::current_margins(s, source) {
+        Some(m) if m == Margins::default() => Ok("Drag a handle to add canvas".into()),
         Some(m) => Ok(format!(
             "{w}×{h} to {}×{}",
             w + m.left + m.right,
@@ -122,6 +132,49 @@ pub fn step_margins(handle: Handle, current: Margins, steps: Vec2, source: [u32;
     canvas_edit::drag(handle, current, steps, 1.0, DragMods::default(), source)
 }
 
+/// What a screen reader says as a handle's value: the margin it moves, `96 px`, or both of a
+/// corner, `left 96 px, top 24 px`.
+pub fn handle_value(handle: Handle, m: Margins) -> String {
+    let s = handle.sides();
+    let horizontal = if s.left {
+        Some(("left", m.left))
+    } else if s.right {
+        Some(("right", m.right))
+    } else {
+        None
+    };
+    let vertical = if s.top {
+        Some(("top", m.top))
+    } else if s.bottom {
+        Some(("bottom", m.bottom))
+    } else {
+        None
+    };
+    match (horizontal, vertical) {
+        (Some((h, x)), Some((v, y))) => format!("{h} {x} px, {v} {y} px"),
+        (Some((_, n)), None) | (None, Some((_, n))) => format!("{n} px"),
+        (None, None) => String::new(),
+    }
+}
+
+/// The part of a textured quad (`screen`, drawn with the texture rectangle `uv`) that lies inside
+/// `visible`, with its texture rectangle cut to match; `None` when none of it shows. A flipped or
+/// degenerate `uv` stays so. Keeps the vertices of a zoomed-in preview near the view.
+pub fn clip_quad(screen: Rect, uv: Rect, visible: Rect) -> Option<(Rect, Rect)> {
+    let r = screen.intersect(visible);
+    if !r.is_positive() {
+        return None;
+    }
+    let at = |p: Pos2| {
+        let t = (p - screen.min) / screen.size();
+        pos2(
+            uv.min.x + (uv.max.x - uv.min.x) * t.x,
+            uv.min.y + (uv.max.y - uv.min.y) * t.y,
+        )
+    };
+    Some((r, Rect::from_min_max(at(r.min), at(r.max))))
+}
+
 // --------------------------------------------------------------------------------------- view
 
 /// A handle drag in progress: what was frozen when it began.
@@ -155,7 +208,8 @@ pub fn frozen_layout(source: Rect, scale: f32, m: Margins) -> CanvasLayout {
 #[derive(Default)]
 pub struct EditView {
     drag: Option<HandleDrag>,
-    /// The layout drawn last, in screen coordinates.
+    /// The layout drawn last, in screen coordinates (tests aim the pointer with it).
+    #[cfg(test)]
     last: Option<CanvasLayout>,
 }
 
@@ -193,7 +247,7 @@ impl EditView {
         )
     }
 
-    /// The layout drawn last, in screen coordinates (tests drive the pointer with it).
+    /// The layout drawn last, in screen coordinates.
     #[cfg(test)]
     pub fn last_layout(&self) -> Option<CanvasLayout> {
         self.last
@@ -248,8 +302,6 @@ impl EditView {
         let resp = ui.allocate_rect(rect, egui::Sense::DRAG);
         let before = canvas_edit::planned_margins(settings, source);
         let layout = self.layout(rect, source, before, *zoom, *pan);
-        let mut changed = false;
-
         if self.drag.is_none() {
             wheel_zoom(ui, &resp, Self::fit_area(rect), zoom, pan);
         }
@@ -258,6 +310,58 @@ impl EditView {
         {
             *pan += resp.drag_delta();
         }
+        let mut changed = self.pointer(ui, &resp, layout, before, source, settings);
+
+        let margins = canvas_edit::planned_margins(settings, source);
+        let layout = self.layout(rect, source, margins, *zoom, *pan);
+        let focused = self.keyboard(ui, layout, margins, source, settings);
+        changed |= focused.1;
+        let layout = if focused.1 {
+            let m = canvas_edit::planned_margins(settings, source);
+            self.layout(rect, source, m, *zoom, *pan)
+        } else {
+            layout
+        };
+
+        let hovered = match &self.drag {
+            Some(d) => Some(d.handle),
+            None => resp
+                .hover_pos()
+                .and_then(|p| canvas_edit::hit(p, layout.canvas)),
+        };
+        if let Some(h) = hovered {
+            ui.ctx().set_cursor_icon(h.cursor());
+        }
+        let painter = ui.painter_at(rect);
+        let active = |h| hovered == Some(h) || focused.0 == Some(h);
+        paint(
+            &painter,
+            ui.visuals(),
+            layout,
+            texture,
+            settings,
+            registry,
+            active,
+        );
+        #[cfg(test)]
+        {
+            self.last = Some(layout);
+        }
+        changed
+    }
+
+    /// A primary press on a handle starts a drag (and focuses the handle); while it lasts the
+    /// margins follow the pointer from the values frozen at the start. Returns true when it wrote
+    /// the settings.
+    fn pointer(
+        &mut self,
+        ui: &egui::Ui,
+        resp: &egui::Response,
+        layout: CanvasLayout,
+        before: Margins,
+        source: [u32; 2],
+        settings: &mut Settings,
+    ) -> bool {
         if resp.drag_started_by(egui::PointerButton::Primary)
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
             && let Some(handle) = canvas_edit::hit(origin, layout.canvas)
@@ -271,28 +375,41 @@ impl EditView {
             });
             ui.memory_mut(|m| m.request_focus(handle_id(handle)));
         }
-        if let Some(d) = self.drag {
-            let primary = resp.dragged_by(egui::PointerButton::Primary);
-            if (primary || resp.drag_stopped_by(egui::PointerButton::Primary))
-                && let Some(pos) = ui.input(|i| i.pointer.latest_pos())
-            {
-                let mods = DragMods::from_egui(ui.input(|i| i.modifiers));
-                let m = canvas_edit::drag(d.handle, d.start, pos - d.origin, d.scale, mods, source);
-                if m != before {
-                    canvas_edit::write_margins(settings, m, source);
-                    changed = true;
-                }
-            }
-            if !primary {
-                // Released: the next layout fits the new canvas again.
-                self.drag = None;
+        let Some(d) = self.drag else {
+            return false;
+        };
+        let mut changed = false;
+        let primary = resp.dragged_by(egui::PointerButton::Primary);
+        if (primary || resp.drag_stopped_by(egui::PointerButton::Primary))
+            && let Some(pos) = ui.input(|i| i.pointer.latest_pos())
+        {
+            let mods = DragMods::from_egui(ui.input(|i| i.modifiers));
+            let m = canvas_edit::drag(d.handle, d.start, pos - d.origin, d.scale, mods, source);
+            if m != before {
+                canvas_edit::write_margins(settings, m, source);
+                changed = true;
             }
         }
+        if !primary {
+            // Released: the next layout fits the new canvas again.
+            self.drag = None;
+        }
+        changed
+    }
 
-        // Keyboard: a focused handle moves with the arrow keys and screen-reader steps.
-        let margins = canvas_edit::planned_margins(settings, source);
-        let mut layout = self.layout(rect, source, margins, *zoom, *pan);
+    /// The eight handles as focusable widgets with a name, a value and the screen-reader steps they
+    /// take; the focused one moves with the arrow keys. Returns the focused handle and whether the
+    /// settings were written.
+    fn keyboard(
+        &self,
+        ui: &egui::Ui,
+        layout: CanvasLayout,
+        margins: Margins,
+        source: [u32; 2],
+        settings: &mut Settings,
+    ) -> (Option<Handle>, bool) {
         let mut focused = None;
+        let mut changed = false;
         for handle in Handle::ALL {
             let at = handle.position(layout.canvas);
             let r = ui.interact(
@@ -301,85 +418,101 @@ impl EditView {
                 egui::Sense::FOCUSABLE,
             );
             r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Splitter, true, handle.name()));
-            if !r.has_focus() {
-                continue;
-            }
-            focused = Some(handle);
-            ui.memory_mut(|m| {
-                m.set_focus_lock_filter(
-                    r.id,
-                    egui::EventFilter {
-                        horizontal_arrows: true,
-                        vertical_arrows: true,
-                        ..Default::default()
-                    },
-                )
+            let grows = step_margins(handle, margins, outward(handle), source) != margins;
+            let shrinks = step_margins(handle, margins, -outward(handle), source) != margins;
+            ui.ctx().accesskit_node_builder(r.id, |node| {
+                use egui::accesskit::Action;
+                node.set_value(handle_value(handle, margins));
+                if grows {
+                    node.add_action(Action::Increment);
+                }
+                if shrinks {
+                    node.add_action(Action::Decrement);
+                }
             });
             let steps = ui.input(|i| {
-                let keys = arrow_steps(
-                    i.num_presses(Key::ArrowRight),
-                    i.num_presses(Key::ArrowLeft),
-                    i.num_presses(Key::ArrowDown),
-                    i.num_presses(Key::ArrowUp),
-                    i.modifiers.shift,
-                );
                 use egui::accesskit::Action;
                 let reader = i.num_accesskit_action_requests(r.id, Action::Increment) as f32
                     - i.num_accesskit_action_requests(r.id, Action::Decrement) as f32;
-                keys + outward(handle) * reader
+                outward(handle) * reader
             });
-            if steps != Vec2::ZERO {
+            let steps = if r.has_focus() {
+                focused = Some(handle);
+                ui.memory_mut(|m| {
+                    m.set_focus_lock_filter(
+                        r.id,
+                        egui::EventFilter {
+                            horizontal_arrows: true,
+                            vertical_arrows: true,
+                            ..Default::default()
+                        },
+                    )
+                });
+                steps
+                    + ui.input(|i| {
+                        arrow_steps(
+                            i.num_presses(Key::ArrowRight),
+                            i.num_presses(Key::ArrowLeft),
+                            i.num_presses(Key::ArrowDown),
+                            i.num_presses(Key::ArrowUp),
+                            i.modifiers.shift,
+                        )
+                    })
+            } else {
+                steps
+            };
+            if steps != Vec2::ZERO && !changed {
                 let m = step_margins(handle, margins, steps, source);
                 if m != margins {
                     canvas_edit::write_margins(settings, m, source);
                     changed = true;
-                    let m = canvas_edit::planned_margins(settings, source);
-                    layout = self.layout(rect, source, m, *zoom, *pan);
                 }
             }
         }
-
-        let hovered = match &self.drag {
-            Some(d) => Some(d.handle),
-            None => resp
-                .hover_pos()
-                .and_then(|p| canvas_edit::hit(p, layout.canvas)),
-        };
-        if let Some(h) = hovered {
-            ui.ctx().set_cursor_icon(h.cursor());
-        }
-
-        let painter = ui.painter_at(rect);
-        paint_fill(&painter, ui.visuals(), layout, texture, settings, registry);
-        let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-        painter.image(texture.id(), layout.source, full, Color32::WHITE);
-        outline(&painter, layout.canvas);
-        if layout.source != layout.canvas {
-            outline(&painter, layout.source);
-        }
-        for (handle, r) in canvas_edit::handles(layout.canvas) {
-            let active = hovered == Some(handle) || focused == Some(handle);
-            paint_handle(&painter, r, active);
-        }
-        self.last = Some(layout);
-        changed
+        (focused, changed)
     }
 }
 
 // ------------------------------------------------------------------------------------ drawing
 
-/// A 1 px light line with a dark edge on each side: the border reads on light and dark pictures.
+/// Everything of the stage but the input: the fill preview, the source, the outlines and the
+/// handles (`active` says which one is being acted on).
+fn paint(
+    painter: &egui::Painter,
+    visuals: &egui::Visuals,
+    layout: CanvasLayout,
+    texture: &TextureHandle,
+    settings: &Settings,
+    registry: &Registry,
+    active: impl Fn(Handle) -> bool,
+) {
+    paint_fill(painter, visuals, layout, texture, settings, registry);
+    let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    if let Some((screen, uv)) = clip_quad(layout.source, full, painter.clip_rect()) {
+        painter.image(texture.id(), screen, uv, Color32::WHITE);
+    }
+    outline(painter, layout.canvas);
+    if layout.source != layout.canvas {
+        outline(painter, layout.source);
+    }
+    for (handle, r) in canvas_edit::handles(layout.canvas) {
+        paint_handle(painter, r, active(handle));
+    }
+}
+
+/// A 1 px white line on a 3 px dark one: the border reads on any picture, light or dark, as the
+/// split line does.
 fn outline(painter: &egui::Painter, r: Rect) {
     painter.rect_stroke(
         r,
         0.0,
-        Stroke::new(3.0, theme::ON_IMAGE_EDGE),
+        Stroke::new(3.0, theme::OUTLINE_EDGE),
         egui::StrokeKind::Middle,
     );
     painter.rect_stroke(
         r,
         0.0,
-        Stroke::new(1.0, Color32::from_white_alpha(220)),
+        Stroke::new(1.0, Color32::WHITE),
         egui::StrokeKind::Middle,
     );
 }
@@ -430,7 +563,10 @@ fn paint_fill(
                 PreviewKind::Edge
             };
             for (screen, uv) in canvas_edit::preview_bands(source, canvas, kind) {
-                painter.image(texture.id(), screen, uv, Color32::WHITE);
+                // Cut to the view: at a high zoom the bands reach far past it.
+                if let Some((screen, uv)) = clip_quad(screen, uv, visible) {
+                    painter.image(texture.id(), screen, uv, Color32::WHITE);
+                }
             }
         }
         Ok(Fill::Ai) => {
@@ -523,6 +659,65 @@ fn ai_label(painter: &egui::Painter, bands: impl Iterator<Item = Rect>, text: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::ExtendMode;
+
+    #[test]
+    fn handle_values_name_the_margins_they_move() {
+        let m = Margins {
+            left: 96,
+            top: 24,
+            right: 7,
+            bottom: 0,
+        };
+        assert_eq!(handle_value(Handle::Left, m), "96 px");
+        assert_eq!(handle_value(Handle::Bottom, m), "0 px");
+        assert_eq!(handle_value(Handle::TopLeft, m), "left 96 px, top 24 px");
+        assert_eq!(
+            handle_value(Handle::BottomRight, m),
+            "right 7 px, bottom 0 px"
+        );
+    }
+
+    #[test]
+    fn clipped_quads_keep_their_texture_in_place() {
+        let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(pos2(x0, y0), pos2(x1, y1));
+        let view = r(0.0, 0.0, 100.0, 100.0);
+        // Half outside on the left: the right half of the texture.
+        assert_eq!(
+            clip_quad(r(-100.0, 0.0, 100.0, 100.0), r(0.0, 0.0, 1.0, 1.0), view),
+            Some((view, r(0.5, 0.0, 1.0, 1.0)))
+        );
+        // A flipped texture stays flipped; a degenerate one stays a line.
+        assert_eq!(
+            clip_quad(r(-100.0, 0.0, 100.0, 100.0), r(1.0, 0.0, 0.0, 1.0), view),
+            Some((view, r(0.5, 0.0, 0.0, 1.0)))
+        );
+        assert_eq!(
+            clip_quad(r(50.0, -300.0, 150.0, 100.0), r(0.0, 1.0, 0.0, 0.0), view),
+            Some((r(50.0, 0.0, 100.0, 100.0), r(0.0, 0.25, 0.0, 0.0)))
+        );
+        // Outside or empty: nothing.
+        assert_eq!(clip_quad(r(200.0, 0.0, 300.0, 100.0), view, view), None);
+        assert_eq!(clip_quad(r(10.0, 10.0, 10.0, 90.0), view, view), None);
+        // Far past the view at a high zoom: the vertices land on the view's edge.
+        let huge = r(-1.0e7, -1.0e7, 1.0e7, 1.0e7);
+        let (screen, uv) = clip_quad(huge, r(0.0, 0.0, 1.0, 1.0), view).unwrap();
+        assert_eq!(screen, view);
+        assert!((uv.min.x - 0.5).abs() < 1e-4 && (uv.max.x - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn with_no_canvas_added_the_chip_says_what_to_do() {
+        let s = Settings {
+            extend_enabled: true,
+            extend_left: 0.0,
+            ..Settings::default()
+        };
+        assert_eq!(
+            size_text(&s, [256, 192]),
+            Ok("Drag a handle to add canvas".into())
+        );
+    }
 
     fn facts() -> StageFacts {
         StageFacts {
@@ -584,25 +779,33 @@ mod tests {
         }
     }
 
+    const SRC: Option<[u32; 2]> = Some([256, 192]);
+
     #[test]
-    fn every_extend_setting_is_in_the_key() {
-        let base = Settings::default();
-        let key = ExtendKey::of(&base);
-        let changes: [fn(&mut Settings); 9] = [
-            |s| s.extend_enabled = !s.extend_enabled,
+    fn what_changes_the_output_is_in_the_key() {
+        let base = Settings {
+            extend_enabled: true,
+            ..Settings::default()
+        };
+        let key = ExtendKey::of(&base, SRC);
+        let changes: [fn(&mut Settings); 7] = [
+            |s| s.extend_enabled = false,
             |s| s.extend_mode = ExtendMode::Aspect,
             |s| s.extend_left += 1.0,
-            |s| s.extend_bottom += 1.0,
-            |s| s.extend_linked = !s.extend_linked,
-            |s| s.extend_aspect = (1, 1),
+            // Unlinked with a different side: the bottom margin changes.
+            |s| {
+                s.extend_linked = false;
+                s.extend_bottom = 10.0;
+            },
+            |s| s.extend_mode = ExtendMode::Percent,
             |s| s.extend_fill = "mirror".into(),
+            // The model of the AI fill paints the canvas.
             |s| s.extend_model = "migan-512-places2".into(),
-            |s| s.extend_top += 1.0,
         ];
         for (i, change) in changes.iter().enumerate() {
             let mut s = base.clone();
             change(&mut s);
-            assert_ne!(ExtendKey::of(&s), key, "change {i}");
+            assert_ne!(ExtendKey::of(&s, SRC), key, "change {i}");
         }
         // Settings outside the extension do not count.
         let other = Settings {
@@ -610,7 +813,65 @@ mod tests {
             format: "jpg".into(),
             ..base
         };
-        assert_eq!(ExtendKey::of(&other), key);
+        assert_eq!(ExtendKey::of(&other, SRC), key);
+    }
+
+    #[test]
+    fn what_does_not_change_the_output_is_not_in_the_key() {
+        let base = Settings {
+            extend_enabled: true,
+            extend_fill: "mirror".into(),
+            ..Settings::default()
+        };
+        let key = ExtendKey::of(&base, SRC);
+        let same: [fn(&mut Settings); 4] = [
+            // "Same on every side" over four equal values.
+            |s| s.extend_linked = false,
+            // Hidden side fields while linked.
+            |s| s.extend_top = 5.0,
+            // The inpainting model under a plain fill.
+            |s| s.extend_model = "migan-512-places2".into(),
+            // The same fill written another way.
+            |s| s.extend_fill = "Mirror".into(),
+        ];
+        for (i, change) in same.iter().enumerate() {
+            let mut s = base.clone();
+            change(&mut s);
+            assert_eq!(ExtendKey::of(&s, SRC), key, "change {i}");
+        }
+        // Side values typed while in Aspect mode do not move an aspect canvas.
+        let aspect = Settings {
+            extend_mode: ExtendMode::Aspect,
+            ..base.clone()
+        };
+        let mut typed = aspect.clone();
+        typed.extend_linked = false;
+        typed.extend_right = 300.0;
+        assert_eq!(ExtendKey::of(&typed, SRC), ExtendKey::of(&aspect, SRC));
+        // Percent that gives the same pixels on this image is the same canvas.
+        let pixels = Settings {
+            extend_linked: false,
+            extend_left: 64.0,
+            extend_top: 48.0,
+            extend_right: 64.0,
+            extend_bottom: 48.0,
+            ..base.clone()
+        };
+        let percent = Settings {
+            extend_mode: ExtendMode::Percent,
+            extend_linked: true,
+            extend_left: 25.0,
+            ..base.clone()
+        };
+        assert_eq!(ExtendKey::of(&pixels, SRC), ExtendKey::of(&percent, SRC));
+        // Without a size, the fields count as they are.
+        assert_ne!(ExtendKey::of(&pixels, None), ExtendKey::of(&percent, None));
+        // Over the limits: the fields count, so typing on in a bad value is still a change.
+        let mut bad = base.clone();
+        bad.extend_left = 5000.0;
+        let bad_key = ExtendKey::of(&bad, SRC);
+        bad.extend_left = 6000.0;
+        assert_ne!(ExtendKey::of(&bad, SRC), bad_key);
     }
 
     fn extending() -> Settings {

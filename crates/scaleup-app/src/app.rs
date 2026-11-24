@@ -47,6 +47,9 @@ pub struct App {
     /// The outputs of the steps the worker was asked to show, for the tests to check.
     #[cfg(test)]
     asked: Vec<PathBuf>,
+    /// Frames the image area asked to draw again after changing the settings (tests).
+    #[cfg(test)]
+    discards: usize,
 }
 
 impl App {
@@ -77,6 +80,8 @@ impl App {
             step_error: None,
             #[cfg(test)]
             asked: Vec::new(),
+            #[cfg(test)]
+            discards: 0,
         };
         if let Some(path) = initial {
             app.select(&path);
@@ -604,6 +609,10 @@ impl App {
                 // The sidebar was drawn before the image area: draw the frame again, so its fields
                 // show what a handle just did in the same frame.
                 if changed {
+                    #[cfg(test)]
+                    {
+                        self.discards += 1;
+                    }
                     ctx.request_discard("the image area changed the extend settings");
                     ctx.request_repaint();
                 }
@@ -683,6 +692,7 @@ mod tests {
             showing: None,
             step_error: None,
             asked: Vec::new(),
+            discards: 0,
         }
     }
 
@@ -803,9 +813,9 @@ mod tests {
         }
     }
 
-    /// An app on the edit stage of the fixture photo (256×192) with 32 px on every side.
-    fn edit_harness(dir: &Path) -> egui_kittest::Harness<'static, App> {
-        let settings = Settings {
+    /// Extend on, mirror fill, 32 px on every side (not linked).
+    fn edit_settings() -> Settings {
+        Settings {
             extend_enabled: true,
             extend_linked: false,
             extend_left: 32.0,
@@ -814,7 +824,16 @@ mod tests {
             extend_bottom: 32.0,
             extend_fill: "mirror".into(),
             ..Settings::default()
-        };
+        }
+    }
+
+    /// An app on the edit stage of the fixture photo (256×192) with 32 px on every side.
+    fn edit_harness(dir: &Path) -> egui_kittest::Harness<'static, App> {
+        edit_harness_with(dir, edit_settings())
+    }
+
+    /// An app on the edit stage of the fixture photo with `settings`.
+    fn edit_harness_with(dir: &Path, settings: Settings) -> egui_kittest::Harness<'static, App> {
         let app = app_with(dir, settings);
         let mut harness = egui_kittest::Harness::builder()
             .with_size([1200.0, 800.0])
@@ -931,6 +950,211 @@ mod tests {
         harness.state_mut().state.mode = Some(Mode::Batch(dir.path().to_path_buf()));
         harness.step();
         assert!(harness.query_by_label("Extend canvas…").is_none());
+    }
+
+    /// Shows a result of the edit settings for the fixture photo, as a finished run does.
+    fn give_result(harness: &mut egui_kittest::Harness<'static, App>) {
+        let ctx = harness.ctx.clone();
+        let image = egui::ColorImage::filled([320, 256], egui::Color32::GRAY);
+        let m = Margins {
+            left: 32,
+            top: 32,
+            right: 32,
+            bottom: 32,
+        };
+        harness
+            .state_mut()
+            .show_preview(&ctx, Which::After, image, [320, 256], m);
+        harness.step();
+    }
+
+    fn on_edit(harness: &egui_kittest::Harness<'static, App>) -> bool {
+        harness.state().compare.edit_layout().is_some()
+    }
+
+    #[test]
+    fn a_screen_reader_steps_a_handle_and_hears_its_margin() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = edit_harness(dir.path());
+        let value = |h: &egui_kittest::Harness<'static, App>, name: &str| {
+            h.get_by_label(name).value().unwrap_or_default()
+        };
+        assert_eq!(value(&harness, "Right edge"), "32 px");
+        assert_eq!(value(&harness, "Top-left corner"), "left 32 px, top 32 px");
+        harness.get_by_label("Right edge").increment_accesskit();
+        harness.step();
+        assert_eq!(
+            sides(&harness.state().state.settings),
+            [32.0, 32.0, 33.0, 32.0]
+        );
+        assert_eq!(value(&harness, "Right edge"), "33 px");
+        harness
+            .get_by_label("Top-left corner")
+            .decrement_accesskit();
+        harness.step();
+        assert_eq!(
+            sides(&harness.state().state.settings),
+            [31.0, 31.0, 33.0, 32.0]
+        );
+    }
+
+    #[test]
+    fn changing_the_extension_after_a_result_goes_back_to_edit_and_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = edit_harness(dir.path());
+        give_result(&mut harness);
+        assert!(!on_edit(&harness));
+        // Not a change of the output: "Same on every side" over four equal values.
+        harness.state_mut().state.settings.extend_linked = true;
+        harness.step();
+        assert!(!on_edit(&harness));
+        harness.state_mut().state.settings.extend_left = 40.0;
+        harness.step();
+        assert!(on_edit(&harness));
+        // Back to what the result was made with: still editing until asked otherwise.
+        harness.state_mut().state.settings.extend_left = 32.0;
+        harness.step();
+        assert!(on_edit(&harness));
+        // "Show result" goes back to the result without a run; the next change returns.
+        harness.get_by_label("Show result").click();
+        harness.step();
+        harness.step();
+        assert!(!on_edit(&harness));
+        assert!(harness.query_by_label("Show result").is_none());
+        harness.state_mut().state.settings.extend_fill = "edge".into();
+        harness.step();
+        assert!(on_edit(&harness));
+    }
+
+    #[test]
+    fn selecting_another_image_forgets_the_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = edit_harness(dir.path());
+        give_result(&mut harness);
+        harness.state_mut().state.settings.extend_left = 40.0;
+        harness.step();
+        assert!(harness.state().compare.editing());
+        let photo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/images/photo_like_256x192.jpg");
+        harness.state_mut().select(&photo);
+        assert!(!harness.state().compare.editing());
+        // The worker decodes the new "before"; then a result of it shows as a result.
+        for _ in 0..500 {
+            harness.step();
+            if harness.state().compare.sizes()[0].is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(harness.state().compare.sizes()[0], Some([256, 192]));
+        give_result(&mut harness);
+        assert!(!on_edit(&harness));
+    }
+
+    #[test]
+    fn a_run_that_starts_mid_drag_ends_the_drag_and_a_failed_run_returns_to_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = edit_harness(dir.path());
+        let layout = harness.state().compare.edit_layout().unwrap();
+        let at = Handle::Right.position(layout.canvas);
+        harness.hover_at(at);
+        harness.drag_at(at);
+        harness.hover_at(at + egui::vec2(20.0, 0.0));
+        harness.step();
+        let mid = sides(&harness.state().state.settings);
+        assert!(mid[2] > 32.0);
+        // A run starts (the shortcut works while the button is held): the stage is Result, and
+        // the pointer no longer moves the margin.
+        harness.state_mut().state.status = Status::Running {
+            file: 0,
+            files: 1,
+            percent: 0.0,
+            phase: "Starting".into(),
+        };
+        harness.hover_at(at + egui::vec2(60.0, 0.0));
+        harness.step();
+        assert!(!on_edit(&harness));
+        assert_eq!(sides(&harness.state().state.settings), mid);
+        // It fails before a result: back to Edit, the button still held, nothing dragged.
+        harness.state_mut().state.status = Status::Error("the model could not be loaded".into());
+        harness.step();
+        assert!(on_edit(&harness));
+        harness.hover_at(at + egui::vec2(90.0, 0.0));
+        harness.step();
+        assert_eq!(sides(&harness.state().state.settings), mid);
+        harness.drop_at(at + egui::vec2(90.0, 0.0));
+        harness.step();
+        assert_eq!(sides(&harness.state().state.settings), mid);
+        // The canvas is fitted again, inside the image area.
+        let now = harness.state().compare.edit_layout().unwrap();
+        assert!(now.canvas.max.x < 1200.0 && now.scale < layout.scale);
+    }
+
+    #[test]
+    fn a_percent_drag_settles_with_one_write_per_pointer_move() {
+        let dir = tempfile::tempdir().unwrap();
+        // 12.5% of 256 x 192 is 32 by 24 px.
+        let settings = Settings {
+            extend_mode: crate::state::ExtendMode::Percent,
+            extend_left: 12.5,
+            extend_top: 12.5,
+            extend_right: 12.5,
+            extend_bottom: 12.5,
+            ..edit_settings()
+        };
+        let mut harness = edit_harness_with(dir.path(), settings);
+        let layout = harness.state().compare.edit_layout().unwrap();
+        let at = Handle::Right.position(layout.canvas);
+        harness.hover_at(at);
+        harness.drag_at(at);
+        harness.step();
+        assert_eq!(harness.state().discards, 0);
+        let mut last = harness.state().state.settings.clone();
+        for (i, dx) in [37.0, 50.0, 23.0].into_iter().enumerate() {
+            harness.hover_at(at + egui::vec2(dx, 0.0));
+            harness.step();
+            assert_eq!(harness.state().discards, i + 1, "move {i}");
+            let now = harness.state().state.settings.clone();
+            assert_ne!(now, last);
+            // The pointer stays put: nothing more is written or drawn again.
+            for _ in 0..5 {
+                harness.step();
+            }
+            assert_eq!(harness.state().discards, i + 1, "still after move {i}");
+            assert_eq!(harness.state().state.settings, now);
+            last = now;
+            let right = crate::ui::canvas_edit::current_margins(&last, [256, 192])
+                .unwrap()
+                .right;
+            assert_eq!(right, 32 + (dx / layout.scale).round() as u32, "move {i}");
+        }
+        harness.drop_at(at + egui::vec2(23.0, 0.0));
+        harness.step();
+        let s = &harness.state().state.settings;
+        assert_eq!(s.extend_mode, crate::state::ExtendMode::Percent);
+        assert_eq!(s.extend_left, 12.5);
+    }
+
+    #[test]
+    fn pressing_a_handle_focuses_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = edit_harness(dir.path());
+        let layout = harness.state().compare.edit_layout().unwrap();
+        let at = Handle::Bottom.position(layout.canvas);
+        harness.hover_at(at);
+        harness.drag_at(at);
+        harness.drop_at(at);
+        harness.step();
+        assert!(harness.get_by_label("Bottom edge").is_focused());
+        assert_eq!(sides(&harness.state().state.settings), [32.0; 4]);
+        assert_eq!(harness.state().discards, 0);
+        // And the arrows move it from there.
+        harness.key_press(egui::Key::ArrowDown);
+        harness.step();
+        assert_eq!(
+            sides(&harness.state().state.settings),
+            [32.0, 32.0, 32.0, 33.0]
+        );
     }
 
     /// Writes a `w`×`h` PNG of one colour.

@@ -84,6 +84,10 @@ pub const OVERLAY: Color32 = Color32::from_black_alpha(140);
 /// The dark edge under white marks on the picture (split line, knob, handles, outlines): they stay
 /// visible on a bright picture.
 pub const ON_IMAGE_EDGE: Color32 = Color32::from_black_alpha(110);
+/// The dark line under the white outline of the canvas and of the picture in the edit stage:
+/// denser than [`ON_IMAGE_EDGE`], because a 1 px line over a mirrored copy of the picture has
+/// nothing else to tell it apart.
+pub const OUTLINE_EDGE: Color32 = Color32::from_black_alpha(170);
 
 /// The two squares of the checkerboard that stands for transparency: close in tone, so it stays
 /// quiet next to the picture.
