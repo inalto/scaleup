@@ -257,13 +257,15 @@ fn models_list_hides_inpainters_unless_asked() {
         .code(0)
         .stdout(predicate::str::contains("realesrgan-x4plus"))
         .stdout(predicate::str::contains("lama-512").not())
-        .stdout(predicate::str::contains("migan-512-places2").not());
+        .stdout(predicate::str::contains("migan-512-places2").not())
+        .stdout(predicate::str::contains("lama-manga").not());
     scaleup()
         .args(["models", "list", "--kind", "inpaint"])
         .assert()
         .code(0)
         .stdout(predicate::str::contains("lama-512"))
         .stdout(predicate::str::contains("migan-512-places2"))
+        .stdout(predicate::str::contains("lama-manga"))
         .stdout(predicate::str::contains("realesrgan-x4plus").not());
     scaleup()
         .args(["models", "list", "--kind", "all"])
@@ -392,6 +394,49 @@ fn extend_says_extended_and_upscale_keeps_the_upscayl_line() {
             "{name}: {upscaled:?}"
         );
     }
+}
+
+#[test]
+fn the_manifest_layout_decides_how_the_output_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("grey.png");
+    image::RgbaImage::from_pixel(W, H, image::Rgba([128, 128, 128, 255]))
+        .save(&input)
+        .unwrap();
+    let models = dir.path().join("models");
+    std::fs::create_dir_all(&models).unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/inpaint_mean_lama_manga.onnx");
+    std::fs::copy(&fixture, models.join("test-manga.onnx")).unwrap();
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(
+        &manifest,
+        r#"{"version":1,"models":[{"id":"test-manga","name":"Manga","arch":"LaMa","scale":1,
+        "license":"MIT","commercial":true,"size_bytes":1,"kind":"inpaint","url":"","sha256":"",
+        "layout":{"output":"0..1","gpu":true,"max_context_factor":1}}]}"#,
+    )
+    .unwrap();
+    // By id, with the entry's 0..1 output: the mean fill of a grey image is grey.
+    let by_id = dir.path().join("by_id.png");
+    extend(&input, &by_id)
+        .env("SCALEUP_TEST_MANIFEST", &manifest)
+        .arg("-m")
+        .arg(&models)
+        .args(["--extend", "0,0,2,0", "--extend-model", "test-manga"])
+        .assert()
+        .code(0);
+    let got = image::open(&by_id).unwrap().to_rgba8();
+    assert_eq!(got.dimensions(), (W + 2, H));
+    assert!(got.pixels().all(|p| p.0 == [128, 128, 128, 255]));
+    // The same file by path has no entry: read as 0..255, the new columns come out near black.
+    let by_path = dir.path().join("by_path.png");
+    extend(&input, &by_path)
+        .args(["--extend", "0,0,2,0", "--extend-model"])
+        .arg(&fixture)
+        .assert()
+        .code(0);
+    let got = image::open(&by_path).unwrap().to_rgba8();
+    assert!(got.get_pixel(W + 1, 0)[0] <= 1);
 }
 
 /// Serves `body` once with HTTP 200 on a loopback port; returns its URL.

@@ -12,7 +12,7 @@ use crate::extend::{ExtendOptions, Fill, Margins, outpaint, pad_canvas};
 use crate::image32::Image32;
 use crate::io::{OutputFormat, load_image, save_image};
 use crate::pipeline::{CancelToken, Phase, Progress, UpscaleOptions, upscale};
-use crate::registry::{ModelKind, Registry, scale_from_name};
+use crate::registry::{InpaintLayout, ModelKind, Registry, scale_from_name};
 use crate::resize::{resize_rgba, target_size};
 use crate::tiling::{auto_tile_size, room_for_overlap, tile_grid};
 use crate::{Result, ScaleUpError};
@@ -174,8 +174,10 @@ impl Upscaler {
 
     /// Loads an inpainting model: a catalogue id of kind `inpaint` (downloading it if needed) or an
     /// ONNX file path. It always runs on ONNX Runtime, on the main backend's device when that is
-    /// ONNX Runtime and otherwise on the device `pref` names there. An upscaling catalogue id, a
-    /// missing model or a graph of neither inpainting layout is an error.
+    /// ONNX Runtime and otherwise on the device `pref` names there, unless its layout keeps it on
+    /// the CPU. A catalogue model is run with its entry's `layout`; a file path with the defaults
+    /// of the layout its graph shows (see [`crate::registry::InpaintLayout`]). An upscaling
+    /// catalogue id, a missing model or a graph of neither inpainting layout is an error.
     ///
     /// `download_progress(done, total)` reports the download's bytes and is not called when the
     /// model is already on disk. A cancelled `cancel` aborts the download with
@@ -187,7 +189,7 @@ impl Upscaler {
         download_progress: &mut dyn FnMut(u64, u64),
         cancel: &CancelToken,
     ) -> Result<Box<dyn Inpainter>> {
-        let path = match self.registry.get(id_or_path) {
+        let (path, layout) = match self.registry.get(id_or_path) {
             Some(entry) if entry.kind != ModelKind::Inpaint => {
                 let ids: Vec<&str> = self.registry.inpainters().map(|e| e.id.as_str()).collect();
                 return Err(ScaleUpError::InvalidOption(format!(
@@ -196,12 +198,17 @@ impl Upscaler {
                     ids.join(", ")
                 )));
             }
-            Some(_) => self
-                .registry
-                .ensure_cancellable(id_or_path, download_progress, cancel)?,
-            None => self.registry.resolve(id_or_path)?.path,
+            Some(entry) => (
+                self.registry
+                    .ensure_cancellable(id_or_path, download_progress, cancel)?,
+                entry.layout,
+            ),
+            None => (
+                self.registry.resolve(id_or_path)?.path,
+                InpaintLayout::default(),
+            ),
         };
-        self.inpaint_backend()?.load_inpainter(&path)
+        self.inpaint_backend()?.load_inpainter(&path, &layout)
     }
 
     fn inpaint_backend(&self) -> Result<&OrtBackend> {
@@ -599,6 +606,8 @@ mod tests {
             format: "onnx".into(),
             source: "catalogue".into(),
             kind: ModelKind::Upscale,
+            good_for: String::new(),
+            layout: InpaintLayout::default(),
         };
         let registry = Registry::from_entries(vec![entry], dir.path().to_path_buf());
         std::fs::copy(fixture(), registry.local_path("span")).unwrap();
@@ -1187,14 +1196,57 @@ mod tests {
             format: "onnx".into(),
             source: "catalogue".into(),
             kind: ModelKind::Inpaint,
+            good_for: String::new(),
+            layout: InpaintLayout::default(),
         }
     }
 
     fn inpaint_fixture() -> String {
-        format!(
-            "{}/../../tests/fixtures/inpaint_mean_lama.onnx",
-            env!("CARGO_MANIFEST_DIR")
-        )
+        fixture_named("inpaint_mean_lama.onnx")
+    }
+
+    fn fixture_named(name: &str) -> String {
+        format!("{}/../../tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[test]
+    fn a_catalogue_inpainter_runs_with_its_entry_layout_and_a_file_with_the_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let manga = fixture_named("inpaint_mean_lama_manga.onnx");
+        let layout = Registry::with_dir(dir.path().join("builtin"))
+            .get("lama-manga")
+            .unwrap()
+            .layout;
+        assert!(!layout.is_default());
+        let entry = crate::registry::ModelEntry {
+            layout,
+            ..inpaint_entry("manga")
+        };
+        let registry = Registry::from_entries(vec![entry], dir.path().into());
+        std::fs::copy(&manga, registry.local_path("manga")).unwrap();
+        let up = Upscaler::new(DevicePreference::Cpu, registry).unwrap();
+        // A grey image extended by a mean fill stays grey only when the 0..1 output is read as
+        // such: read as 0..255 (the default for a bare float32 file) the new strip is near black.
+        let grey = RgbaImage::from_pixel(8, 8, Rgba([128, 128, 128, 255]));
+        let m = Margins {
+            right: 4,
+            ..Margins::default()
+        };
+        let strip = |model: &dyn Inpainter| {
+            let out = outpaint(model, &grey, m, &mut |_| {}, &CancelToken::new()).unwrap();
+            assert_eq!(out.dimensions(), (12, 8));
+            *out.get_pixel(11, 4)
+        };
+        let by_id = up
+            .load_inpainter("manga", &mut |_, _| {}, &CancelToken::new())
+            .unwrap();
+        assert_eq!((by_id.window(), by_id.max_context_factor()), (512, 1));
+        assert_eq!(strip(by_id.as_ref()), Rgba([128, 128, 128, 255]));
+        let by_path = up
+            .load_inpainter(&manga, &mut |_, _| {}, &CancelToken::new())
+            .unwrap();
+        assert_eq!(by_path.max_context_factor(), 4);
+        assert!(strip(by_path.as_ref())[0] <= 1);
     }
 
     #[test]
@@ -1222,6 +1274,9 @@ mod tests {
             .load_inpainter(&inpaint_fixture(), &mut |_, _| {}, &CancelToken::new())
             .unwrap();
         assert_eq!(by_path.window(), 16);
+        // No layout in the entry, none for a file: the float32 defaults, as before.
+        assert_eq!(by_id.max_context_factor(), 4);
+        assert_eq!(by_path.max_context_factor(), 4);
     }
 
     #[test]
@@ -1356,6 +1411,89 @@ mod tests {
             );
             assert!(sd > 2.0, "{id}: the new strip is flat (sd {sd:.2})");
         }
+    }
+
+    #[test]
+    #[ignore = "needs the real lama-manga file; run with: SCALEUP_LAMA_MANGA=<path to \
+                lama-manga-dynamic.onnx> [SCALEUP_TEST_DEVICE=auto|0] cargo test -p scaleup-core \
+                --lib real_lama_manga -- --ignored --nocapture"]
+    fn real_lama_manga_extends_a_photo() {
+        use crate::backend::Backend;
+        use std::time::Instant;
+        let Some(path) = std::env::var_os("SCALEUP_LAMA_MANGA").map(PathBuf::from) else {
+            eprintln!("skipped: SCALEUP_LAMA_MANGA is not set");
+            return;
+        };
+        let pref = std::env::var("SCALEUP_TEST_DEVICE")
+            .map_or(Ok(DevicePreference::Cpu), |d| DevicePreference::parse(&d))
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        let entry = reg.get("lama-manga").unwrap();
+        let sha = crate::registry::sha256_of(&mut fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(sha, entry.sha256, "{}", path.display());
+        let backend = OrtBackend::new(pref).unwrap();
+        println!("device: {}", backend.device().name);
+        let t = Instant::now();
+        let model = backend.load_inpainter(&path, &entry.layout).unwrap();
+        let load = t.elapsed().as_secs_f32();
+        let photo = format!(
+            "{}/../../tests/fixtures/images/photo_like_256x192.jpg",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let img = load_image(Path::new(&photo)).unwrap();
+        let (w, h) = img.dimensions();
+        let m = Margins {
+            right: 64,
+            ..Margins::default()
+        };
+        let t = Instant::now();
+        let out = outpaint(model.as_ref(), &img, m, &mut |_| {}, &CancelToken::new()).unwrap();
+        let run = t.elapsed().as_secs_f32();
+        assert_eq!(out.dimensions(), (w + 64, h));
+        for y in 0..h {
+            for x in 0..w {
+                assert_eq!(out.get_pixel(x, y), img.get_pixel(x, y), "at {x},{y}");
+            }
+        }
+        let luma = |p: &Rgba<u8>| {
+            0.299 * f64::from(p[0]) + 0.587 * f64::from(p[1]) + 0.114 * f64::from(p[2])
+        };
+        let strip: Vec<f64> = (0..h)
+            .flat_map(|y| (w..w + 64).map(move |x| (x, y)))
+            .map(|(x, y)| luma(out.get_pixel(x, y)))
+            .collect();
+        let mean = strip.iter().sum::<f64>() / strip.len() as f64;
+        let sd =
+            (strip.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / strip.len() as f64).sqrt();
+        // The strip next to the seam continues the image: compare it with the source's last
+        // columns, which a 0..255 or inverted-mask reading would miss by far.
+        let edge: Vec<f64> = (0..h)
+            .flat_map(|y| (w - 16..w).map(move |x| (x, y)))
+            .map(|(x, y)| luma(img.get_pixel(x, y)))
+            .collect();
+        let edge_mean = edge.iter().sum::<f64>() / edge.len() as f64;
+        let near: Vec<f64> = (0..h)
+            .flat_map(|y| (w..w + 16).map(move |x| (x, y)))
+            .map(|(x, y)| luma(out.get_pixel(x, y)))
+            .collect();
+        let near_mean = near.iter().sum::<f64>() / near.len() as f64;
+        println!(
+            "lama-manga: window {}, k max {}, load {load:.1} s, extend {run:.2} s, new strip luma \
+             mean {mean:.1} sd {sd:.1}; last 16 source columns {edge_mean:.1}, first 16 new \
+             columns {near_mean:.1}",
+            model.window(),
+            model.max_context_factor()
+        );
+        assert!(
+            mean > 8.0 && mean < 247.0,
+            "black or white strip: {mean:.1}"
+        );
+        assert!(sd > 2.0, "the new strip is flat (sd {sd:.2})");
+        assert!(
+            (near_mean - edge_mean).abs() < 40.0,
+            "the new strip does not continue the image: {near_mean:.1} against {edge_mean:.1}"
+        );
     }
 
     #[test]

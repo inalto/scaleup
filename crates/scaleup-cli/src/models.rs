@@ -41,6 +41,7 @@ licenses!(
     "4xRealWebPhoto_v4_dat2",
     "4x_foolhardy_Remacri",
     "lama-512",
+    "lama-manga",
     "migan-512-places2",
     "realesr-animevideov3",
     "realesr-general-x4v3",
@@ -86,6 +87,8 @@ pub fn run_models(cmd: &ModelsCmd, cancel: &CancelToken) -> Result<i32, ScaleUpE
                 KindFilter::All => reg.entries().iter().collect(),
             };
             let with_kind = *kind == KindFilter::All;
+            // Only inpainting models have a "good for" line so far.
+            let with_good_for = *kind != KindFilter::Upscale;
             let rows = entries
                 .into_iter()
                 .map(|e| {
@@ -99,12 +102,18 @@ pub fn run_models(cmd: &ModelsCmd, cancel: &CancelToken) -> Result<i32, ScaleUpE
                     if with_kind {
                         row.push(format!("{:?}", e.kind).to_lowercase());
                     }
+                    if with_good_for {
+                        row.push(e.good_for.clone());
+                    }
                     row
                 })
                 .collect();
             let mut head = vec!["ID", "SCALE", "LICENSE", "COMMERCIAL", "DOWNLOADED"];
             if with_kind {
                 head.push("KIND");
+            }
+            if with_good_for {
+                head.push("GOOD FOR");
             }
             print_table(&head, rows);
         }
@@ -120,6 +129,9 @@ pub fn run_models(cmd: &ModelsCmd, cancel: &CancelToken) -> Result<i32, ScaleUpE
             println!("path:        {}", reg.local_path(id).display());
             if !e.notes.is_empty() {
                 println!("notes:       {}", e.notes);
+            }
+            if !e.good_for.is_empty() {
+                println!("good for:    {}", e.good_for);
             }
             if let Some(first) = license_text(id).and_then(|t| t.lines().next()) {
                 println!("\n{first}");

@@ -12,6 +12,12 @@
   16x16 so the adapter must read the window from the graph). MI-GAN: `image` uint8
   [batch_size,3,height,width] in 0..255, `mask` uint8 [batch_size,1,height,width] with
   255 = known, output `result` uint8 (dynamic size, like the real graph).
+- tests/fixtures/inpaint_mean_lama_manga.onnx: the same mean fill with the signature of the
+  anime/illustration LaMa export (ogkalu/lama-manga-onnx-dynamic, docs/OUTPAINT_SPIKE.md section
+  "Plan 12 candidates"): `image` float32 [batch,3,h,w] in 0..1, `mask` float32 [batch,1,h,w] with
+  1 = hole, output `inpainted` float32 in 0..1 (not 0..255 as in the LaMa fixture), dynamic size.
+  Its signature matches the LaMa fixture's but for the size, so its output range must come from
+  the manifest `layout` field, never from the graph.
 
 Usage (from the workspace root): python -I tools/make_test_model.py
 Requires: pip install onnx
@@ -133,10 +139,31 @@ def inpaint_mean_migan() -> None:
     save(opset18(graph), "inpaint_mean_migan.onnx")
 
 
+def inpaint_mean_lama_manga() -> None:
+    n = helper.make_node
+    nodes = [
+        n("Sub", ["one", "mask"], ["known"]),
+        *mean_fill_nodes("image", "known", "inpainted"),
+    ]
+    shape = lambda c: ["batch", c, "h", "w"]  # noqa: E731
+    graph = helper.make_graph(
+        nodes,
+        "inpaint_mean_lama_manga",
+        [
+            helper.make_tensor_value_info("image", TensorProto.FLOAT, shape(3)),
+            helper.make_tensor_value_info("mask", TensorProto.FLOAT, shape(1)),
+        ],
+        [helper.make_tensor_value_info("inpainted", TensorProto.FLOAT, shape(3))],
+        initializer=constants(),
+    )
+    save(opset18(graph), "inpaint_mean_lama_manga.onnx")
+
+
 def main() -> None:
     nearest2x()
     inpaint_mean_lama()
     inpaint_mean_migan()
+    inpaint_mean_lama_manga()
 
 
 if __name__ == "__main__":

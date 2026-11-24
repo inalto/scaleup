@@ -70,6 +70,90 @@ fn models_list_table() {
     }
 }
 
+/// `good_for` of every inpainting model in the manifest, by id.
+fn manifest_good_for() -> Vec<(String, String)> {
+    let text = std::fs::read_to_string(format!("{ROOT}/../../models/manifest.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    v["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["kind"] == "inpaint")
+        .map(|m| {
+            (
+                m["id"].as_str().unwrap().to_string(),
+                m["good_for"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn models_list_of_inpainters_says_what_each_is_good_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = scaleup()
+        .env("SCALEUP_MODELS_DIR", dir.path())
+        .args(["models", "list", "--kind", "inpaint"])
+        .assert()
+        .code(0);
+    let text = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let mut lines = text.lines();
+    let head = lines.next().unwrap();
+    // The usual columns, then the line.
+    let cols: Vec<_> = head.split_whitespace().collect();
+    assert_eq!(
+        cols,
+        [
+            "ID",
+            "SCALE",
+            "LICENSE",
+            "COMMERCIAL",
+            "DOWNLOADED",
+            "GOOD",
+            "FOR"
+        ]
+    );
+    let at = head.find("GOOD FOR").unwrap();
+    let rows: Vec<_> = lines.collect();
+    let good_for = manifest_good_for();
+    assert_eq!(rows.len(), good_for.len());
+    for (id, line) in good_for {
+        assert!(!line.is_empty(), "{id}");
+        let row = rows
+            .iter()
+            .find(|r| r.split_whitespace().next() == Some(id.as_str()))
+            .unwrap_or_else(|| panic!("{id} not listed"));
+        assert_eq!(&row[at..], line, "{id}");
+    }
+    // With both kinds the line follows KIND; upscalers have none.
+    let out = scaleup()
+        .env("SCALEUP_MODELS_DIR", dir.path())
+        .args(["models", "list", "--kind", "all"])
+        .assert()
+        .code(0);
+    let text = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let head = text.lines().next().unwrap();
+    let cols: Vec<_> = head.split_whitespace().collect();
+    assert_eq!(cols[cols.len() - 3..], ["KIND", "GOOD", "FOR"], "{head}");
+    let upscaler = text
+        .lines()
+        .find(|r| r.starts_with("realesrgan-x4plus "))
+        .unwrap();
+    assert!(upscaler.trim_end().ends_with("upscale"), "{upscaler}");
+}
+
+#[test]
+fn models_info_of_lama_manga_prints_its_license_and_line() {
+    scaleup()
+        .args(["models", "info", "lama-manga"])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("Model: lama-manga"))
+        .stdout(predicate::str::contains(
+            "good for:    Illustrations and flat colour",
+        ));
+}
+
 #[test]
 fn models_info_of_an_inpainting_model_prints_its_license() {
     scaleup()

@@ -1485,6 +1485,8 @@ mod tests {
             format: "onnx".into(),
             source: "catalogue".into(),
             kind: Default::default(),
+            good_for: String::new(),
+            layout: Default::default(),
         };
         let reg = Registry::from_entries(vec![entry], d.path().join("models"));
         let h = spawn(reg, "cpu");
@@ -1957,6 +1959,8 @@ mod tests {
             format: "onnx".into(),
             source: "catalogue".into(),
             kind: scaleup_core::ModelKind::Inpaint,
+            good_for: String::new(),
+            layout: Default::default(),
         }
     }
 
@@ -2317,6 +2321,8 @@ mod tests {
             format: "onnx".into(),
             source: "catalogue".into(),
             kind: Default::default(),
+            good_for: String::new(),
+            layout: Default::default(),
         };
         Registry::from_entries(vec![entry], dir.join("models"))
     }

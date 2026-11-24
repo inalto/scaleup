@@ -76,6 +76,45 @@ pub enum ModelKind {
     Inpaint,
 }
 
+/// Value range of a float32 inpainting output.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputRange {
+    /// `0..255`, as in the LaMa export of Carve/LaMa-ONNX.
+    #[serde(rename = "0..255")]
+    Byte,
+    /// `0..1`, the range of the input.
+    #[serde(rename = "0..1")]
+    Unit,
+}
+
+/// What an inpainting model's graph does not say about itself: the manifest `layout` object.
+///
+/// ONNX Runtime reads the element types and sizes from the graph; this fills in the rest. Every
+/// field is optional and an absent one keeps the rule of the detected layout, which is also how a
+/// model given by file path is run: a float32 graph (LaMa) gives `0..255`, stays on the CPU and
+/// takes context factors up to 4; a uint8 graph (MI-GAN) runs on the chosen device with a context
+/// factor of 1. `output` applies to float32 graphs only (uint8 outputs are always 0..255).
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InpaintLayout {
+    /// Range of a float32 output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<OutputRange>,
+    /// Whether the graph works on a GPU provider. `false` keeps it on the CPU whatever device was
+    /// chosen (the LaMa export throws inside DirectML).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<bool>,
+    /// The largest context factor the outpainting driver may use with it (see
+    /// [`crate::backend::Inpainter::max_context_factor`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_factor: Option<u32>,
+}
+
+impl InpaintLayout {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// One model in the catalogue.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct ModelEntry {
@@ -103,6 +142,13 @@ pub struct ModelEntry {
     /// Upscaler (the default when the manifest does not say) or inpainter.
     #[serde(default)]
     pub kind: ModelKind,
+    /// One line for people choosing a model: what it does well and where it fails. Empty when the
+    /// catalogue has none (upscalers so far).
+    #[serde(default)]
+    pub good_for: String,
+    /// Conventions of an inpainting model that its graph does not show. Ignored for upscalers.
+    #[serde(default, skip_serializing_if = "InpaintLayout::is_default")]
+    pub layout: InpaintLayout,
 }
 
 impl ModelEntry {
@@ -221,6 +267,8 @@ impl Registry {
                 format: m.format,
                 source: SOURCE_HUB.into(),
                 kind: ModelKind::Upscale,
+                good_for: String::new(),
+                layout: InpaintLayout::default(),
             });
             self.hub_files.insert(m.id, m.file);
         }
@@ -271,6 +319,8 @@ impl Registry {
                 format: NCNN_FORMAT.into(),
                 source: default_source(),
                 kind: ModelKind::Upscale,
+                good_for: String::new(),
+                layout: InpaintLayout::default(),
             };
             overlay.retain(|e| e.id != id);
             overlay.push(entry.clone());
@@ -323,6 +373,8 @@ impl Registry {
             format: default_format(),
             source: default_source(),
             kind: ModelKind::Upscale,
+            good_for: String::new(),
+            layout: InpaintLayout::default(),
         };
         let mut overlay = read_overlay(&self.models_dir);
         overlay.retain(|e| e.id != id);
@@ -714,6 +766,8 @@ mod tests {
             format: "onnx".into(),
             source: default_source(),
             kind: ModelKind::Upscale,
+            good_for: String::new(),
+            layout: InpaintLayout::default(),
         }
     }
 
@@ -877,7 +931,7 @@ mod tests {
         let reg = Registry::with_dir(dir.path().to_path_buf());
         let ids = |it: Vec<&ModelEntry>| it.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
         let inpainters = ids(reg.inpainters().collect());
-        assert_eq!(inpainters, ["lama-512", "migan-512-places2"]);
+        assert_eq!(inpainters, ["lama-512", "migan-512-places2", "lama-manga"]);
         let upscalers = ids(reg.upscalers().collect());
         assert_eq!(upscalers.len() + inpainters.len(), reg.entries().len());
         assert!(upscalers.iter().all(|id| !inpainters.contains(id)));
@@ -914,13 +968,117 @@ mod tests {
         assert!(migan.url.starts_with(
             "https://huggingface.co/andraniksargsyan/migan/resolve/406830d0fa60666da0071c342ad2fbc8f30c5c64/"
         ));
-        for e in [lama, migan] {
+        // The two models of plan 11 keep the rules of their detected layouts.
+        assert!(lama.layout.is_default() && migan.layout.is_default());
+        let manga = reg.get("lama-manga").unwrap();
+        assert_eq!(
+            (manga.license.as_str(), manga.size_bytes),
+            ("Apache-2.0", 206_291_843)
+        );
+        assert_eq!(
+            manga.sha256,
+            "de31ffa5ba26916b8ea35319f6c12151ff9654d4261bccf0583a69bb095315f9"
+        );
+        assert_eq!(
+            manga.url,
+            "https://huggingface.co/ogkalu/lama-manga-onnx-dynamic/resolve/\
+             ee4ed4a8447b6730fc41d34f90876b6c48af925a/lama-manga-dynamic.onnx"
+        );
+        // Output 0..1 and DirectML as measured by the spike. Context factor 1, the conservative
+        // choice: the spike ran this model at k = 1 only, and a wider context made MI-GAN invent
+        // more (docs/OUTPAINT_SPIKE.md section 5), so the untested factors stay off.
+        assert_eq!(
+            manga.layout,
+            InpaintLayout {
+                output: Some(OutputRange::Unit),
+                gpu: Some(true),
+                max_context_factor: Some(1),
+            }
+        );
+        assert!(!manga.tags.iter().any(|t| t == "default"));
+        for e in [lama, migan, manga] {
             assert_eq!(e.kind, ModelKind::Inpaint);
             assert_eq!(
                 (e.scale, e.commercial, e.format.as_str()),
                 (1, true, "onnx")
             );
         }
+    }
+
+    #[test]
+    fn every_inpainting_model_says_what_it_is_good_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        let good_for = |id: &str| reg.get(id).unwrap().good_for.as_str();
+        assert_eq!(
+            good_for("lama-512"),
+            "Photos: soft or plain backgrounds, modest margins. Runs on the CPU."
+        );
+        assert_eq!(
+            good_for("migan-512-places2"),
+            "Photos, fast on the GPU. May invent objects in the new area."
+        );
+        assert_eq!(
+            good_for("lama-manga"),
+            "Illustrations and flat colour, fast on the GPU. Blurs photo detail on large margins."
+        );
+        for e in reg.inpainters() {
+            assert!(!e.good_for.is_empty(), "{}", e.id);
+            // Plain text: ASCII plus the three symbols the app's fonts are known to draw.
+            assert!(
+                e.good_for
+                    .chars()
+                    .all(|c| c.is_ascii() || "×·…".contains(c)),
+                "{}",
+                e.id
+            );
+        }
+        assert!(reg.upscalers().all(|e| e.good_for.is_empty()));
+    }
+
+    #[test]
+    fn layout_and_good_for_are_optional_and_round_trip() {
+        let json = r#"{"version":1,"models":[
+            {"id":"a","name":"A","arch":"x","scale":1,"license":"MIT","commercial":true,
+             "size_bytes":1,"url":"","sha256":"","kind":"inpaint"},
+            {"id":"b","name":"B","arch":"x","scale":1,"license":"MIT","commercial":true,
+             "size_bytes":1,"url":"","sha256":"","kind":"inpaint","good_for":"Tests.",
+             "layout":{"output":"0..1","gpu":true,"max_context_factor":2}},
+            {"id":"c","name":"C","arch":"x","scale":1,"license":"MIT","commercial":true,
+             "size_bytes":1,"url":"","sha256":"","kind":"inpaint",
+             "layout":{"output":"0..255"}}]}"#;
+        let entries = parse_manifest(json).unwrap();
+        assert_eq!(entries[0].layout, InpaintLayout::default());
+        assert_eq!(entries[0].good_for, "");
+        assert_eq!(entries[1].good_for, "Tests.");
+        assert_eq!(
+            entries[1].layout,
+            InpaintLayout {
+                output: Some(OutputRange::Unit),
+                gpu: Some(true),
+                max_context_factor: Some(2),
+            }
+        );
+        assert_eq!(
+            entries[2].layout,
+            InpaintLayout {
+                output: Some(OutputRange::Byte),
+                ..InpaintLayout::default()
+            }
+        );
+        // An entry without a layout writes none (as `local.json` does), one with a layout keeps it.
+        let a = serde_json::to_value(&entries[0]).unwrap();
+        assert!(a.get("layout").is_none(), "{a}");
+        assert_eq!(a["good_for"], "");
+        let b = serde_json::to_value(&entries[1]).unwrap();
+        assert_eq!(
+            b["layout"],
+            serde_json::json!({"output": "0..1", "gpu": true, "max_context_factor": 2})
+        );
+        let c = serde_json::to_value(&entries[2]).unwrap();
+        assert_eq!(c["layout"], serde_json::json!({"output": "0..255"}));
+        // An unknown range is refused, not guessed.
+        assert!(parse_manifest(&json.replace("\"0..1\"", "\"0..2\"")).is_err());
     }
 
     #[test]
@@ -938,7 +1096,7 @@ mod tests {
     fn manifest_parses_and_has_default_tag() {
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::with_dir(dir.path().to_path_buf());
-        assert_eq!(reg.entries().len(), 10);
+        assert_eq!(reg.entries().len(), 11);
         let defaults = |it: Vec<&ModelEntry>| {
             it.into_iter()
                 .filter(|e| e.tags.iter().any(|t| t == "default"))
