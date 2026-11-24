@@ -62,6 +62,8 @@ struct Ctx<'a> {
     upscaler: &'a Upscaler,
     upscale: Option<Loaded<'a>>,
     inpainter: Option<&'a dyn Inpainter>,
+    /// The inpainting model's id or file, when the AI fill uses it: output names carry it.
+    inpaint_id: Option<&'a str>,
     extend: Option<&'a ExtendOptions>,
     opts: &'a UpscaleOptions,
     double: bool,
@@ -77,6 +79,7 @@ impl Ctx<'_> {
             out_dir,
             self.upscale.as_ref().map(|u| u.id),
             self.extend.map(|e| &e.fill),
+            self.inpaint_id,
             self.opts,
             format,
         )
@@ -276,6 +279,7 @@ fn run(
             id,
         }),
         inpainter: inpainter.as_deref(),
+        inpaint_id: inpainter.is_some().then(|| canvas.model()),
         extend: extend.as_ref(),
         opts: &opts,
         double: up.is_some_and(|u| u.double),

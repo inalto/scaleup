@@ -57,7 +57,9 @@ models list --kind inpaint` shows the inpainting models (`--kind all` shows both
 shows upscalers only).
 
 Output names get `_ext` before the size: `photo_scaleup_ext_4x_<model>.png` when upscaling, and
-`photo_scaleup_ext_<fill>.png` with `extend` (`<fill>` is `ai`, `mirror`, `edge`, `transparent` or `rrggbb`).
+`photo_scaleup_ext_<fill>.png` with `extend` (`<fill>` is `mirror`, `edge`, `transparent` or `rrggbb`).
+The AI fill names its inpainting model, so two models do not overwrite each other:
+`photo_scaleup_ext_ai-lama-512.png`, or `photo_scaleup_ext_ai-lama-512_4x_<model>.png` when upscaling.
 
 ```
 scaleup extend -i photo.jpg -o wide.png --aspect 16:9

@@ -305,6 +305,41 @@ fn default_ai_fill_extends_with_the_inpainting_model() {
 }
 
 #[test]
+fn ai_filled_outputs_carry_the_inpainting_model_in_their_name() {
+    let (dir, input, _) = setup();
+    let out = dir.path().join("o");
+    let migan = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/inpaint_mean_migan.onnx");
+    for model in [inpaint_fixture(), migan] {
+        extend(&input, Path::new(&format!("{}/", out.display())))
+            .args(["--extend", "2", "--extend-model"])
+            .arg(model)
+            .assert()
+            .code(0);
+    }
+    // Two models, two files: the second did not overwrite the first.
+    for name in [
+        "in_scaleup_ext_ai-inpaint_mean_lama.png",
+        "in_scaleup_ext_ai-inpaint_mean_migan.png",
+    ] {
+        assert_eq!(size_of(&out.join(name)), (12, 8), "{name}");
+    }
+    scaleup()
+        .args(["upscale", "-g", "cpu", "-i"])
+        .arg(&input)
+        .arg("-o")
+        .arg(format!("{}/", out.display()))
+        .arg("-n")
+        .arg(fixture_model())
+        .args(["--extend", "2", "--extend-model"])
+        .arg(inpaint_fixture())
+        .assert()
+        .code(0);
+    let named = out.join("in_scaleup_ext_ai-inpaint_mean_lama_2x_nearest2x.png");
+    assert_eq!(size_of(&named), (24, 16));
+}
+
+#[test]
 fn upscale_with_the_default_ai_fill_extends_then_upscales() {
     let (_d, input, out) = setup();
     scaleup()

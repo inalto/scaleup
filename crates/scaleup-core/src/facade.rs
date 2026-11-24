@@ -392,7 +392,7 @@ impl Upscaler {
         opts: &UpscaleOptions,
         fmt: OutputFormat,
     ) -> PathBuf {
-        Self::output_name_for(input, out_dir, Some(model_id), None, opts, fmt)
+        Self::output_name_for(input, out_dir, Some(model_id), None, None, opts, fmt)
     }
 
     /// [`Upscaler::output_name`] for any job. `extend_fill` is the fill when the job extends the
@@ -400,11 +400,18 @@ impl Upscaler {
     /// upscale model the name is `<stem>_scaleup_ext_<fill>.<ext>`, `<fill>` being the fill's CLI word
     /// (`ai`, `mirror`, `edge`, `transparent`, or the colour as `rrggbb`). With neither, it is
     /// `<stem>_scaleup.<ext>`.
+    ///
+    /// An AI fill also names its inpainting model, `inpaint_model`, so fills of the same extension
+    /// by two models do not overwrite each other: `<stem>_scaleup_ext_ai-<inpaint>.<ext>`, or
+    /// `<stem>_scaleup_ext_ai-<inpaint>_4x_<model_id>.<ext>` when upscaling. A model given as a file
+    /// path is named by its file stem. Plain fills ignore `inpaint_model`; an AI fill without one
+    /// is named like a plain fill (`_ext_ai` when only extending).
     pub fn output_name_for(
         input: &Path,
         out_dir: &Path,
         model_id: Option<&str>,
         extend_fill: Option<&Fill>,
+        inpaint_model: Option<&str>,
         opts: &UpscaleOptions,
         fmt: OutputFormat,
     ) -> PathBuf {
@@ -412,9 +419,17 @@ impl Upscaler {
             .file_stem()
             .map(|s| s.to_string_lossy())
             .unwrap_or_default();
-        let ext = if extend_fill.is_some() { "_ext" } else { "" };
+        let ai = match (extend_fill, inpaint_model) {
+            (Some(Fill::Ai), Some(id)) => Some(format!("ai-{}", name_part(id))),
+            _ => None,
+        };
         let tail = match (model_id, extend_fill) {
             (Some(model_id), _) => {
+                let ext = match (&ai, extend_fill) {
+                    (Some(ai), _) => format!("_ext_{ai}"),
+                    (None, Some(_)) => "_ext".to_string(),
+                    (None, None) => String::new(),
+                };
                 let size = match (opts.output_width, opts.output_scale) {
                     (Some(w), _) => format!("{w}px"),
                     (None, Some(s)) => format!("{s}x"),
@@ -422,11 +437,22 @@ impl Upscaler {
                 };
                 format!("{ext}_{size}_{model_id}")
             }
-            (None, Some(fill)) => format!("_ext_{}", fill_word(fill)),
+            (None, Some(fill)) => format!("_ext_{}", ai.unwrap_or_else(|| fill_word(fill))),
             (None, None) => String::new(),
         };
         out_dir.join(format!("{stem}_scaleup{tail}.{}", fmt.ext()))
     }
+}
+
+/// `id` as it appears in a file name: the file stem when it is a path to a model file.
+fn name_part(id: &str) -> String {
+    let path = Path::new(id);
+    if (path.extension().is_some() || path.components().count() > 1)
+        && let Some(stem) = path.file_stem()
+    {
+        return stem.to_string_lossy().into_owned();
+    }
+    id.to_string()
 }
 
 /// The CLI word for `fill`, as [`Fill::parse`] reads it (a colour without its `#`).
@@ -1055,6 +1081,7 @@ mod tests {
                 out,
                 model,
                 fill,
+                None,
                 opts,
                 OutputFormat::Png,
             )
@@ -1095,6 +1122,53 @@ mod tests {
                 out.join(format!("a_scaleup_ext_{word}.png"))
             );
         }
+    }
+
+    #[test]
+    fn output_name_for_ai_fills_carries_the_inpainting_model() {
+        let out = Path::new("out");
+        let scale4 = UpscaleOptions {
+            output_scale: Some(4),
+            ..Default::default()
+        };
+        let name = |model: Option<&str>, fill: &Fill, inpaint: Option<&str>| {
+            Upscaler::output_name_for(
+                Path::new("dir/a.png"),
+                out,
+                model,
+                Some(fill),
+                inpaint,
+                &scale4,
+                OutputFormat::Png,
+            )
+        };
+        // Two AI fills of the same extension write two files.
+        assert_eq!(
+            name(None, &Fill::Ai, Some("lama-512")),
+            out.join("a_scaleup_ext_ai-lama-512.png")
+        );
+        assert_eq!(
+            name(None, &Fill::Ai, Some("migan-512-places2")),
+            out.join("a_scaleup_ext_ai-migan-512-places2.png")
+        );
+        assert_eq!(
+            name(Some("realesrgan-x4plus"), &Fill::Ai, Some("lama-512")),
+            out.join("a_scaleup_ext_ai-lama-512_4x_realesrgan-x4plus.png")
+        );
+        // A model file is named by its stem, as an upscaling model file is.
+        assert_eq!(
+            name(None, &Fill::Ai, Some("models/my fill.onnx")),
+            out.join("a_scaleup_ext_ai-my fill.png")
+        );
+        // Plain fills ignore the inpainting model and keep their names.
+        assert_eq!(
+            name(None, &Fill::Mirror, Some("lama-512")),
+            out.join("a_scaleup_ext_mirror.png")
+        );
+        assert_eq!(
+            name(Some("realesrgan-x4plus"), &Fill::Edge, Some("lama-512")),
+            out.join("a_scaleup_ext_4x_realesrgan-x4plus.png")
+        );
     }
 
     fn inpaint_entry(id: &str) -> crate::registry::ModelEntry {

@@ -278,6 +278,7 @@ pub(crate) fn plan_jobs(mode: &Mode, s: &Settings) -> Vec<FileJob> {
                 &s.output_dir_for(&input),
                 Some(&label),
                 extend.as_ref().map(|e| &e.fill),
+                Some(&s.extend_model),
                 &opts,
                 format,
             ),
@@ -1762,6 +1763,26 @@ mod tests {
         );
         assert_eq!(jobs[0].extend, s.to_extend_options().unwrap());
         assert!(jobs[0].extend.is_some());
+    }
+
+    #[test]
+    fn plan_jobs_names_an_ai_fill_by_its_inpainting_model() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = extend_settings(d.path(), "ai", 4.0);
+        let name = |s: &Settings| {
+            plan_jobs(&Mode::Single(d.path().join("a.png")), s)[0]
+                .output
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert_eq!(name(&s), "a_scaleup_ext_ai-test-fill_2x_nearest2x.png");
+        s.extend_model = "migan-512-places2".into();
+        assert_eq!(
+            name(&s),
+            "a_scaleup_ext_ai-migan-512-places2_2x_nearest2x.png"
+        );
     }
 
     /// The after preview of a run, with its size and margins.
