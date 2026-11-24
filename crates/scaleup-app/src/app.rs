@@ -1225,13 +1225,7 @@ mod tests {
         harness.state_mut().select(&photo);
         assert!(!harness.state().compare.editing());
         // The worker decodes the new "before"; then a result of it shows as a result.
-        for _ in 0..500 {
-            harness.step();
-            if harness.state().compare.sizes()[0].is_some() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        wait_for(&mut harness, |a| a.compare.sizes()[0].is_some());
         assert_eq!(harness.state().compare.sizes()[0], Some([256, 192]));
         give_result(&mut harness);
         assert!(!on_edit(&harness));
@@ -1400,15 +1394,11 @@ mod tests {
 
     /// Steps the window until the previews of the step asked for have arrived.
     fn settle(harness: &mut egui_kittest::Harness<'_, App>) {
-        for _ in 0..1000 {
-            harness.step();
-            if !harness.state().previews.waiting() {
-                harness.step();
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        panic!("the worker did not send the step's previews");
+        assert!(
+            wait_for(harness, |a| !a.previews.waiting()),
+            "the worker did not send the step's previews"
+        );
+        harness.step();
     }
 
     /// Step `at` of `steps` is current and on screen.
@@ -1524,13 +1514,7 @@ mod tests {
         assert_eq!(harness.state().strip.thumb_count(), 0);
         let mode = harness.state().state.mode.clone();
         assert_eq!(mode, Some(Mode::Single(steps[0].input.clone())));
-        for _ in 0..1000 {
-            harness.step();
-            if harness.state().compare.sizes()[0].is_some() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        wait_for(&mut harness, |a| a.compare.sizes()[0].is_some());
         assert_eq!(
             harness.state().compare.sizes(),
             [Some(steps[0].source_size), None]
@@ -1550,13 +1534,7 @@ mod tests {
         harness.step();
         let mode = harness.state().state.mode.clone();
         assert_eq!(mode, Some(Mode::Single(steps[1].output.clone())));
-        for _ in 0..1000 {
-            harness.step();
-            if harness.state().state.source_size.is_some() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        wait_for(&mut harness, |a| a.state.source_size.is_some());
         harness.step();
         // The result is now the image: alone, as a new image, with its size in the sidebar.
         assert_eq!(
@@ -1582,16 +1560,21 @@ mod tests {
         assert!(harness.query_by_label("2 of 3").is_some());
     }
 
-    /// Waits up to a few seconds for `done`, stepping the window.
+    /// Steps the window until `done` holds, and says whether it did within 30 s. It returns as
+    /// soon as `done` holds; the long limit is for a loaded test machine, where the real worker
+    /// can take far longer than usual.
     fn wait_for(harness: &mut egui_kittest::Harness<'_, App>, done: impl Fn(&App) -> bool) -> bool {
-        for _ in 0..500 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
             harness.step();
             if done(harness.state()) {
                 return true;
             }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        false
     }
 
     /// Steps the window for a moment, so late worker events would have arrived.
@@ -2183,13 +2166,7 @@ mod tests {
                 |h| {
                     settle(h);
                     h.get_by_label("Use as input").click();
-                    for _ in 0..500 {
-                        h.step();
-                        if h.state().compare.edit_layout().is_some() {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
+                    wait_for(h, |a| a.compare.edit_layout().is_some());
                 },
             );
             // Use as input with Extend off: no step on screen, the result alone as the image.
