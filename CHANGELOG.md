@@ -19,7 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   input, Open folder, Restore settings and Remove. Removing a step keeps its file.
 - App: Scale **None** extends the canvas without upscaling.
 - Inpainting model `lama-manga` (LaMa Manga, for illustrations and flat colour; Apache-2.0 as declared by its
-  uploader). It runs on the GPU and falls back to the CPU when the GPU cannot load it.
+  uploader). It runs on the GPU; if the model cannot be loaded on the GPU it is loaded on the CPU.
 - `scaleup models list --kind inpaint` (and `--kind all`) shows a GOOD FOR column, and `models info` prints the
   good-for line of an inpainting model.
 
@@ -27,14 +27,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Extended outputs always name their fill, also when they are upscaled: `_ext_mirror_4x_<model>`,
   `_ext_ai-lama-512_4x_<model>` and so on. Files extended and upscaled with 0.3.x keep the old names, which
-  carry no fill.
+  carry no fill. A folder re-run with extend therefore no longer recognises the outputs 0.3.x wrote for
+  extended and upscaled images, or for the AI fill (`_ext_ai`), and processes those images again.
 - App: a single-image run with **Overwrite existing files** off writes the next free name (`-2`, `-3`, ...)
   instead of reusing an existing file. Folder runs still skip existing outputs.
 - App: the inpainting picker shows each model's licence and what it is good for; the Models window shows the
   same line for inpainting models.
-- `scaleup-core` API: `Upscaler::output_name_for` takes the inpainting model id for an AI fill, and
-  `ModelEntry` gained `good_for` and an optional `layout`, described by the new `InpaintLayout` and
-  `OutputRange` types.
+- App: settings saved with Scale **None** cannot be read by 0.3.x; a 0.3.x app that reads them falls back
+  to its default settings.
+- An invalid entry in a model manifest is an error that names the entry (its id, or its position when it
+  has none).
+- `scaleup-core` API: `Upscaler::output_name_for` takes the inpainting model id for an AI fill, and names a
+  model given as a file path by its file stem. `OrtBackend::load_inpainter` (in `scaleup_core::backend`)
+  takes the entry's `&InpaintLayout`. `ModelEntry` gained `good_for` and an optional `layout`, described by
+  the new `InpaintLayout` and `OutputRange` types; code that builds a `ModelEntry` with a struct literal
+  must set them.
 
 ## [0.3.2] - 2026-11-16
 

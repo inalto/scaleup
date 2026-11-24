@@ -48,7 +48,7 @@ writes the extended image at its own size. Both take the same flags.
 | `--extend <SPEC>` | `64` (all sides), `l,t,r,b`, `20%` or `l%,t%,r%,b%`; pixels and percentages are of the source image | `--extend 0,0,128,0` |
 | `--aspect <W:H>` | grow, centred, to this ratio; never crops. Conflicts with `--extend` | `--aspect 16:9` |
 | `--extend-fill <FILL>` | `ai` (default), `mirror`, `edge`, `transparent` or `#rrggbb` | `--extend-fill "#202020"` |
-| `--extend-model <ID\|PATH>` | inpainting model for the `ai` fill: `lama-512` (default) or `migan-512-places2`, or a path to an `.onnx` file | `--extend-model migan-512-places2` |
+| `--extend-model <ID\|PATH>` | inpainting model for the `ai` fill: `lama-512` (default), `migan-512-places2` or `lama-manga`, or a path to an `.onnx` file | `--extend-model migan-512-places2` |
 
 `scaleup extend` needs `--extend` or `--aspect`; on `upscale`, `--extend-fill` and `--extend-model` are usage
 errors without one of them. `--extend` only takes margins and `--aspect` only takes `W:H`. The inpainting model

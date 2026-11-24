@@ -138,9 +138,11 @@ says why and Start is disabled.
 
 Drag a side handle outward to add canvas on that side, or a corner handle to add on two sides. Dragging
 inward takes canvas away and stops at 0. Outward drags stop at the limits in [Limits](#limits). Shift moves
-all four sides by the same amount, and Alt moves the opposite side by the same amount as well. Each drag
-writes the same settings as the sidebar fields, and the fields follow at once. A drag in **Aspect** mode
-switches the mode to **Pixels**; in **Percent** mode it writes percentages.
+all four sides by the same amount, and Alt moves the opposite side by the same amount as well. Many Linux
+window managers use Alt+drag to move the window, so there the app never sees the drag: use Shift, or type
+the values in the sidebar fields. Each drag writes the same settings as the sidebar fields, and the fields
+follow at once. A drag in **Aspect** mode switches the mode to **Pixels**; in **Percent** mode it writes
+percentages.
 
 Click a handle to select it, then the arrow keys move it by 1 px, or by 10 px with Shift.
 
@@ -215,7 +217,7 @@ a transparent border, use the `transparent` or `edge` fill.
 |---|---|---|---|---|
 | `lama-512` (default) | Apache-2.0 | about 198 MB (208,044,816 bytes) | CPU only; the device setting does not apply | Photos: soft or plain backgrounds, modest margins. Runs on the CPU. |
 | `migan-512-places2` | MIT | about 28 MB (29,546,882 bytes) | the device of the run (GPU when one is used) | Photos, fast on the GPU. May invent objects in the new area. |
-| `lama-manga` | Apache-2.0, declared by the uploader | about 197 MB (206,291,843 bytes) | the device of the run (GPU when one is used); CPU if the GPU cannot load it | Illustrations and flat colour, fast on the GPU. Blurs photo detail on large margins. |
+| `lama-manga` | Apache-2.0, declared by the uploader | about 197 MB (206,291,843 bytes) | the device of the run (GPU when one is used); if the model cannot be loaded on the GPU it is loaded on the CPU | Illustrations and flat colour, fast on the GPU. Blurs photo detail on large margins. |
 
 The weights are under the licences above; the licence texts are in `models/licenses/lama-512.txt`,
 `models/licenses/migan-512-places2.txt` and `models/licenses/lama-manga.txt`. The licences of the
