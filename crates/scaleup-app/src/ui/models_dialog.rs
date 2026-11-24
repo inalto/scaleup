@@ -41,6 +41,9 @@ fn kind_label(e: &ModelEntry) -> String {
     }
 }
 
+/// The widest the name cell grows: the "good for" line wraps there instead of widening the grid.
+const GOOD_FOR_WIDTH: f32 = 270.0;
+
 fn size_label(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
 }
@@ -132,9 +135,17 @@ impl ModelsDialog {
         busy: bool,
         action: &mut Option<DialogAction>,
     ) {
-        ui.label(&e.name).on_hover_text(&e.id);
+        // An inpainting model says what it suits under its name, as the pickers do.
+        ui.vertical(|ui| {
+            ui.set_max_width(GOOD_FOR_WIDTH);
+            ui.label(&e.name).on_hover_text(&e.id);
+            if !e.good_for.is_empty() {
+                ui.weak(&e.good_for);
+            }
+        });
         ui.label(kind_label(e));
-        license_badge(ui, e);
+        // In a row of three lines the badge keeps its own height, level with the name.
+        ui.horizontal(|ui| license_badge(ui, e));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(size_label(e.size_bytes));
         });
