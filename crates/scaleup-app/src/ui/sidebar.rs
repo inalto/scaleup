@@ -383,8 +383,8 @@ pub fn offered_fills(registry: &Registry) -> Vec<FillOffer> {
     models.chain(plain).collect()
 }
 
-/// The Try several button's text: `Try 3 fills`, and it says when a ticked model, or the
-/// upscaling model, is downloaded first, as the Start button does.
+/// The Try several button's text: `Try 3 fills` (`Try fills` with none ticked), and it says when
+/// a ticked model, or the upscaling model, is downloaded first, as the Start button does.
 pub fn try_label(s: &Settings, fills: &[FillChoice], registry: &Registry) -> String {
     let missing = |id: &str| registry.get(id).is_some() && !registry.is_downloaded(id);
     let download = fills
@@ -393,7 +393,8 @@ pub fn try_label(s: &Settings, fills: &[FillChoice], registry: &Registry) -> Str
         || (s.upscales() && missing(&s.model_id));
     let n = fills.len();
     let fills = match n {
-        0 => "several fills".into(),
+        // "Try several fills" is the list's header: the button needs a name of its own.
+        0 => "fills".into(),
         1 => "1 fill".into(),
         n => format!("{n} fills"),
     };
@@ -922,7 +923,8 @@ mod tests {
             extend_enabled: true,
             ..Settings::default()
         };
-        assert_eq!(try_label(&s, &[], &reg), "Try several fills");
+        // Not "Try several fills": that is the name of the list's header.
+        assert_eq!(try_label(&s, &[], &reg), "Try fills");
         assert_eq!(
             try_label(&s, std::slice::from_ref(&mirror), &reg),
             "Try 1 fill"

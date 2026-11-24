@@ -1013,6 +1013,19 @@ mod tests {
         assert_eq!(fill, "Mirror");
     }
 
+    /// With a fill the list does not offer and nothing ticked, the button and the list's header
+    /// still have names of their own, so a screen reader can tell them apart.
+    #[test]
+    fn the_try_button_and_its_header_never_share_a_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = try_harness(dir.path());
+        harness.state_mut().state.settings.extend_fill = "#ffffff".into();
+        harness.step();
+        harness.step();
+        harness.get_by_label("Try several fills");
+        assert!(disabled(&harness, "Try fills"));
+    }
+
     #[test]
     fn try_several_needs_two_fills_a_single_image_and_no_run_in_progress() {
         let dir = tempfile::tempdir().unwrap();
