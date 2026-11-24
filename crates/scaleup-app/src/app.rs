@@ -93,9 +93,8 @@ impl App {
             return;
         }
         // The sidebar disables Start then; the keyboard shortcut lands here.
-        if let Some(Err(e)) = self.state.settings.extend_summary(self.state.source_size) {
-            self.toasts
-                .push(Toast::error(format!("Extend canvas: {e}")));
+        if let Some(why) = self.state.settings.start_blocker(self.state.source_size) {
+            self.toasts.push(Toast::error(why));
             return;
         }
         self.state.status = Status::Running {

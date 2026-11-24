@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use scaleup_core::io::is_supported_input;
 use scaleup_core::resize::target_size;
-use scaleup_core::{ExtendOptions, Fill, MarginSpec, Margins, ScaleUpError, UpscaleOptions};
+use scaleup_core::{
+    ExtendOptions, Fill, MarginSpec, Margins, Registry, ScaleUpError, UpscaleOptions,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::ui::toast::Toast;
@@ -28,7 +30,9 @@ pub enum ExtendMode {
 pub struct Settings {
     /// Catalogue id, or a path to a model file.
     pub model_id: String,
-    pub scale: u32,
+    /// Upscale factor; `None` only extends the canvas (no model is loaded). Older settings files
+    /// hold a plain number, which reads as `Some`.
+    pub scale: Option<u32>,
     pub use_width: bool,
     pub width: u32,
     pub format: String,
@@ -94,7 +98,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             model_id: "realesr-general-x4v3".into(),
-            scale: 4,
+            scale: Some(4),
             use_width: false,
             width: 1920,
             format: "png".into(),
@@ -127,9 +131,34 @@ impl Settings {
         UpscaleOptions {
             tile_size: self.tile,
             tta: self.tta,
-            output_scale: (!self.use_width).then_some(self.scale),
+            output_scale: if self.use_width { None } else { self.scale },
             output_width: self.use_width.then_some(self.width),
             ..UpscaleOptions::default()
+        }
+    }
+
+    /// Whether a run loads the upscaling model. A custom width is a resize of its own, so it
+    /// upscales even when the scale is "None", as it overrides any other scale.
+    pub fn upscales(&self) -> bool {
+        self.use_width || self.scale.is_some()
+    }
+
+    /// The upscale factor of the whole run (the scale squared with "Double upscale"), `None` when
+    /// a custom width decides the size or nothing is upscaled.
+    fn factor(&self) -> Option<u32> {
+        let s = self.scale.filter(|_| !self.use_width)?;
+        Some(if self.double { s * s } else { s })
+    }
+
+    /// Why Start cannot be pressed with these settings, `None` when it can. `source` is the size of
+    /// the selected single image, as for [`Settings::extend_summary`].
+    pub fn start_blocker(&self, source: Option<[u32; 2]>) -> Option<String> {
+        if !self.upscales() && !self.extend_enabled {
+            return Some("Turn on Extend canvas or choose a scale".into());
+        }
+        match self.extend_summary(source) {
+            Some(Err(e)) => Some(format!("Extend canvas: {e}")),
+            _ => None,
         }
     }
 
@@ -179,8 +208,9 @@ impl Settings {
 
     /// The "resulting size" line of the Extend section, `None` when extension is off. With the
     /// source size: `1200×800 to 1600×800 to 6400×3200`; without it (a folder, where every file has
-    /// its own size) the rule, `+64 px each side, then 4×`. `Err` holds why the settings cannot be used,
-    /// for this image when its size is known.
+    /// its own size) the rule, `+64 px each side, then 4×`. With the scale "None" the canvas is the
+    /// final size: `1200×800 to 1600×800`, or the rule alone. `Err` holds why the settings cannot be
+    /// used, for this image when its size is known.
     pub fn extend_summary(&self, source: Option<[u32; 2]>) -> Option<Result<String, String>> {
         let ext = match self.to_extend_options() {
             Ok(None) => return None,
@@ -191,30 +221,26 @@ impl Settings {
             ScaleUpError::InvalidOption(m) => m,
             other => other.to_string(),
         };
-        let factor = if self.double {
-            self.scale * self.scale
-        } else {
-            self.scale
-        };
         let Some([w, h]) = source else {
-            let upscale = if self.use_width {
-                format!("{} px wide", self.width)
-            } else {
-                format!("{factor}×")
-            };
-            return Some(Ok(format!("{}, then {upscale}", margin_rule(&ext.margins))));
+            let rule = margin_rule(&ext.margins);
+            return Some(Ok(match (self.use_width, self.factor()) {
+                (true, _) => format!("{rule}, then {} px wide", self.width),
+                (false, Some(f)) => format!("{rule}, then {f}×"),
+                (false, None) => rule,
+            }));
         };
         Some(
             ext.margins
                 .resolve(w, h)
                 .and_then(|m| {
                     let (cw, ch) = (w + m.left + m.right, h + m.top + m.bottom);
-                    let (ow, oh) = if self.use_width {
-                        target_size(cw, ch, 1, None, Some(self.width))?
-                    } else {
-                        (cw * factor, ch * factor)
+                    let canvas = format!("{w}×{h} to {cw}×{ch}");
+                    let (ow, oh) = match (self.use_width, self.factor()) {
+                        (true, _) => target_size(cw, ch, 1, None, Some(self.width))?,
+                        (false, Some(f)) => (cw * f, ch * f),
+                        (false, None) => return Ok(canvas),
                     };
-                    Ok(format!("{w}×{h} to {cw}×{ch} to {ow}×{oh}"))
+                    Ok(format!("{canvas} to {ow}×{oh}"))
                 })
                 .map_err(reason),
         )
@@ -247,6 +273,225 @@ fn margin_rule(spec: &MarginSpec) -> String {
             bottom,
         } => sides([left, top, right, bottom], "%"),
         MarginSpec::Aspect { w, h } => format!("grow to {w}:{h}"),
+    }
+}
+
+/// `+128 px`, `+1/2/3/4 px`, `+10%` or `to 16:9`: the short form of [`margin_rule`] for labels.
+fn margin_short(spec: &MarginSpec) -> String {
+    fn sides<T: PartialEq + std::fmt::Display>(v: [T; 4], unit: &str) -> String {
+        if v.iter().all(|x| *x == v[0]) {
+            format!("+{}{unit}", v[0])
+        } else {
+            let [l, t, r, b] = v;
+            format!("+{l}/{t}/{r}/{b}{unit}")
+        }
+    }
+    match *spec {
+        MarginSpec::Pixels(m) => sides([m.left, m.top, m.right, m.bottom], " px"),
+        MarginSpec::Percent {
+            left,
+            top,
+            right,
+            bottom,
+        } => sides([left, top, right, bottom], "%"),
+        MarginSpec::Aspect { w, h } => format!("to {w}:{h}"),
+    }
+}
+
+/// `fill` as [`Settings::extend_fill`] stores it, the text [`Fill::parse`] reads back.
+pub fn fill_setting(fill: &Fill) -> String {
+    match fill {
+        Fill::Ai => "ai".into(),
+        Fill::Mirror => "mirror".into(),
+        Fill::Edge => "edge".into(),
+        Fill::Transparent => "transparent".into(),
+        Fill::Color([r, g, b]) => format!("#{r:02x}{g:02x}{b:02x}"),
+    }
+}
+
+/// The catalogue name of `id`, else the file stem of a model file, else `id` itself.
+fn model_name(id: &str, registry: &Registry) -> String {
+    match registry.get(id) {
+        Some(e) => e.name.clone(),
+        None => Path::new(id)
+            .file_stem()
+            .map_or_else(|| id.to_string(), |s| s.to_string_lossy().into_owned()),
+    }
+}
+
+/// What fills the new canvas, for people: `Mirror`, `Colour #ffffff`, or the inpainting model's
+/// name for the AI fill (`LaMa (512)`). `?` when the fill cannot be read.
+pub fn fill_title(s: &Settings, registry: &Registry) -> String {
+    match Fill::parse(&s.extend_fill) {
+        Ok(Fill::Ai) => model_name(&s.extend_model, registry),
+        Ok(Fill::Mirror) => "Mirror".into(),
+        Ok(Fill::Edge) => "Edge pixels".into(),
+        Ok(Fill::Transparent) => "Transparent".into(),
+        Ok(fill @ Fill::Color(_)) => format!("Colour {}", fill_setting(&fill)),
+        Err(_) => "?".into(),
+    }
+}
+
+/// The history label of a run made with `s`: `Extend +128 px · LaMa (512) · 4×`,
+/// `Extend +10% · Mirror` (extend only), `Upscale 4× · Real-ESRGAN General v3 (fast)`. Names come
+/// from `registry`. Only ASCII, `×` and `·`: the app's fonts have no other symbols.
+pub fn step_label(s: &Settings, registry: &Registry) -> String {
+    let size = match (s.use_width, s.factor()) {
+        (true, _) => Some(format!("{} px wide", s.width)),
+        (false, Some(f)) => Some(format!("{f}×")),
+        (false, None) => None,
+    };
+    match s.to_extend_options() {
+        Ok(Some(ext)) => {
+            let mut parts = vec![
+                format!("Extend {}", margin_short(&ext.margins)),
+                fill_title(s, registry),
+            ];
+            parts.extend(size);
+            parts.join(" · ")
+        }
+        _ => format!(
+            "Upscale {} · {}",
+            size.unwrap_or_default(),
+            model_name(&s.model_id, registry)
+        ),
+    }
+}
+
+/// One fill of a *Try several* queue.
+#[allow(
+    dead_code,
+    reason = "wired by the history strip and the Try several list (plan 12, Tasks 6 and 7)"
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum FillChoice {
+    /// A fill that needs no model, as [`Fill::parse`] reads it. `Fill::Ai` here means the AI fill
+    /// with the inpainting model of the settings.
+    Plain(Fill),
+    /// The AI fill with this inpainting model (catalogue id).
+    Ai(String),
+}
+
+impl FillChoice {
+    /// `base` with this fill; everything else, the extension included, stays as it is.
+    pub fn apply(&self, base: &Settings) -> Settings {
+        let mut s = base.clone();
+        match self {
+            FillChoice::Plain(fill) => s.extend_fill = fill_setting(fill),
+            FillChoice::Ai(model) => {
+                s.extend_fill = "ai".into();
+                s.extend_model = model.clone();
+            }
+        }
+        s
+    }
+}
+
+/// Most steps the history keeps; the oldest goes first (D3).
+pub const HISTORY_LIMIT: usize = 30;
+
+/// One finished single-image run, as the history shows it again. The files stay on disk whatever
+/// happens to the step.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step {
+    pub input: PathBuf,
+    pub output: PathBuf,
+    /// The settings of the run, for "Restore settings".
+    pub settings: Settings,
+    /// Size of the input with its EXIF orientation applied, as the run saw it.
+    pub source_size: [u32; 2],
+    pub result_size: [u32; 2],
+    /// Canvas the run added around the input, in input pixels; zero when it did not extend.
+    pub margins: Margins,
+    /// What the run did, from [`step_label`].
+    pub label: String,
+}
+
+/// The results of this session, oldest first, and the one being looked at. Moving the cursor never
+/// drops steps: a new result goes after the last one wherever the cursor is.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct History {
+    steps: Vec<Step>,
+    at: Option<usize>,
+}
+
+#[allow(
+    dead_code,
+    reason = "wired by the history strip and the Try several list (plan 12, Tasks 6 and 7)"
+)]
+impl History {
+    pub fn steps(&self) -> &[Step] {
+        &self.steps
+    }
+
+    /// Index of the current step; `None` only when there are no steps.
+    pub fn at(&self) -> Option<usize> {
+        self.at
+    }
+
+    pub fn current(&self) -> Option<&Step> {
+        self.steps.get(self.at?)
+    }
+
+    /// Adds `step` after the last one and makes it current. Past [`HISTORY_LIMIT`] the oldest step
+    /// is dropped.
+    pub fn push(&mut self, step: Step) {
+        self.steps.push(step);
+        if self.steps.len() > HISTORY_LIMIT {
+            self.steps.remove(0);
+        }
+        self.at = Some(self.steps.len() - 1);
+    }
+
+    pub fn can_back(&self) -> bool {
+        self.at.is_some_and(|i| i > 0)
+    }
+
+    pub fn can_forward(&self) -> bool {
+        self.at.is_some_and(|i| i + 1 < self.steps.len())
+    }
+
+    /// The step before the current one becomes current; `None`, and no change, at the first.
+    pub fn back(&mut self) -> Option<&Step> {
+        let i = self.at.filter(|_| self.can_back())? - 1;
+        self.go(i)
+    }
+
+    /// The step after the current one becomes current; `None`, and no change, at the last.
+    pub fn forward(&mut self) -> Option<&Step> {
+        let i = self.at.filter(|_| self.can_forward())? + 1;
+        self.go(i)
+    }
+
+    /// Makes step `index` current; `None`, and no change, when there is no such step.
+    pub fn go(&mut self, index: usize) -> Option<&Step> {
+        if index >= self.steps.len() {
+            return None;
+        }
+        self.at = Some(index);
+        self.steps.get(index)
+    }
+
+    /// Takes step `index` out of the history (its files stay on disk). The cursor stays on the
+    /// step it was on; when that is the one removed, it moves to the next step, else the previous.
+    pub fn remove(&mut self, index: usize) -> Option<Step> {
+        if index >= self.steps.len() {
+            return None;
+        }
+        let step = self.steps.remove(index);
+        self.at = match self.at {
+            _ if self.steps.is_empty() => None,
+            Some(at) if at > index => Some(at - 1),
+            Some(at) => Some(at.min(self.steps.len() - 1)),
+            None => None,
+        };
+        Some(step)
+    }
+
+    /// "Use as input": the file to select, the output of step `index`. Extending, looking, then
+    /// upscaling is chained this way.
+    pub fn use_as_input(&self, index: usize) -> Option<&Path> {
+        self.steps.get(index).map(|s| s.output.as_path())
     }
 }
 
@@ -295,6 +540,8 @@ pub struct AppState {
     pub stopping: bool,
     /// Size of the selected single image, once its preview is decoded; `None` for a folder.
     pub source_size: Option<[u32; 2]>,
+    /// Finished single-image runs of this session.
+    pub history: History,
 }
 
 /// What a selected or dropped path means: a folder is a batch, a supported image a single run.
@@ -338,7 +585,12 @@ fn reduce(state: &mut AppState, ev: WorkerEvent) -> Option<Toast> {
                 phase,
             }
         }
-        WorkerEvent::FileDone(path) => state.last_result = Some(path),
+        WorkerEvent::FileDone { output, step } => {
+            state.last_result = Some(output);
+            if let Some(step) = step {
+                state.history.push(*step);
+            }
+        }
         WorkerEvent::FileFailed { input, error } => {
             let text = format!("{}: {error}", input.display());
             state.log.push(text.clone());
@@ -431,6 +683,21 @@ impl AppState {
         if which == Which::Before && matches!(self.mode, Some(Mode::Single(_))) {
             self.source_size = Some(size);
         }
+    }
+
+    /// "Restore settings": the settings of step `index`, with this window's own preferences (the
+    /// OpenModelDB filters, the non-commercial group) kept as they are now.
+    #[allow(
+        dead_code,
+        reason = "wired by the history strip and the Try several list (plan 12, Tasks 6 and 7)"
+    )]
+    pub fn restore_settings(&self, index: usize) -> Option<Settings> {
+        let step = self.history.steps().get(index)?;
+        Some(Settings {
+            hub: self.settings.hub.clone(),
+            show_nc_models: self.settings.show_nc_models,
+            ..step.settings.clone()
+        })
     }
 
     /// The status bar text.
@@ -687,7 +954,13 @@ mod tests {
     #[test]
     fn all_done_after_file_done_is_done_with_a_green_toast() {
         let mut st = AppState::default();
-        apply_event(&mut st, WorkerEvent::FileDone(PathBuf::from("o.png")));
+        apply_event(
+            &mut st,
+            WorkerEvent::FileDone {
+                output: PathBuf::from("o.png"),
+                step: None,
+            },
+        );
         let toast = apply_event(&mut st, WorkerEvent::AllDone { done: 1, failed: 0 }).unwrap();
         assert_eq!(st.status, Status::Done(PathBuf::from("o.png")));
         assert_eq!(toast.kind, ToastKind::Success);
@@ -721,7 +994,7 @@ mod tests {
     fn settings_default_values() {
         let s = Settings::default();
         assert_eq!(s.model_id, "realesr-general-x4v3");
-        assert_eq!(s.scale, 4);
+        assert_eq!(s.scale, Some(4));
         assert!(!s.use_width);
         assert_eq!(s.width, 1920);
         assert_eq!(s.format, "png");
@@ -736,7 +1009,7 @@ mod tests {
     fn settings_json_roundtrip() {
         let s = Settings {
             model_id: "x".into(),
-            scale: 2,
+            scale: Some(2),
             use_width: true,
             width: 800,
             format: "webp".into(),
@@ -773,7 +1046,7 @@ mod tests {
     #[test]
     fn settings_from_older_json_fill_missing_fields() {
         let s: Settings = serde_json::from_str(r#"{"scale":2}"#).unwrap();
-        assert_eq!(s.scale, 2);
+        assert_eq!(s.scale, Some(2));
         assert_eq!(s.format, "png");
     }
 
@@ -959,6 +1232,327 @@ mod tests {
         let o = st.to_options();
         assert_eq!(o.output_scale, None);
         assert_eq!(o.output_width, Some(1920));
+    }
+
+    #[test]
+    fn scale_none_loads_saves_and_older_numbers_still_load() {
+        let old: Settings = serde_json::from_str(r#"{"scale":3}"#).unwrap();
+        assert_eq!(old.scale, Some(3));
+        let missing: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(missing.scale, Some(4));
+        let none = Settings {
+            scale: None,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&none).unwrap();
+        assert!(json.contains(r#""scale":null"#), "{json}");
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), none);
+    }
+
+    #[test]
+    fn scale_none_upscales_only_with_a_custom_width() {
+        let mut s = Settings {
+            scale: None,
+            ..Settings::default()
+        };
+        assert!(!s.upscales());
+        assert_eq!(s.to_options().output_scale, None);
+        assert_eq!(s.to_options().output_width, None);
+        // A custom width overrides the scale, "None" included: the model runs, then the resize.
+        s.use_width = true;
+        assert!(s.upscales());
+        assert_eq!(s.to_options().output_width, Some(1920));
+        assert!(Settings::default().upscales());
+    }
+
+    #[test]
+    fn extend_only_summary_ends_at_the_canvas() {
+        let mut s = extending(ExtendMode::Pixels, [64.0; 4], "mirror");
+        s.scale = None;
+        s.double = true;
+        assert_eq!(
+            s.extend_summary(Some([100, 50])),
+            Some(Ok("100×50 to 228×178".into()))
+        );
+        assert_eq!(s.extend_summary(None), Some(Ok("+64 px each side".into())));
+        s.use_width = true;
+        assert_eq!(
+            s.extend_summary(Some([100, 100])),
+            Some(Ok("100×100 to 228×228 to 1920×1920".into()))
+        );
+    }
+
+    #[test]
+    fn start_is_blocked_with_nothing_to_do_or_a_bad_extension() {
+        let mut s = Settings::default();
+        assert_eq!(s.start_blocker(Some([10, 10])), None);
+        s.scale = None;
+        assert_eq!(
+            s.start_blocker(None).as_deref(),
+            Some("Turn on Extend canvas or choose a scale")
+        );
+        s.extend_enabled = true;
+        assert_eq!(s.start_blocker(Some([100, 100])), None);
+        s.extend_left = 500.0;
+        let why = s.start_blocker(Some([100, 100])).unwrap();
+        assert!(
+            why.starts_with("Extend canvas: left margin 500 px"),
+            "{why}"
+        );
+        s.extend_enabled = false;
+        s.use_width = true;
+        assert_eq!(s.start_blocker(None), None);
+    }
+
+    fn catalogue() -> (tempfile::TempDir, Registry) {
+        let d = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(d.path().to_path_buf());
+        (d, reg)
+    }
+
+    #[test]
+    fn step_labels_say_what_the_run_did() {
+        let (_d, reg) = catalogue();
+        assert_eq!(
+            step_label(&Settings::default(), &reg),
+            "Upscale 4× · Real-ESRGAN General v3 (fast)"
+        );
+        let mut s = extending(ExtendMode::Pixels, [128.0; 4], "ai");
+        s.extend_linked = true;
+        assert_eq!(step_label(&s, &reg), "Extend +128 px · LaMa (512) · 4×");
+        s.double = true;
+        assert_eq!(step_label(&s, &reg), "Extend +128 px · LaMa (512) · 16×");
+        let mut s = extending(ExtendMode::Percent, [10.0; 4], "mirror");
+        s.scale = None;
+        assert_eq!(step_label(&s, &reg), "Extend +10% · Mirror");
+        s.extend_mode = ExtendMode::Pixels;
+        s.extend_fill = "#FF8000".into();
+        s.extend_left = 1.0;
+        assert_eq!(
+            step_label(&s, &reg),
+            "Extend +1/10/10/10 px · Colour #ff8000"
+        );
+        s.extend_mode = ExtendMode::Aspect;
+        s.use_width = true;
+        assert_eq!(
+            step_label(&s, &reg),
+            "Extend to 4:3 · Colour #ff8000 · 1920 px wide"
+        );
+        let custom = Settings {
+            model_id: "C:/models/my model.onnx".into(),
+            scale: Some(2),
+            ..Settings::default()
+        };
+        assert_eq!(step_label(&custom, &reg), "Upscale 2× · my model");
+        // Only characters the app's fonts have.
+        for label in [step_label(&s, &reg), step_label(&custom, &reg)] {
+            assert!(
+                label.chars().all(|c| c.is_ascii() || "×·…".contains(c)),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn fill_settings_read_back_as_the_same_fill() {
+        for fill in [
+            Fill::Ai,
+            Fill::Mirror,
+            Fill::Edge,
+            Fill::Transparent,
+            Fill::Color([1, 0xab, 0xff]),
+        ] {
+            assert_eq!(Fill::parse(&fill_setting(&fill)), Ok(fill));
+        }
+    }
+
+    #[test]
+    fn fill_titles_name_the_fill_or_its_model() {
+        let (_d, reg) = catalogue();
+        let mut s = Settings::default();
+        assert_eq!(fill_title(&s, &reg), "LaMa (512)");
+        s.extend_model = "migan-512-places2".into();
+        assert_eq!(fill_title(&s, &reg), "MI-GAN Places2 (512, fast)");
+        s.extend_fill = "edge".into();
+        assert_eq!(fill_title(&s, &reg), "Edge pixels");
+        s.extend_fill = "plaid".into();
+        assert_eq!(fill_title(&s, &reg), "?");
+    }
+
+    #[test]
+    fn fill_choices_change_only_the_fill() {
+        let base = extending(ExtendMode::Pixels, [8.0; 4], "ai");
+        let s = FillChoice::Plain(Fill::Mirror).apply(&base);
+        assert_eq!(s.extend_fill, "mirror");
+        assert_eq!(
+            Settings {
+                extend_fill: "ai".into(),
+                ..s.clone()
+            },
+            base
+        );
+        let s = FillChoice::Ai("migan-512-places2".into()).apply(&base);
+        assert_eq!(
+            (s.extend_fill.as_str(), s.extend_model.as_str()),
+            ("ai", "migan-512-places2")
+        );
+        let s = FillChoice::Plain(Fill::Ai).apply(&base);
+        assert_eq!(s, base, "the AI fill with the settings' own model");
+    }
+
+    fn step(n: usize) -> Step {
+        Step {
+            input: PathBuf::from(format!("in{n}.png")),
+            output: PathBuf::from(format!("out{n}.png")),
+            settings: Settings::default(),
+            source_size: [10, 10],
+            result_size: [40, 40],
+            margins: Margins::default(),
+            label: format!("step {n}"),
+        }
+    }
+
+    fn labels(h: &History) -> Vec<&str> {
+        h.steps().iter().map(|s| s.label.as_str()).collect()
+    }
+
+    #[test]
+    fn history_push_back_forward_and_go() {
+        let mut h = History::default();
+        assert_eq!((h.current(), h.at()), (None, None));
+        assert!(!h.can_back() && !h.can_forward());
+        assert_eq!(h.back(), None);
+        assert_eq!(h.forward(), None);
+        for n in 0..3 {
+            h.push(step(n));
+        }
+        assert_eq!(h.at(), Some(2));
+        assert!(h.can_back() && !h.can_forward());
+        assert_eq!(h.forward(), None);
+        assert_eq!(h.back().map(|s| s.label.as_str()), Some("step 1"));
+        assert_eq!(h.back().map(|s| s.label.as_str()), Some("step 0"));
+        assert_eq!(h.back(), None);
+        assert_eq!(h.at(), Some(0));
+        assert_eq!(h.forward().map(|s| s.label.as_str()), Some("step 1"));
+        assert!(h.can_back() && h.can_forward());
+        // A new result goes after the last step, wherever the cursor is, and becomes current.
+        h.push(step(3));
+        assert_eq!(labels(&h), ["step 0", "step 1", "step 2", "step 3"]);
+        assert_eq!(h.at(), Some(3));
+        assert_eq!(h.go(1).map(|s| s.label.as_str()), Some("step 1"));
+        assert_eq!(h.go(9), None);
+        assert_eq!(h.current().map(|s| s.label.as_str()), Some("step 1"));
+        assert_eq!(h.use_as_input(2), Some(Path::new("out2.png")));
+        assert_eq!(h.use_as_input(9), None);
+    }
+
+    #[test]
+    fn history_keeps_the_last_thirty_steps() {
+        let mut h = History::default();
+        for n in 0..HISTORY_LIMIT + 2 {
+            h.push(step(n));
+        }
+        assert_eq!(h.steps().len(), HISTORY_LIMIT);
+        assert_eq!(h.steps()[0].label, "step 2");
+        assert_eq!(h.at(), Some(HISTORY_LIMIT - 1));
+        assert_eq!(
+            h.current().map(|s| s.label.clone()),
+            Some(format!("step {}", HISTORY_LIMIT + 1))
+        );
+    }
+
+    #[test]
+    fn history_remove_keeps_the_cursor_on_its_step() {
+        let mut h = History::default();
+        for n in 0..4 {
+            h.push(step(n));
+        }
+        h.go(2);
+        // Before the cursor: the cursor follows its step.
+        assert_eq!(h.remove(0).map(|s| s.label), Some("step 0".into()));
+        assert_eq!(h.current().map(|s| s.label.as_str()), Some("step 2"));
+        // After the cursor: nothing moves.
+        h.remove(2);
+        assert_eq!(h.current().map(|s| s.label.as_str()), Some("step 2"));
+        assert_eq!(labels(&h), ["step 1", "step 2"]);
+        // The current one, last: the previous step.
+        h.remove(1);
+        assert_eq!(h.current().map(|s| s.label.as_str()), Some("step 1"));
+        assert_eq!(h.remove(5), None);
+        h.push(step(7));
+        h.go(0);
+        // The current one, not last: the next step.
+        h.remove(0);
+        assert_eq!(h.current().map(|s| s.label.as_str()), Some("step 7"));
+        h.remove(0);
+        assert_eq!((h.current(), h.at()), (None, None));
+        assert!(!h.can_back() && !h.can_forward());
+    }
+
+    #[test]
+    fn removing_a_step_leaves_its_files() {
+        let d = tempfile::tempdir().unwrap();
+        let out = d.path().join("out.png");
+        std::fs::write(&out, b"x").unwrap();
+        let mut h = History::default();
+        h.push(Step {
+            output: out.clone(),
+            ..step(0)
+        });
+        h.remove(0);
+        assert!(out.is_file());
+    }
+
+    #[test]
+    fn file_done_with_a_step_adds_it_to_the_history() {
+        let mut st = AppState::default();
+        apply_event(
+            &mut st,
+            WorkerEvent::FileDone {
+                output: PathBuf::from("out0.png"),
+                step: Some(Box::new(step(0))),
+            },
+        );
+        assert_eq!(labels(&st.history), ["step 0"]);
+        assert_eq!(st.last_result, Some(PathBuf::from("out0.png")));
+        // A folder file carries no step.
+        apply_event(
+            &mut st,
+            WorkerEvent::FileDone {
+                output: PathBuf::from("b.png"),
+                step: None,
+            },
+        );
+        assert_eq!(st.history.steps().len(), 1);
+        // Failures and stops add nothing.
+        apply_event(
+            &mut st,
+            WorkerEvent::FileFailed {
+                input: PathBuf::from("a.png"),
+                error: "bad".into(),
+            },
+        );
+        apply_event(&mut st, WorkerEvent::Stopped { done: 0, total: 1 });
+        apply_event(&mut st, WorkerEvent::Error("boom".into()));
+        assert_eq!(st.history.steps().len(), 1);
+    }
+
+    #[test]
+    fn restore_settings_brings_back_the_run_and_keeps_window_preferences() {
+        let mut st = AppState::default();
+        let mut made = extending(ExtendMode::Percent, [5.0; 4], "edge");
+        made.scale = None;
+        made.show_nc_models = true;
+        st.history.push(Step {
+            settings: made.clone(),
+            ..step(0)
+        });
+        st.settings.hub.commercial_only = false;
+        let restored = st.restore_settings(0).unwrap();
+        assert_eq!(restored.extend_fill, "edge");
+        assert_eq!(restored.scale, None);
+        assert!(!restored.hub.commercial_only && !restored.show_nc_models);
+        assert_eq!(st.restore_settings(1), None);
     }
 
     #[test]

@@ -26,7 +26,7 @@ use scaleup_core::{
     load_image,
 };
 
-use crate::state::{Mode, Settings};
+use crate::state::{FillChoice, Mode, Settings, Step, fill_title, step_label};
 use crate::thumbs;
 
 /// Where the OpenModelDB work of the worker gets its catalogue, files and Python.
@@ -54,6 +54,28 @@ pub enum UiMsg {
     Start {
         mode: Mode,
         settings: Box<Settings>,
+    },
+    /// *Try several*: run each fill in turn on the same single image with the same extension.
+    /// Each finished fill is a history step; a failed one is reported and the queue goes on; Stop
+    /// ends the queue.
+    #[allow(
+        dead_code,
+        reason = "wired by the history strip and the Try several list (plan 12, Tasks 6 and 7)"
+    )]
+    StartFills {
+        mode: Mode,
+        settings: Box<Settings>,
+        fills: Vec<FillChoice>,
+    },
+    /// Show a history step: its input as "before", its output as "after" with its margins.
+    #[allow(
+        dead_code,
+        reason = "wired by the history strip and the Try several list (plan 12, Tasks 6 and 7)"
+    )]
+    ShowStep {
+        input: PathBuf,
+        output: PathBuf,
+        margins: Margins,
     },
     Stop,
     ChangeDevice(String),
@@ -84,6 +106,21 @@ pub enum UiMsg {
     Quit,
 }
 
+#[allow(
+    dead_code,
+    reason = "wired by the history strip and the Try several list (plan 12, Tasks 6 and 7)"
+)]
+impl UiMsg {
+    /// The message that shows `step` again.
+    pub fn show_step(step: &Step) -> Self {
+        UiMsg::ShowStep {
+            input: step.input.clone(),
+            output: step.output.clone(),
+            margins: step.margins,
+        }
+    }
+}
+
 /// Which side of the comparison a preview belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Which {
@@ -105,7 +142,13 @@ pub enum WorkerEvent {
         percent: f32,
         phase: String,
     },
-    FileDone(PathBuf),
+    /// A file was written, or was already there and kept.
+    FileDone {
+        output: PathBuf,
+        /// What the history keeps of it: set for a single image (a fill of *Try several*
+        /// included), `None` in a folder run.
+        step: Option<Box<Step>>,
+    },
     AllDone {
         done: usize,
         failed: usize,
@@ -267,7 +310,8 @@ pub(crate) fn plan_jobs(mode: &Mode, s: &Settings) -> Vec<FileJob> {
     };
     let format = OutputFormat::parse(&s.format).unwrap_or(OutputFormat::Png);
     let opts = s.to_options();
-    let label = model_label(&s.model_id);
+    // Extend only: no model, so none in the name either.
+    let label = s.upscales().then(|| model_label(&s.model_id));
     // `start` refuses settings whose fill cannot be read before it plans anything.
     let extend = s.to_extend_options().ok().flatten();
     inputs
@@ -276,7 +320,7 @@ pub(crate) fn plan_jobs(mode: &Mode, s: &Settings) -> Vec<FileJob> {
             output: Upscaler::output_name_for(
                 &input,
                 &s.output_dir_for(&input),
-                Some(&label),
+                label.as_deref(),
                 extend.as_ref().map(|e| &e.fill),
                 Some(&s.extend_model),
                 &opts,
@@ -369,6 +413,36 @@ fn phase_name(phase: Phase) -> &'static str {
         Phase::Resizing => "Resizing",
         Phase::Saving => "Saving",
     }
+}
+
+/// Where a file is in its run, for its progress events: file `file` of `files`, and in a fill
+/// queue the `Fill 2 of 3: ` put before each phase.
+#[derive(Clone, Copy)]
+struct Place<'a> {
+    file: usize,
+    files: usize,
+    prefix: &'a str,
+}
+
+impl Place<'_> {
+    fn progress(&self, percent: f32, phase: &str) -> WorkerEvent {
+        WorkerEvent::Progress {
+            file: self.file,
+            files: self.files,
+            percent,
+            phase: format!("{}{phase}", self.prefix),
+        }
+    }
+}
+
+/// How one file of a run ended. Its events are already sent.
+enum Outcome {
+    Done,
+    /// Reported with `FileFailed`; the run goes on.
+    Failed,
+    Stopped,
+    /// A model could not be loaded: every later file would fail the same way. Not reported yet.
+    Fatal(String),
 }
 
 /// The worker's end of the UI channel; messages that cannot be acted on mid-run wait in `deferred`.
@@ -503,6 +577,16 @@ impl Worker {
     fn handle(&mut self, msg: UiMsg) {
         match msg {
             UiMsg::Start { mode, settings } => self.start(&mode, &settings),
+            UiMsg::StartFills {
+                mode,
+                settings,
+                fills,
+            } => self.start_fills(&mode, &settings, &fills),
+            UiMsg::ShowStep {
+                input,
+                output,
+                margins,
+            } => self.show_step(&input, &output, margins),
             // Nothing is running, so there is nothing to stop.
             UiMsg::Stop => {}
             UiMsg::ChangeDevice(gpu) => self.change_device(gpu),
@@ -759,13 +843,7 @@ impl Worker {
     /// Makes `id` the loaded inpainting model, downloading it first if needed. Like the upscale
     /// model, the download reads the inbox so Stop aborts it; loading itself cannot be interrupted
     /// and takes many seconds for LaMa, so the status says what is happening.
-    fn ensure_inpainter(
-        &mut self,
-        id: &str,
-        file: usize,
-        files: usize,
-        cancel: &CancelToken,
-    ) -> Result<()> {
+    fn ensure_inpainter(&mut self, id: &str, place: Place, cancel: &CancelToken) -> Result<()> {
         if self
             .inpainter
             .as_ref()
@@ -776,12 +854,7 @@ impl Worker {
         self.inpainter = None;
         self.ensure_upscaler()?;
         let upscaler = self.upscaler.as_ref().expect("just ensured");
-        let loading = || WorkerEvent::Progress {
-            file,
-            files,
-            percent: 0.0,
-            phase: "Loading extension model".into(),
-        };
+        let loading = || place.progress(0.0, "Loading extension model");
         self.emit(loading());
         // A download in between replaces that status with its own; its last chunk brings it back.
         let (events, inbox) = (&self.events, &mut self.inbox);
@@ -808,8 +881,8 @@ impl Worker {
         if settings.gpu != self.gpu {
             self.change_device(settings.gpu.clone());
         }
-        if let Err(e) = settings.to_extend_options() {
-            self.emit(WorkerEvent::Error(e));
+        if let Some(why) = settings.start_blocker(None) {
+            self.emit(WorkerEvent::Error(why));
             return;
         }
         let jobs = plan_jobs(mode, settings);
@@ -818,9 +891,8 @@ impl Worker {
             return;
         }
         let cancel = CancelToken::new();
-        let opts = settings.to_options();
         let files = jobs.len();
-        let batch = matches!(mode, Mode::Batch(_));
+        let single = matches!(mode, Mode::Single(_));
         let (mut done, mut failed) = (0, 0);
         for (index, job) in jobs.iter().enumerate() {
             self.inbox.poll(&cancel);
@@ -828,63 +900,99 @@ impl Worker {
                 self.emit(WorkerEvent::Stopped { done, total: files });
                 return;
             }
-            if job.output.exists() && !job.overwrite {
-                self.emit(WorkerEvent::Log(format!(
-                    "{} exists, not overwriting",
-                    job.output.display()
-                )));
-                self.emit(WorkerEvent::FileDone(job.output.clone()));
-                self.emit_preview(&job.output, Which::After, job_margins(job));
-                done += 1;
-                continue;
-            }
-            self.emit(WorkerEvent::Progress {
+            let place = Place {
                 file: index,
                 files,
-                percent: 0.0,
-                phase: "Loading model".into(),
-            });
-            let mut loaded = self.ensure_model(&settings.model_id, &cancel);
-            if loaded.is_ok() && job.extend.as_ref().is_some_and(|e| e.fill == Fill::Ai) {
-                loaded = self.ensure_inpainter(&settings.extend_model, index, files, &cancel);
-            }
-            match loaded {
-                Ok(()) => {}
-                Err(ScaleUpError::Cancelled) => {
+                prefix: "",
+            };
+            match self.run_one(place, job, settings, single, &cancel) {
+                Outcome::Done => done += 1,
+                Outcome::Failed => failed += 1,
+                Outcome::Stopped => {
                     self.emit(WorkerEvent::Stopped { done, total: files });
                     return;
                 }
-                // Every remaining file would fail the same way. A missing inpainting model is
-                // reported, never replaced by a plain fill.
-                Err(e) => {
-                    self.emit(WorkerEvent::Error(e.to_string()));
+                // A missing inpainting model is reported, never replaced by a plain fill.
+                Outcome::Fatal(e) => {
+                    self.emit(WorkerEvent::Error(e));
                     return;
                 }
             }
-            if batch {
-                self.emit_preview(&job.input, Which::Before, Margins::default());
+        }
+        self.emit(WorkerEvent::AllDone { done, failed });
+    }
+
+    /// *Try several*: each fill in turn on one image. A fill that fails, its model included, is
+    /// reported as a failed file and the next one runs.
+    fn start_fills(&mut self, mode: &Mode, settings: &Settings, fills: &[FillChoice]) {
+        let Mode::Single(input) = mode else {
+            self.emit(WorkerEvent::Error(
+                "Try several works on a single image, not a folder".into(),
+            ));
+            return;
+        };
+        if !settings.extend_enabled {
+            self.emit(WorkerEvent::Error(
+                "Turn on Extend canvas to try fills".into(),
+            ));
+            return;
+        }
+        if fills.is_empty() {
+            self.emit(WorkerEvent::Error("Choose at least one fill to try".into()));
+            return;
+        }
+        if settings.gpu != self.gpu {
+            self.change_device(settings.gpu.clone());
+        }
+        let cancel = CancelToken::new();
+        let total = fills.len();
+        let (mut done, mut failed) = (0, 0);
+        // Outputs of this queue: a fill must not overwrite another one's result.
+        let mut written: Vec<PathBuf> = Vec::new();
+        for (n, choice) in fills.iter().enumerate() {
+            self.inbox.poll(&cancel);
+            if cancel.is_cancelled() {
+                self.emit(WorkerEvent::Stopped { done, total });
+                return;
             }
-            let started = std::time::Instant::now();
-            match self.run_job(index, files, job, &opts, &cancel) {
-                Ok(path) => {
-                    self.emit(WorkerEvent::Log(format!(
-                        "{} in {:.1} s",
-                        path.display(),
-                        started.elapsed().as_secs_f32()
-                    )));
-                    self.emit(WorkerEvent::FileDone(path.clone()));
-                    self.emit_preview(&path, Which::After, job_margins(job));
+            let s = choice.apply(settings);
+            let name = fill_title(&s, &self.registry);
+            let fail = |error: String| WorkerEvent::FileFailed {
+                input: input.clone(),
+                error: format!("{name}: {error}"),
+            };
+            if let Some(why) = s.start_blocker(None) {
+                self.emit(fail(why));
+                failed += 1;
+                continue;
+            }
+            let job = plan_jobs(mode, &s).remove(0);
+            if written.contains(&job.output) {
+                self.emit(fail(format!(
+                    "would write {} again, as an earlier fill did",
+                    job.output.display()
+                )));
+                failed += 1;
+                continue;
+            }
+            let prefix = format!("Fill {} of {total}: ", n + 1);
+            let place = Place {
+                file: 0,
+                files: 1,
+                prefix: &prefix,
+            };
+            match self.run_one(place, &job, &s, true, &cancel) {
+                Outcome::Done => {
                     done += 1;
+                    written.push(job.output);
                 }
-                Err(ScaleUpError::Cancelled) => {
-                    self.emit(WorkerEvent::Stopped { done, total: files });
+                Outcome::Failed => failed += 1,
+                Outcome::Stopped => {
+                    self.emit(WorkerEvent::Stopped { done, total });
                     return;
                 }
-                Err(e) => {
-                    self.emit(WorkerEvent::FileFailed {
-                        input: job.input.clone(),
-                        error: e.to_string(),
-                    });
+                Outcome::Fatal(e) => {
+                    self.emit(fail(e));
                     failed += 1;
                 }
             }
@@ -892,23 +1000,134 @@ impl Worker {
         self.emit(WorkerEvent::AllDone { done, failed });
     }
 
+    /// One file of a run: loads the models it needs, runs it and reports the result. `single`
+    /// marks a single-image run, whose result becomes a history step.
+    fn run_one(
+        &mut self,
+        place: Place,
+        job: &FileJob,
+        settings: &Settings,
+        single: bool,
+        cancel: &CancelToken,
+    ) -> Outcome {
+        if job.output.exists() && !job.overwrite {
+            self.emit(WorkerEvent::Log(format!(
+                "{} exists, not overwriting",
+                job.output.display()
+            )));
+            self.finished(job, settings, single);
+            return Outcome::Done;
+        }
+        // Extend only still runs through the upscaler; it loads no model then.
+        let mut loaded = self.ensure_upscaler();
+        if loaded.is_ok() && settings.upscales() {
+            self.emit(place.progress(0.0, "Loading model"));
+            loaded = self.ensure_model(&settings.model_id, cancel);
+        }
+        if loaded.is_ok() && job.extend.as_ref().is_some_and(|e| e.fill == Fill::Ai) {
+            loaded = self.ensure_inpainter(&settings.extend_model, place, cancel);
+        }
+        match loaded {
+            Ok(()) => {}
+            Err(ScaleUpError::Cancelled) => return Outcome::Stopped,
+            Err(e) => return Outcome::Fatal(e.to_string()),
+        }
+        if !single {
+            self.emit_preview(&job.input, Which::Before, Margins::default());
+        }
+        let started = std::time::Instant::now();
+        let opts = settings.to_options();
+        match self.run_job(place, job, settings.upscales(), &opts, cancel) {
+            Ok(path) => {
+                self.emit(WorkerEvent::Log(format!(
+                    "{} in {:.1} s",
+                    path.display(),
+                    started.elapsed().as_secs_f32()
+                )));
+                self.finished(job, settings, single);
+                Outcome::Done
+            }
+            Err(ScaleUpError::Cancelled) => Outcome::Stopped,
+            Err(e) => {
+                self.emit(WorkerEvent::FileFailed {
+                    input: job.input.clone(),
+                    error: e.to_string(),
+                });
+                Outcome::Failed
+            }
+        }
+    }
+
+    /// Reports that `job.output` is there: `FileDone`, with a history step for a single image,
+    /// then its "after" preview.
+    fn finished(&self, job: &FileJob, settings: &Settings, single: bool) {
+        let margins = job_margins(job);
+        let size = |p: &Path| oriented_dimensions(p).map_or([0, 0], |(w, h)| [w, h]);
+        let step = single.then(|| {
+            Box::new(Step {
+                input: job.input.clone(),
+                output: job.output.clone(),
+                settings: settings.clone(),
+                source_size: size(&job.input),
+                result_size: size(&job.output),
+                margins,
+                label: step_label(settings, &self.registry),
+            })
+        });
+        self.emit(WorkerEvent::FileDone {
+            output: job.output.clone(),
+            step,
+        });
+        self.emit_preview(&job.output, Which::After, margins);
+    }
+
+    /// Both previews of a history step. A file that is gone, or cannot be read, is an error that
+    /// names it.
+    fn show_step(&self, input: &Path, output: &Path, margins: Margins) {
+        if let Some(gone) = [input, output].into_iter().find(|p| !p.is_file()) {
+            self.emit(WorkerEvent::Error(format!(
+                "{} no longer exists",
+                gone.display()
+            )));
+            return;
+        }
+        for (path, which, margins) in [
+            (input, Which::Before, Margins::default()),
+            (output, Which::After, margins),
+        ] {
+            match preview_event(path, which, margins) {
+                Ok(ev) => self.emit(ev),
+                Err(e) => {
+                    self.emit(WorkerEvent::Error(format!("{}: {e}", path.display())));
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Runs `job` with the loaded models: the upscaling model only when `upscale`.
     fn run_job(
         &mut self,
-        file: usize,
-        files: usize,
+        place: Place,
         job: &FileJob,
+        upscale: bool,
         opts: &scaleup_core::UpscaleOptions,
         cancel: &CancelToken,
     ) -> Result<PathBuf> {
-        let upscaler = self.upscaler.as_ref().expect("model is loaded");
-        let (_, model) = self.model.as_ref().expect("model is loaded");
-        // Loaded by `start` when this job's fill needs it.
+        let upscaler = self.upscaler.as_ref().expect("the upscaler is ready");
+        let model = if upscale {
+            let (_, model) = self.model.as_ref().expect("model is loaded");
+            Some(model.as_ref())
+        } else {
+            None
+        };
+        // Loaded by `run_one` when this job's fill needs it.
         let inpainter = self.inpainter.as_ref().map(|(_, i)| i.as_ref());
         let (events, inbox) = (&self.events, &mut self.inbox);
         let mut phase = phase_name(Phase::Loading);
         let mut percent = 0.0;
         upscaler.run_file(
-            Some(model.as_ref()),
+            model,
             inpainter,
             job,
             opts,
@@ -925,12 +1144,7 @@ impl Worker {
                         percent = done as f32 * 100.0 / total.max(1) as f32;
                     }
                 }
-                events.send(WorkerEvent::Progress {
-                    file,
-                    files,
-                    percent,
-                    phase: phase.into(),
-                });
+                events.send(place.progress(percent, phase));
                 inbox.poll(cancel);
             },
             cancel,
@@ -955,7 +1169,7 @@ mod tests {
     fn settings(out: &Path) -> Settings {
         Settings {
             model_id: fixture(),
-            scale: 2,
+            scale: Some(2),
             gpu: "cpu".into(),
             tile: 32,
             output_dir: Some(out.to_path_buf()),
@@ -1164,11 +1378,11 @@ mod tests {
         let evs = until_end(&h);
         let pos = |f: fn(&WorkerEvent) -> bool| evs.iter().position(f);
         let progress = pos(|e| matches!(e, WorkerEvent::Progress { .. })).expect("progress");
-        let file_done = pos(|e| matches!(e, WorkerEvent::FileDone(_))).expect("file done");
+        let file_done = pos(|e| matches!(e, WorkerEvent::FileDone { .. })).expect("file done");
         let all_done =
             pos(|e| matches!(e, WorkerEvent::AllDone { done: 1, failed: 0 })).expect("all done");
         assert!(progress < file_done && file_done < all_done, "{evs:?}");
-        let Some(WorkerEvent::FileDone(p)) = evs.get(file_done) else {
+        let Some(WorkerEvent::FileDone { output: p, .. }) = evs.get(file_done) else {
             unreachable!()
         };
         assert!(p.is_file());
@@ -1192,7 +1406,7 @@ mod tests {
         .unwrap();
         loop {
             match h.rx.recv_timeout(Duration::from_secs(120)).unwrap() {
-                WorkerEvent::FileDone(_) => break,
+                WorkerEvent::FileDone { .. } => break,
                 WorkerEvent::Error(e) => panic!("{e}"),
                 _ => {}
             }
@@ -1228,7 +1442,10 @@ mod tests {
                 .any(|e| matches!(e, WorkerEvent::Progress { .. })),
             "{evs:?}"
         );
-        assert!(evs.contains(&WorkerEvent::FileDone(existing.clone())));
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            WorkerEvent::FileDone { output, .. } if *output == existing
+        )));
         assert_eq!(std::fs::read(&existing).unwrap(), b"keep me");
     }
 
@@ -2066,6 +2283,390 @@ mod tests {
             .map(|e| e.path())
             .collect();
         assert!(left.is_empty(), "{left:?}");
+    }
+
+    /// The history steps a run sent, in order.
+    fn steps(evs: &[WorkerEvent]) -> Vec<&Step> {
+        evs.iter()
+            .filter_map(|e| match e {
+                WorkerEvent::FileDone { step, .. } => step.as_deref(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn fixture_path(name: &str) -> String {
+        format!("{}/../../tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    /// A registry whose upscaling model can only be fetched from a server that always fails, so a
+    /// run that touches it fails.
+    fn unreachable_model_registry(dir: &Path) -> Registry {
+        let entry = ModelEntry {
+            id: "remote".into(),
+            name: "Remote".into(),
+            arch: "x".into(),
+            scale: 2,
+            license: "MIT".into(),
+            commercial: true,
+            size_bytes: 10,
+            url: failing_server(),
+            sha256: "00".into(),
+            tags: vec![],
+            notes: String::new(),
+            format: "onnx".into(),
+            source: "catalogue".into(),
+            kind: Default::default(),
+        };
+        Registry::from_entries(vec![entry], dir.join("models"))
+    }
+
+    #[test]
+    fn extend_only_never_loads_the_upscaling_model() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 10);
+        let h = spawn(unreachable_model_registry(d.path()), "cpu");
+        let s = Settings {
+            model_id: "remote".into(),
+            scale: None,
+            ..extend_settings(d.path(), "mirror", 4.0)
+        };
+        let output = plan_jobs(&Mode::Single(input.clone()), &s).remove(0).output;
+        assert_eq!(
+            output.file_name().unwrap().to_str().unwrap(),
+            "a_scaleup_ext_mirror.png"
+        );
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input),
+            settings: Box::new(s),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::AllDone { done: 1, failed: 0 }),
+            "{evs:?}"
+        );
+        let loads_model = |e: &WorkerEvent| match e {
+            WorkerEvent::Download { .. } => true,
+            WorkerEvent::Progress { phase, .. } => phase == "Loading model",
+            _ => false,
+        };
+        assert!(!evs.iter().any(loads_model), "{evs:?}");
+        // The canvas is the final size.
+        assert_eq!(image::image_dimensions(&output).unwrap(), (18, 18));
+    }
+
+    #[test]
+    fn nothing_to_do_is_refused_before_anything_runs() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 8);
+        let h = cpu_worker(d.path());
+        let s = Settings {
+            scale: None,
+            ..settings(d.path())
+        };
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input),
+            settings: Box::new(s),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert!(
+            matches!(evs.last(), Some(WorkerEvent::Error(e)) if e.contains("choose a scale")),
+            "{evs:?}"
+        );
+    }
+
+    #[test]
+    fn a_single_run_sends_a_step_and_a_folder_run_does_not() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 10);
+        let h = cpu_worker(d.path());
+        let s = extend_settings(d.path(), "mirror", 4.0);
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input.clone()),
+            settings: Box::new(s.clone()),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        let [step] = steps(&evs)[..] else {
+            panic!("{evs:?}")
+        };
+        let four = Margins {
+            left: 4,
+            top: 4,
+            right: 4,
+            bottom: 4,
+        };
+        assert_eq!(step.input, input);
+        assert_eq!(step.output, plan_jobs(&Mode::Single(input), &s)[0].output);
+        assert_eq!(step.settings, s);
+        assert_eq!(
+            (step.source_size, step.result_size, step.margins),
+            ([10, 10], [36, 36], four)
+        );
+        assert_eq!(step.label, "Extend +4 px · Mirror · 2×");
+
+        let dir = d.path().join("in");
+        std::fs::create_dir(&dir).unwrap();
+        write_png(&dir.join("b.png"), 10);
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Batch(dir),
+            settings: Box::new(extend_settings(&d.path().join("out"), "mirror", 4.0)),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert!(
+            evs.iter()
+                .any(|e| matches!(e, WorkerEvent::FileDone { step: None, .. })),
+            "{evs:?}"
+        );
+        assert!(steps(&evs).is_empty());
+    }
+
+    #[test]
+    fn a_failed_run_sends_no_step() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("1.png");
+        std::fs::write(&input, b"not an image").unwrap();
+        let h = cpu_worker(d.path());
+        h.tx.send(UiMsg::Start {
+            mode: Mode::Single(input),
+            settings: Box::new(settings(d.path())),
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert!(steps(&evs).is_empty(), "{evs:?}");
+        assert!(
+            !evs.iter()
+                .any(|e| matches!(e, WorkerEvent::FileDone { .. }))
+        );
+    }
+
+    #[test]
+    fn try_several_runs_each_fill_and_goes_on_past_a_failed_one() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 16);
+        // The upscaling model is unreachable: extend-only fills must not need it.
+        let h = spawn(unreachable_model_registry(d.path()), "cpu");
+        let s = Settings {
+            model_id: "remote".into(),
+            scale: None,
+            ..extend_settings(d.path(), "ai", 4.0)
+        };
+        let fills = vec![
+            FillChoice::Ai(fixture_path("inpaint_mean_lama.onnx")),
+            FillChoice::Plain(Fill::Mirror),
+            FillChoice::Ai("no-such-inpainter".into()),
+            FillChoice::Ai(fixture_path("inpaint_mean_migan.onnx")),
+        ];
+        h.tx.send(UiMsg::StartFills {
+            mode: Mode::Single(input.clone()),
+            settings: Box::new(s),
+            fills,
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::AllDone { done: 3, failed: 1 }),
+            "{evs:?}"
+        );
+        let names: Vec<String> = steps(&evs)
+            .iter()
+            .map(|s| s.output.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "a_scaleup_ext_ai-inpaint_mean_lama.png",
+                "a_scaleup_ext_mirror.png",
+                "a_scaleup_ext_ai-inpaint_mean_migan.png",
+            ]
+        );
+        for step in steps(&evs) {
+            assert!(step.output.is_file());
+            assert_eq!(step.result_size, [24, 24]);
+            assert_eq!(step.input, input);
+        }
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                WorkerEvent::FileFailed { input: i, error } if *i == input && error.contains("no-such-inpainter")
+            )),
+            "{evs:?}"
+        );
+        // Each fill says where it is in the queue, with its phase.
+        for n in [1, 2, 4] {
+            let prefix = format!("Fill {n} of 4: ");
+            assert!(
+                evs.iter().any(|e| matches!(
+                    e,
+                    WorkerEvent::Progress { phase, files: 1, .. } if phase.starts_with(&prefix) && phase.len() > prefix.len()
+                )),
+                "{prefix} {evs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn try_several_refuses_a_folder_and_an_empty_list() {
+        let d = tempfile::tempdir().unwrap();
+        let h = cpu_worker(d.path());
+        let s = extend_settings(d.path(), "mirror", 4.0);
+        h.tx.send(UiMsg::StartFills {
+            mode: Mode::Batch(d.path().to_path_buf()),
+            settings: Box::new(s.clone()),
+            fills: vec![FillChoice::Plain(Fill::Edge)],
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert!(
+            matches!(evs.last(), Some(WorkerEvent::Error(e)) if e.contains("single image")),
+            "{evs:?}"
+        );
+        h.tx.send(UiMsg::StartFills {
+            mode: Mode::Single(d.path().join("a.png")),
+            settings: Box::new(s),
+            fills: vec![],
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert!(matches!(evs.last(), Some(WorkerEvent::Error(_))), "{evs:?}");
+    }
+
+    #[test]
+    fn try_several_never_writes_one_file_twice() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        write_png(&input, 10);
+        let h = cpu_worker(d.path());
+        // Upscaled plain fills share a name (`a_scaleup_ext_2x_nearest2x.png`).
+        let s = extend_settings(d.path(), "mirror", 2.0);
+        h.tx.send(UiMsg::StartFills {
+            mode: Mode::Single(input),
+            settings: Box::new(s),
+            fills: vec![
+                FillChoice::Plain(Fill::Mirror),
+                FillChoice::Plain(Fill::Edge),
+            ],
+        })
+        .unwrap();
+        let evs = until_end(&h);
+        assert_eq!(
+            evs.last(),
+            Some(&WorkerEvent::AllDone { done: 1, failed: 1 }),
+            "{evs:?}"
+        );
+        assert!(
+            evs.iter().any(
+                |e| matches!(e, WorkerEvent::FileFailed { error, .. } if error.starts_with("Edge pixels: would write"))
+            ),
+            "{evs:?}"
+        );
+    }
+
+    #[test]
+    fn stop_ends_the_fill_queue() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        // Large enough that the fills after the first are still running when Stop arrives.
+        write_png(&input, 1024);
+        let h = cpu_worker(d.path());
+        let s = Settings {
+            scale: None,
+            ..extend_settings(d.path(), "mirror", 4.0)
+        };
+        let fills = vec![
+            FillChoice::Plain(Fill::Mirror),
+            FillChoice::Plain(Fill::Edge),
+            FillChoice::Plain(Fill::Transparent),
+            FillChoice::Plain(Fill::Color([1, 2, 3])),
+        ];
+        h.tx.send(UiMsg::StartFills {
+            mode: Mode::Single(input),
+            settings: Box::new(s),
+            fills,
+        })
+        .unwrap();
+        loop {
+            match h.rx.recv_timeout(Duration::from_secs(120)).unwrap() {
+                WorkerEvent::FileDone { .. } => break,
+                WorkerEvent::Error(e) => panic!("{e}"),
+                _ => {}
+            }
+        }
+        h.tx.send(UiMsg::Stop).unwrap();
+        let evs = until_end(&h);
+        let Some(WorkerEvent::Stopped { done, total }) = evs.last() else {
+            panic!("{evs:?}")
+        };
+        assert_eq!(*total, 4);
+        assert!((1..4).contains(done), "{done}");
+    }
+
+    #[test]
+    fn show_step_sends_both_previews_with_the_steps_margins() {
+        let d = tempfile::tempdir().unwrap();
+        let input = d.path().join("a.png");
+        let output = d.path().join("b.png");
+        write_png(&input, 10);
+        write_png(&output, 30);
+        let margins = Margins {
+            left: 5,
+            top: 0,
+            right: 5,
+            bottom: 0,
+        };
+        let step = Step {
+            input: input.clone(),
+            output: output.clone(),
+            settings: Settings::default(),
+            source_size: [10, 10],
+            result_size: [30, 30],
+            margins,
+            label: String::new(),
+        };
+        let msg = UiMsg::show_step(&step);
+        assert!(matches!(
+            &msg,
+            UiMsg::ShowStep { input: i, output: o, margins: m } if *i == input && *o == output && *m == margins
+        ));
+        let h = cpu_worker(d.path());
+        h.tx.send(msg).unwrap();
+        let mut previews = Vec::new();
+        while previews.len() < 2 {
+            match h.rx.recv_timeout(Duration::from_secs(120)).unwrap() {
+                WorkerEvent::Preview {
+                    which,
+                    size,
+                    margins,
+                    ..
+                } => previews.push((which, size, margins)),
+                WorkerEvent::Error(e) => panic!("{e}"),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            previews,
+            [
+                (Which::Before, [10, 10], Margins::default()),
+                (Which::After, [30, 30], margins)
+            ]
+        );
+
+        std::fs::remove_file(&output).unwrap();
+        h.tx.send(UiMsg::show_step(&step)).unwrap();
+        let evs = until_end(&h);
+        assert!(
+            matches!(evs.last(), Some(WorkerEvent::Error(e)) if e.contains("b.png") && e.contains("no longer exists")),
+            "{evs:?}"
+        );
     }
 
     #[test]

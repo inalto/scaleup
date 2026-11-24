@@ -201,8 +201,10 @@ fn output_options(ui: &mut egui::Ui, st: &mut AppState) {
         ui.horizontal(|ui| {
             row_label(ui, "Scale");
             for v in [2, 3, 4] {
-                ui.radio_value(&mut s.scale, v, format!("{v}×"));
+                ui.radio_value(&mut s.scale, Some(v), format!("{v}×"));
             }
+            ui.radio_value(&mut s.scale, None, "None")
+                .on_hover_text("Only extend the canvas: nothing is upscaled.");
         });
     });
     ui.horizontal(|ui| {
@@ -328,10 +330,18 @@ fn advanced(ui: &mut egui::Ui, st: &mut AppState, out: &mut SidebarOutput) {
     });
 }
 
-/// The Start button's text: it says when the run will download a model first.
+/// The Start button's text: `Extend` when nothing is upscaled, and it says when the run will
+/// download a model first.
 pub fn start_label(s: &Settings, registry: &Registry) -> &'static str {
     let missing = |id: &str| registry.get(id).is_some() && !registry.is_downloaded(id);
     let ai = s.extend_enabled && Fill::parse(&s.extend_fill) == Ok(Fill::Ai);
+    if !s.upscales() {
+        return if ai && missing(&s.extend_model) {
+            "Download and extend"
+        } else {
+            "Extend"
+        };
+    }
     if missing(&s.model_id) || (ai && missing(&s.extend_model)) {
         "Download and start"
     } else {
@@ -492,10 +502,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) -> Sideba
     let mut out = SidebarOutput::default();
     let running = st.status.is_running();
     let entries: Vec<ModelEntry> = registry.upscalers().cloned().collect();
-    let invalid = match st.settings.extend_summary(st.source_size) {
-        Some(Err(e)) => Some(e),
-        _ => None,
-    };
+    let invalid = st.settings.start_blocker(st.source_size);
 
     egui::Panel::bottom("sidebar_actions")
         .show_separator_line(false)
@@ -523,10 +530,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut AppState, registry: &Registry) -> Sideba
                     egui::Button::new(egui::RichText::new(label).size(16.0).strong())
                 };
                 let resp = ui.add_enabled(enabled, |ui: &mut egui::Ui| ui.add_sized(size, button));
-                let why = match &invalid {
-                    Some(e) => format!("Extend canvas: {e}"),
-                    None => "Select an image or a folder first".into(),
-                };
+                let why = invalid
+                    .clone()
+                    .unwrap_or_else(|| "Select an image or a folder first".into());
                 if resp.on_disabled_hover_text(why).clicked() {
                     out.start = true;
                 }
@@ -656,6 +662,27 @@ mod tests {
         std::fs::write(reg.local_path("lama-512"), b"x").unwrap();
         assert_eq!(start_label(&s, &reg), "Upscale");
         s.extend_model = "migan-512-places2".into();
+        assert_eq!(start_label(&s, &reg), "Download and start");
+    }
+
+    #[test]
+    fn start_says_extend_when_nothing_is_upscaled() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_dir(dir.path().to_path_buf());
+        // The upscaling model is missing too, but an extend-only run never loads it.
+        let mut s = Settings {
+            scale: None,
+            extend_enabled: true,
+            ..Settings::default()
+        };
+        assert_eq!(start_label(&s, &reg), "Download and extend");
+        std::fs::write(reg.local_path("lama-512"), b"x").unwrap();
+        assert_eq!(start_label(&s, &reg), "Extend");
+        s.extend_fill = "mirror".into();
+        s.extend_model = "migan-512-places2".into();
+        assert_eq!(start_label(&s, &reg), "Extend");
+        // A custom width upscales: the model is needed again.
+        s.use_width = true;
         assert_eq!(start_label(&s, &reg), "Download and start");
     }
 
